@@ -250,16 +250,14 @@ atomic-cli user create <login> [options]
 - `--suppress_validation` - Suppress user validation
 - `--suppress_parent_triggers` - Suppress parent triggers
 - `--rebuild_audiences` - Rebuild the user audiences
-- `--instance_id` - Set the instance ID
 - `--file` - Read user parameters from JSON file
 
 **Example:**
 ```bash
-atomic-cli user create john.doe \
-  --email "john.doe@example.com" \
+atomic-cli user create
   --password "securepassword123" \
   --roles "user,admin" \
-  --instance_id inst_1234567890abcdef
+  john.doe@example.com 
 ```
 
 #### Get User
@@ -308,7 +306,6 @@ atomic-cli user list [options]
 **Example:**
 ```bash
 atomic-cli user list \
-  --instance_id inst_1234567890abcdef \
   --roles "admin" \
   --limit 10
 ```

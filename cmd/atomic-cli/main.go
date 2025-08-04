@@ -29,7 +29,7 @@ import (
 	"github.com/lensesio/tableprinter"
 	client "github.com/libatomic/atomic-go"
 	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/tools"
+	"github.com/libatomic/atomic/pkg/util"
 	"github.com/spf13/cast"
 	"github.com/urfave/cli/v3"
 )
@@ -250,7 +250,7 @@ func PrintTable[T any](slice []T, fields ...string) error {
 func BindFlagsFromContext(cmd *cli.Command, target interface{}, skip ...string) error {
 	flagMap := map[string]interface{}{}
 
-	skipSlice := tools.MakeSlice(skip)
+	skipSlice := util.MakeSlice(skip)
 
 	for _, name := range cmd.FlagNames() {
 		if skipSlice.Contains(name) {

@@ -170,7 +170,7 @@ func appCreate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Application{app}, "id", "name", "type", "instance_id", "created_at", "client_id", "client_secret")
+	PrintResult(cmd, []*atomic.Application{app}, WithFields("id", "name", "type", "instance_id", "created_at", "client_id", "client_secret"))
 
 	return nil
 }
@@ -224,7 +224,7 @@ func appUpdate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Application{app}, "id", "name", "type", "instance_id", "created_at", "client_id", "client_secret")
+	PrintResult(cmd, []*atomic.Application{app}, WithFields("id", "name", "type", "instance_id", "created_at", "client_id", "client_secret"))
 
 	return nil
 }
@@ -252,7 +252,7 @@ func appGet(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Application{app}, "id", "name", "type", "instance_id", "created_at", "client_id", "client_secret")
+	PrintResult(cmd, []*atomic.Application{app}, WithFields("id", "name", "type", "instance_id", "created_at", "client_id", "client_secret"))
 
 	return nil
 }
@@ -277,7 +277,7 @@ func appList(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, apps, "id", "name", "type", "instance_id", "created_at", "client_id", "client_secret")
+	PrintResult(cmd, apps, WithFields("id", "name", "type", "instance_id", "created_at", "client_id", "client_secret"))
 
 	return nil
 }

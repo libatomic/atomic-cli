@@ -174,7 +174,7 @@ func instCreate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Instance{inst}, "id", "name", "title", "created_at", "parent_id")
+	PrintResult(cmd, []*atomic.Instance{inst}, WithFields("id", "name", "title", "created_at", "parent_id"))
 
 	return nil
 }
@@ -212,7 +212,7 @@ func instUpdate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Instance{inst}, "id", "name", "title", "created_at", "parent_id")
+	PrintResult(cmd, []*atomic.Instance{inst}, WithFields("id", "name", "title", "created_at", "parent_id"))
 
 	return nil
 }
@@ -232,7 +232,7 @@ func instGet(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Instance{inst}, "id", "name", "title", "created_at", "parent_id")
+	PrintResult(cmd, []*atomic.Instance{inst}, WithFields("id", "name", "title", "created_at", "parent_id"))
 
 	return nil
 }
@@ -276,7 +276,7 @@ func instList(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, insts, "id", "name", "title", "created_at", "parent_id")
+	PrintResult(cmd, insts, WithFields("id", "name", "title", "created_at", "parent_id"))
 
 	return nil
 }

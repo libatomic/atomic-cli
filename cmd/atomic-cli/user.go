@@ -232,7 +232,7 @@ func userCreate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.User{user}, "id", "login", "created_at", "updated_at", "roles", "instance_id")
+	PrintResult(cmd, []*atomic.User{user}, WithFields("id", "login", "created_at", "updated_at", "roles", "instance_id"))
 
 	return nil
 }
@@ -253,7 +253,7 @@ func userList(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, users, "id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer")
+	PrintResult(cmd, users, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
 
 	return nil
 }

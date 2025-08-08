@@ -34,6 +34,17 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+type (
+	PrintResultOptions struct {
+		Fields          []string
+		FieldFormatters map[string]FieldFormatterFunc
+	}
+
+	PrintResultOption func(o *PrintResultOptions)
+
+	FieldFormatterFunc func(v any) string
+)
+
 var (
 	backend atomic.Backend
 	mainCmd *cli.Command
@@ -93,6 +104,7 @@ func main() {
 		instCmd,
 		appCmd,
 		userCmd,
+		optionCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
@@ -119,9 +131,17 @@ func main() {
 	}
 }
 
-func PrintResult[T any](cmd *cli.Command, v []T, fields ...string) bool {
+func PrintResult[T any](cmd *cli.Command, v []T, options ...PrintResultOption) bool {
 	if cmd.Bool("silent") {
 		return true
+	}
+
+	opts := PrintResultOptions{
+		FieldFormatters: make(map[string]FieldFormatterFunc),
+	}
+
+	for _, o := range options {
+		o(&opts)
 	}
 
 	switch cmd.String("out-format") {
@@ -143,10 +163,14 @@ func PrintResult[T any](cmd *cli.Command, v []T, fields ...string) bool {
 
 	case "table":
 		if cmd.IsSet("fields") {
-			fields = cmd.StringSlice("fields")
+			opts.Fields = cmd.StringSlice("fields")
 		}
 
-		if err := PrintTable(v, fields...); err != nil {
+		if len(opts.Fields) == 0 {
+			opts.Fields = util.JSONTagFields(v)
+		}
+
+		if err := PrintTable(v, opts); err != nil {
 			fmt.Println(err.Error())
 		}
 		return true
@@ -158,8 +182,10 @@ func PrintResult[T any](cmd *cli.Command, v []T, fields ...string) bool {
 	return false
 }
 
-func PrintTable[T any](slice []T, fields ...string) error {
+func PrintTable[T any](slice []T, opts PrintResultOptions) error {
 	table := make(map[string][]string)
+
+	fields := opts.Fields
 
 	// determine field access paths
 	fieldPaths := make([][]string, len(fields))
@@ -211,10 +237,12 @@ func PrintTable[T any](slice []T, fields ...string) error {
 					}
 				}
 
-				if v.Kind() == reflect.Slice {
+				if formatter, ok := opts.FieldFormatters[fields[i]]; ok {
+					str = formatter(v.Interface())
+				} else if v.Kind() == reflect.Slice {
 					elems := []string{}
-					for i := 0; i < v.Len(); i++ {
-						s, _ := cast.ToStringE(v.Index(i).Interface())
+					for j := 0; j < v.Len(); j++ {
+						s, _ := cast.ToStringE(v.Index(j).Interface())
 						elems = append(elems, s)
 					}
 					str = strings.Join(elems, ", ")
@@ -279,4 +307,16 @@ func BindFlagsFromContext(cmd *cli.Command, target interface{}, skip ...string) 
 	}
 
 	return json.Unmarshal(data, target)
+}
+
+func WithFields(fields ...string) PrintResultOption {
+	return func(o *PrintResultOptions) {
+		o.Fields = fields
+	}
+}
+
+func WithFieldFormatter(field string, formatter FieldFormatterFunc) PrintResultOption {
+	return func(o *PrintResultOptions) {
+		o.FieldFormatters[field] = formatter
+	}
 }

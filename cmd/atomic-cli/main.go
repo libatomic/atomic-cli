@@ -203,6 +203,14 @@ func PrintTable[T any](slice []T, fields ...string) error {
 
 			str := ""
 			if v.IsValid() && v.CanInterface() {
+				if v.Kind() == reflect.Ptr {
+					if v.IsNil() {
+						v = reflect.Zero(v.Type().Elem())
+					} else {
+						v = v.Elem()
+					}
+				}
+
 				if v.Kind() == reflect.Slice {
 					elems := []string{}
 					for i := 0; i < v.Len(); i++ {

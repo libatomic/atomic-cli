@@ -27,16 +27,14 @@ import (
 
 type (
 	DynamicKeySource struct {
-		key     KeyFunc
+		key     func() string
 		desc    string
 		sourcer altsrc.Sourcer
 		um      func([]byte, any) error
 	}
-
-	KeyFunc func() string
 )
 
-func NewDynamicKeySource(f func([]byte, any) error, desc string, key KeyFunc, uriSrc altsrc.Sourcer) *DynamicKeySource {
+func NewDynamicKeySource(f func([]byte, any) error, desc string, key func() string, uriSrc altsrc.Sourcer) *DynamicKeySource {
 	return &DynamicKeySource{
 		key:     key,
 		desc:    desc,
@@ -62,10 +60,10 @@ func (d *DynamicKeySource) GoString() string {
 	return fmt.Sprintf("%sValueSource{file:%[2]q,keyPath:%[3]q}", d.desc, d.sourcer.SourceURI(), d.key())
 }
 
-func TOML(key KeyFunc, source altsrc.Sourcer) *DynamicKeySource {
+func TOML(key func() string, source altsrc.Sourcer) *DynamicKeySource {
 	return NewDynamicKeySource(toml.Unmarshal, "toml", key, source)
 }
 
-func YAML(key KeyFunc, source altsrc.Sourcer) *DynamicKeySource {
+func YAML(key func() string, source altsrc.Sourcer) *DynamicKeySource {
 	return NewDynamicKeySource(yaml.Unmarshal, "yaml", key, source)
 }

@@ -94,6 +94,18 @@ var (
 				ArgsUsage: "<token_id>",
 				Action:    accessTokenGet,
 			},
+			{
+				Name:      "revoke",
+				Usage:     "revoke an access token",
+				ArgsUsage: "<token_id>",
+				Action:    accessTokenRevoke,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "delete",
+						Usage: "specify if the token should be deleted",
+					},
+				},
+			},
 		},
 	}
 )
@@ -174,11 +186,37 @@ func accessTokenGet(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+func accessTokenRevoke(ctx context.Context, cmd *cli.Command) error {
+	var v atomic.AccessTokenRevokeInput
+
+	if err := BindFlagsFromContext(cmd, &v); err != nil {
+		return err
+	}
+
+	if cmd.Args().Len() > 0 {
+		id, err := atomic.ParseID(cmd.Args().First())
+		if err != nil {
+			return err
+		}
+		v.AccessTokenID = id
+	} else {
+		return fmt.Errorf("token_id is required")
+	}
+
+	if err := backend.AccessTokenRevoke(ctx, &v); err != nil {
+		return err
+	}
+
+	fmt.Println("Token revoked")
+
+	return nil
+}
+
 func accessTokenPrint(cmd *cli.Command, tokens []*atomic.AccessToken) {
 	PrintResult(
 		cmd,
 		tokens,
-		WithFields("id", "created_at", "type", "owner_id", "scope", "expires_at"),
+		WithFields("id", "created_at", "type", "owner_id", "scope", "expires_at", "revoked_at"),
 		WithVirtualField("owner_id", func(value any) string {
 			token := value.(atomic.AccessToken)
 			if token.UserID.Valid() {

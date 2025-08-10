@@ -288,12 +288,14 @@ func BindFlagsFromContext(cmd *cli.Command, target interface{}, skip ...string) 
 
 	skipSlice := util.MakeSlice(skip)
 
-	for _, name := range cmd.FlagNames() {
+	for _, flag := range cmd.Flags {
+		name := flag.Names()[0]
+
 		if skipSlice.Contains(name) {
 			continue
 		}
 
-		if !cmd.IsSet(name) {
+		if !cmd.IsSet(name) && util.IsZero(flag.Get()) {
 			continue
 		}
 

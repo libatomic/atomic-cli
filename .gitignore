@@ -14,6 +14,18 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
+# Local files
+.env
+*.csv
+*.json
+*.txt
+*.xml
+*.yaml
+*.yml
+*.jsonl
+*.jsonl.gz
+*.jsonl.bz2
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

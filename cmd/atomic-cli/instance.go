@@ -182,12 +182,20 @@ func instCreate(ctx context.Context, cmd *cli.Command) error {
 func instUpdate(ctx context.Context, cmd *cli.Command) error {
 	var input atomic.InstanceUpdateInput
 
-	id, err := atomic.ParseID(cmd.Args().First())
-	if err != nil {
-		return fmt.Errorf("failed to parse instance id: %w", err)
-	}
+	if cmd.IsSet("file") && cmd.Bool("file") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read instance update input file: %w", err)
+		}
 
-	input.InstanceID = id
+		if err := json.Unmarshal(content, &input); err != nil {
+			return fmt.Errorf("failed to unmarshal instance update input: %w", err)
+		}
+	} else if id, err := atomic.ParseID(cmd.Args().First()); err != nil {
+		return fmt.Errorf("failed to parse instance id: %w", err)
+	} else {
+		input.InstanceID = id
+	}
 
 	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
 		return err

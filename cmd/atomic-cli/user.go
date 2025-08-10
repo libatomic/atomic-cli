@@ -170,6 +170,60 @@ var (
 				Usage:     "delete a user",
 				ArgsUsage: "delete <user_id>",
 			},
+			{
+				Name:      "import",
+				Usage:     "import users from a file",
+				ArgsUsage: "import <file>",
+				Action:    userImport,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "mime_type",
+						Usage: "specify the mime type of the file to import",
+						Value: "text/csv",
+					},
+					&cli.StringFlag{
+						Name:  "source",
+						Usage: "specify the source file to import, i.e. atomic, ghost, substack, etc.",
+						Value: "atomic",
+					},
+					&cli.StringFlag{
+						Name:  "trial_plan_id",
+						Usage: "specify the trial plan id",
+					},
+					&cli.StringFlag{
+						Name:  "trial_price_id",
+						Usage: "specify the trial price id",
+					},
+					&cli.TimestampFlag{
+						Name:  "trial_end_at",
+						Usage: "specify the trial end at",
+					},
+					&cli.BoolFlag{
+						Name:  "trial_existing_users",
+						Usage: "specify if the trial should be applied to existing users",
+					},
+					&cli.BoolFlag{
+						Name:  "user_email_verified",
+						Usage: "specify if the user email should be verified",
+					},
+					&cli.StringFlag{
+						Name:  "source_params",
+						Usage: "paths to source params json",
+					},
+					&cli.StringFlag{
+						Name:  "import_audience_id",
+						Usage: "specify the import audience id",
+					},
+					&cli.StringFlag{
+						Name:  "import_audience_behavior",
+						Usage: "specify the import audience behavior (add_all_users, add_new_users, add_existing_users)",
+					},
+					&cli.BoolFlag{
+						Name:  "suppress_parent_triggers",
+						Usage: "suppress parent triggers",
+					},
+				},
+			},
 		},
 	}
 )
@@ -254,6 +308,55 @@ func userList(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	PrintResult(cmd, users, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
+
+	return nil
+}
+
+func userImport(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.UserImportInput
+
+	if err := BindFlagsFromContext(cmd, &input); err != nil {
+		return err
+	}
+
+	if cmd.Args().First() != "" {
+		var err error
+
+		input.Filename = cmd.Args().First()
+
+		file, err := os.Open(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to open user import input file: %w", err)
+		}
+
+		info, err := os.Stat(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to get user import input file size: %w", err)
+		}
+		input.Size = info.Size()
+
+		input.File = file
+	} else {
+		return fmt.Errorf("file is required")
+	}
+
+	if cmd.IsSet("source_params") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read user import input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input.SourceParams); err != nil {
+			return fmt.Errorf("failed to unmarshal user import input: %w", err)
+		}
+	}
+
+	job, err := backend.UserImport(ctx, &input)
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.Job{job}, WithFields("id", "type", "queue_status", "created_at"))
 
 	return nil
 }

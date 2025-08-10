@@ -1,10 +1,10 @@
 # atomic-cli
 
-A command-line interface for managing Atomic instances, applications, and users.
+A command-line interface for managing Atomic instances, applications, users, and options.
 
 ## Overview
 
-The `atomic-cli` is a powerful command-line tool for interacting with the Atomic platform. It provides comprehensive management capabilities for instances, applications, and users through an intuitive CLI interface.
+The `atomic-cli` is a powerful command-line tool for interacting with the Atomic platform. It provides comprehensive management capabilities for instances, applications, users, and options through an intuitive CLI interface.
 
 ## Installation
 
@@ -235,6 +235,8 @@ Manage users with the `user` (or `users`) command.
 atomic-cli user create <login> [options]
 ```
 
+Note: usernames (logins) must be valid email addresses.
+
 **Options:**
 - `--login` - Set the user login
 - `--password` - Set the user password
@@ -254,7 +256,7 @@ atomic-cli user create <login> [options]
 
 **Example:**
 ```bash
-atomic-cli user create
+atomic-cli user create \
   --password "securepassword123" \
   --roles "user,admin" \
   john.doe@example.com 
@@ -321,6 +323,78 @@ atomic-cli user delete <user-id>
 atomic-cli user delete user_1234567890abcdef
 ```
 
+### Option Management
+
+Manage options with the `option` (or `options`) command.
+
+#### List Options
+
+```bash
+atomic-cli option list [options]
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--protected` - Include protected options
+
+**Example:**
+```bash
+atomic-cli option list --instance_id inst_1234567890abcdef
+```
+
+#### Get Option
+
+```bash
+atomic-cli option get <name> [options]
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--protected` - Include protected options
+- `--value` - Print the option value JSON only
+
+**Example:**
+```bash
+atomic-cli option get email.smtp.host --value
+```
+
+#### Create or Update Option
+
+```bash
+atomic-cli option create <name> <value> [options]
+# Alias: option update
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--force` - Force update even if protected (requires partner role)
+- `--file` - Read full input (including name and value) from JSON file
+- `--validate` - Validate option value only
+
+**Examples:**
+```bash
+# Simple JSON value
+atomic-cli option create feature.flags '{"beta":true}'
+
+# From file containing full input
+atomic-cli option create --file option-input.json
+```
+
+#### Delete Option
+
+```bash
+atomic-cli option delete <name> [options]
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--force` - Force delete even if protected (requires partner role)
+
+**Example:**
+```bash
+atomic-cli option delete feature.flags --force
+```
+
 ## Output Formats
 
 The CLI supports multiple output formats controlled by the `--out-format` option:
@@ -367,6 +441,9 @@ atomic-cli application create --file app-config.json
 
 # Create user from file
 atomic-cli user create --file user-config.json
+
+# Create or update option from file (full input payload)
+atomic-cli option create --file option-input.json
 ```
 
 ## Examples
@@ -386,9 +463,9 @@ APP_ID=$(atomic-cli application create \
   --instance_id $INSTANCE_ID \
   --out-format json | jq -r '.[0].id')
 
-# 3. Create a user
-USER_ID=$(atomic-cli user create john.doe \
-  --email "john@example.com" \
+# 3. Create a user (login must be a valid email)
+USER_ID=$(atomic-cli user create john.doe@example.com \
+  --email "john.doe@example.com" \
   --instance_id $INSTANCE_ID \
   --out-format json | jq -r '.[0].id')
 

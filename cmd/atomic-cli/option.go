@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
@@ -63,6 +64,39 @@ var (
 					&cli.BoolFlag{
 						Name:  "value",
 						Usage: "Print the value",
+					},
+				},
+			},
+			{
+				Name:      "create",
+				Aliases:   []string{"update"},
+				Usage:     "Set an option",
+				ArgsUsage: "<name> <value>",
+				Action:    optionUpdate,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "force",
+						Usage: "Force the update, overrides the protected flag (requires partner role)",
+					},
+					&cli.BoolFlag{
+						Name:  "file",
+						Usage: "Create or Update the option value from a json file",
+					},
+					&cli.BoolFlag{
+						Name:  "validate",
+						Usage: "Validate the option value",
+					},
+				},
+			},
+			{
+				Name:      "delete",
+				Usage:     "Delete an option",
+				ArgsUsage: "<name>",
+				Action:    optionDelete,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "force",
+						Usage: "Force the delete, overrides the protected flag (requires partner role)",
 					},
 				},
 			},
@@ -143,6 +177,77 @@ func optionGet(ctx context.Context, cmd *cli.Command) error {
 	fmt.Println("Value:")
 
 	fmt.Println(string(out))
+
+	return nil
+}
+
+func optionUpdate(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.OptionUpdateInput
+
+	if cmd.IsSet("file") && cmd.Bool("file") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read option update input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input); err != nil {
+			return fmt.Errorf("failed to unmarshal option update input: %w", err)
+		}
+	} else {
+		input.Name = cmd.Args().First()
+	}
+
+	if input.Name == "" {
+		return fmt.Errorf("option name is required")
+	}
+
+	if cmd.IsSet("force") && cmd.Bool("force") {
+		input.Force = ptr.Bool(true)
+	}
+
+	if cmd.IsSet("validate") && cmd.Bool("validate") {
+		input.ValidateOnly = true
+	}
+
+	opt, err := backend.OptionUpdate(ctx, &input)
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.Option{opt},
+		WithFields("name", "protected", "read_only", "updated_at"))
+
+	fmt.Println("Value:")
+
+	val, err := json.MarshalIndent(opt.Value, "", "\t")
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(string(val))
+
+	return nil
+}
+
+func optionDelete(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.OptionRemoveInput
+
+	if cmd.Args().Len() == 0 {
+		return fmt.Errorf("option name is required")
+	}
+
+	input.Name = cmd.Args().First()
+
+	if cmd.IsSet("force") && cmd.Bool("force") {
+		input.Force = ptr.Bool(true)
+	}
+
+	if err := backend.OptionRemove(ctx, &input); err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.Option{},
+		WithFields("name", "protected", "read_only", "updated_at"))
 
 	return nil
 }

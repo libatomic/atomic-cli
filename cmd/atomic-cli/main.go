@@ -33,8 +33,6 @@ import (
 	"github.com/libatomic/atomic/pkg/util"
 	"github.com/spf13/cast"
 	altsrc "github.com/urfave/cli-altsrc/v3"
-	toml "github.com/urfave/cli-altsrc/v3/toml"
-	"github.com/urfave/cli-altsrc/v3/yaml"
 	"github.com/urfave/cli/v3"
 )
 
@@ -102,8 +100,8 @@ func main() {
 			Usage: "specify the access token",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_ACCESS_TOKEN"),
-				toml.TOML(fmt.Sprintf("%s.access_token", profile), altsrc.NewStringPtrSourcer(&creds)),
-				yaml.YAML(fmt.Sprintf("%s.access_token", profile), altsrc.NewStringPtrSourcer(&creds)),
+				TOML(func() string { return fmt.Sprintf("%s.access_token", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.access_token", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
 		},
 		&cli.StringFlag{
@@ -111,8 +109,8 @@ func main() {
 			Usage: "specify the client id",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_CLIENT_ID"),
-				toml.TOML(fmt.Sprintf("%s.client_id", profile), altsrc.NewStringPtrSourcer(&creds)),
-				yaml.YAML(fmt.Sprintf("%s.client_id", profile), altsrc.NewStringPtrSourcer(&creds)),
+				TOML(func() string { return fmt.Sprintf("%s.client_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.client_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
 		},
 		&cli.StringFlag{
@@ -120,8 +118,8 @@ func main() {
 			Usage: "specify the client secret",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_CLIENT_SECRET"),
-				toml.TOML(fmt.Sprintf("%s.client_secret", profile), altsrc.NewStringPtrSourcer(&creds)),
-				yaml.YAML(fmt.Sprintf("%s.client_secret", profile), altsrc.NewStringPtrSourcer(&creds)),
+				TOML(func() string { return fmt.Sprintf("%s.client_secret", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.client_secret", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
 		},
 		&cli.StringFlag{
@@ -130,8 +128,8 @@ func main() {
 			Aliases: []string{"h"},
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_API_HOST"),
-				toml.TOML(fmt.Sprintf("%s.host", profile), altsrc.NewStringPtrSourcer(&creds)),
-				yaml.YAML(fmt.Sprintf("%s.host", profile), altsrc.NewStringPtrSourcer(&creds)),
+				TOML(func() string { return fmt.Sprintf("%s.host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
 			Value: client.DefaultAPIHost,
 		},

@@ -3,6 +3,7 @@ module github.com/libatomic/atomic-cli
 go 1.24.1
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/apex/log v1.9.0
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
 	github.com/libatomic/atomic v1.1.10-alpha.8
@@ -10,11 +11,11 @@ require (
 	github.com/spf13/cast v1.9.2
 	github.com/urfave/cli-altsrc/v3 v3.0.1
 	github.com/urfave/cli/v3 v3.3.8
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
 	github.com/Masterminds/semver v1.5.0 // indirect
 	github.com/Masterminds/sprig v2.22.0+incompatible // indirect

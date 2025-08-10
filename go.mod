@@ -153,3 +153,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	jaytaylor.com/html2text v0.0.0-20200412013138-3577fbdbcff7 // indirect
 )
+
+replace github.com/vanng822/go-premailer => github.com/libatomic/go-premailer v1.9.2-atomic

@@ -5,8 +5,8 @@ go 1.24.1
 require (
 	github.com/apex/log v1.9.0
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
-	github.com/libatomic/atomic v1.1.10
-	github.com/libatomic/atomic-go v0.0.0-20250810015225-22db9d50eae1
+	github.com/libatomic/atomic v1.1.10-alpha.8
+	github.com/libatomic/atomic-go v0.0.1
 	github.com/spf13/cast v1.9.2
 	github.com/urfave/cli/v3 v3.3.8
 )
@@ -60,7 +60,6 @@ require (
 	github.com/go-openapi/errors v0.20.0 // indirect
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
-	github.com/go-test/deep v1.1.1 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
@@ -69,7 +68,7 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/css v1.0.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gorilla/mux v1.8.0 // indirect
 	github.com/gorilla/schema v1.2.1 // indirect
 	github.com/gorilla/securecookie v1.1.1 // indirect
@@ -90,6 +89,7 @@ require (
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
 	github.com/lann/ps v0.0.0-20150810152359-62de8c46ede0 // indirect
 	github.com/lib/pq v1.10.9 // indirect
+	github.com/libatomic/go-premailer/v2 v2.0.4 // indirect
 	github.com/libatomic/squirrel v1.0.0 // indirect
 	github.com/libatomic/structs v1.0.1 // indirect
 	github.com/mafredri/cdp v0.34.1 // indirect
@@ -130,9 +130,9 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tkuchiki/go-timezone v0.2.0 // indirect
 	github.com/toorop/go-dkim v0.0.0-20250226130143-9025cce95817 // indirect
+	github.com/trubitsyn/go-zero-width v1.0.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/vanng822/css v0.1.0 // indirect
-	github.com/vanng822/go-premailer v1.9.0 // indirect
+	github.com/vanng822/css v1.0.1 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect

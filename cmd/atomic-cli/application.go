@@ -83,13 +83,6 @@ var (
 		Name:    "application",
 		Aliases: []string{"app"},
 		Usage:   "manage applications",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "instance_id",
-				Usage:   "set the instance id",
-				Aliases: []string{"i"},
-			},
-		},
 		Commands: []*cli.Command{
 			{
 				Name:   "create",

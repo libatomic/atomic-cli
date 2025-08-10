@@ -38,11 +38,18 @@ type (
 	PrintResultOptions struct {
 		Fields          []string
 		FieldFormatters map[string]FieldFormatterFunc
+		VirtualFields   map[string]FieldFormatterFunc
 	}
 
 	PrintResultOption func(o *PrintResultOptions)
 
 	FieldFormatterFunc func(v any) string
+
+	MetadataFlag = cli.FlagBase[atomic.Metadata, cli.NoConfig, metadataValue]
+
+	metadataValue struct {
+		destination atomic.Metadata
+	}
 )
 
 var (
@@ -98,6 +105,11 @@ func main() {
 			Aliases: []string{"f"},
 			Usage:   "specify the fields to print",
 		},
+		&cli.StringFlag{
+			Name:    "instance_id",
+			Usage:   "set the instance id for the command",
+			Aliases: []string{"i", "instance"},
+		},
 	}
 
 	mainCmd.Commands = []*cli.Command{
@@ -105,6 +117,7 @@ func main() {
 		appCmd,
 		userCmd,
 		optionCmd,
+		accessTokenCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
@@ -138,6 +151,7 @@ func PrintResult[T any](cmd *cli.Command, v []T, options ...PrintResultOption) b
 
 	opts := PrintResultOptions{
 		FieldFormatters: make(map[string]FieldFormatterFunc),
+		VirtualFields:   make(map[string]FieldFormatterFunc),
 	}
 
 	for _, o := range options {
@@ -208,6 +222,12 @@ func PrintTable[T any](slice []T, opts PrintResultOptions) error {
 
 		for i, path := range fieldPaths {
 			v := val
+
+			if f, ok := opts.VirtualFields[path[0]]; ok {
+				table[path[0]] = append(table[path[0]], f(v.Interface()))
+				continue
+			}
+
 			for _, key := range path {
 				if v.Kind() == reflect.Ptr {
 					if v.IsNil() {
@@ -321,4 +341,52 @@ func WithFieldFormatter(field string, formatter FieldFormatterFunc) PrintResultO
 	return func(o *PrintResultOptions) {
 		o.FieldFormatters[field] = formatter
 	}
+}
+
+func WithVirtualField(field string, formatter FieldFormatterFunc) PrintResultOption {
+	return func(o *PrintResultOptions) {
+		o.VirtualFields[field] = formatter
+	}
+}
+
+func (k *metadataValue) Set(value string) error {
+	if k.destination == nil {
+		k.destination = make(atomic.Metadata)
+	}
+	parts := strings.SplitN(value, "=", 1)
+	k.destination[parts[0]] = parts[1]
+	return nil
+}
+
+func (k *metadataValue) String() string {
+	var s string
+
+	for k, v := range k.destination {
+		s += k + "=" + cast.ToString(v) + ";"
+	}
+	return s
+}
+
+func (k *metadataValue) Get() any {
+	return k.destination
+}
+
+func (k *metadataValue) IsSet() bool {
+	return len(k.destination) > 0
+}
+
+func (k metadataValue) Create(val atomic.Metadata, p *atomic.Metadata, c cli.NoConfig) cli.Value {
+	return &metadataValue{
+		destination: val,
+	}
+}
+
+func (k metadataValue) ToString(val atomic.Metadata) string {
+	s := ""
+
+	for k, v := range val {
+		s += k + "=" + cast.ToString(v) + ";"
+	}
+
+	return s
 }

@@ -33,12 +33,6 @@ var (
 		Name:    "option",
 		Aliases: []string{"options"},
 		Usage:   "Manage options",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "instance_id",
-				Usage: "The instance id",
-			},
-		},
 		Commands: []*cli.Command{
 			{
 				Name:   "list",

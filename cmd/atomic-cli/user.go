@@ -99,13 +99,6 @@ var (
 		Name:    "user",
 		Aliases: []string{"users"},
 		Usage:   "manage users",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "instance_id",
-				Usage:   "set the instance",
-				Aliases: []string{"i", "instance"},
-			},
-		},
 		Commands: []*cli.Command{
 			{
 				Name:      "create",

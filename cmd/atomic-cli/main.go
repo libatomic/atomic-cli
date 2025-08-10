@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"reflect"
 	"strings"
 
@@ -31,6 +32,9 @@ import (
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/util"
 	"github.com/spf13/cast"
+	altsrc "github.com/urfave/cli-altsrc/v3"
+	toml "github.com/urfave/cli-altsrc/v3/toml"
+	"github.com/urfave/cli-altsrc/v3/yaml"
 	"github.com/urfave/cli/v3"
 )
 
@@ -59,7 +63,18 @@ var (
 	Version = "1.1.10-dev"
 )
 
+const (
+	DefaultProfile = "default"
+)
+
 func main() {
+	profile := DefaultProfile
+
+	usr, _ := user.Current()
+	dir := usr.HomeDir
+
+	creds := dir + "/.atomic/credentials"
+
 	mainCmd = &cli.Command{
 		Name:               "atomic-cli",
 		Usage:              "The atomic cli",
@@ -69,25 +84,56 @@ func main() {
 
 	mainCmd.Flags = []cli.Flag{
 		&cli.StringFlag{
-			Name:    "access-token",
-			Usage:   "specify the access token",
-			Sources: cli.EnvVars("ATOMIC_ACCESS_TOKEN"),
+			Name:        "profile",
+			Aliases:     []string{"p"},
+			Usage:       "specify the profile",
+			Value:       DefaultProfile,
+			Destination: &profile,
 		},
 		&cli.StringFlag{
-			Name:    "client-id",
-			Usage:   "specify the client id",
-			Sources: cli.EnvVars("ATOMIC_CLIENT_ID"),
+			Name:        "credentials",
+			Aliases:     []string{"c"},
+			Usage:       "specify the credentials file",
+			Value:       creds,
+			Destination: &creds,
 		},
 		&cli.StringFlag{
-			Name:    "client-secret",
-			Usage:   "specify the client secret",
-			Sources: cli.EnvVars("ATOMIC_CLIENT_SECRET"),
+			Name:  "access_token",
+			Usage: "specify the access token",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_ACCESS_TOKEN"),
+				toml.TOML(fmt.Sprintf("%s.access_token", profile), altsrc.NewStringPtrSourcer(&creds)),
+				yaml.YAML(fmt.Sprintf("%s.access_token", profile), altsrc.NewStringPtrSourcer(&creds)),
+			),
+		},
+		&cli.StringFlag{
+			Name:  "client_id",
+			Usage: "specify the client id",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_CLIENT_ID"),
+				toml.TOML(fmt.Sprintf("%s.client_id", profile), altsrc.NewStringPtrSourcer(&creds)),
+				yaml.YAML(fmt.Sprintf("%s.client_id", profile), altsrc.NewStringPtrSourcer(&creds)),
+			),
+		},
+		&cli.StringFlag{
+			Name:  "client_secret",
+			Usage: "specify the client secret",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_CLIENT_SECRET"),
+				toml.TOML(fmt.Sprintf("%s.client_secret", profile), altsrc.NewStringPtrSourcer(&creds)),
+				yaml.YAML(fmt.Sprintf("%s.client_secret", profile), altsrc.NewStringPtrSourcer(&creds)),
+			),
 		},
 		&cli.StringFlag{
 			Name:    "host",
 			Usage:   "specify the host",
-			Sources: cli.EnvVars("ATOMIC_API_HOST"),
-			Value:   client.DefaultAPIHost,
+			Aliases: []string{"h"},
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_API_HOST"),
+				toml.TOML(fmt.Sprintf("%s.host", profile), altsrc.NewStringPtrSourcer(&creds)),
+				yaml.YAML(fmt.Sprintf("%s.host", profile), altsrc.NewStringPtrSourcer(&creds)),
+			),
+			Value: client.DefaultAPIHost,
 		},
 		&cli.BoolFlag{
 			Name:    "silent",
@@ -123,13 +169,11 @@ func main() {
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 		opts := []client.ApiOption{}
 
-		if cmd.IsSet("host") {
-			opts = append(opts, client.WithHost(cmd.String("host")))
-		}
+		opts = append(opts, client.WithHost(cmd.String("host")))
 
-		if cmd.IsSet("client-id") && cmd.IsSet("client-secret") {
-			opts = append(opts, client.WithClientCredentials(cmd.String("client-id"), cmd.String("client-secret")))
-		} else if cmd.IsSet("access-token") {
+		if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
+			opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
+		} else if cmd.IsSet("access_token") {
 			opts = append(opts, client.WithToken(cmd.String("access-token")))
 		}
 

@@ -8,11 +8,13 @@ require (
 	github.com/libatomic/atomic v1.1.10-alpha.8
 	github.com/libatomic/atomic-go v0.0.1
 	github.com/spf13/cast v1.9.2
+	github.com/urfave/cli-altsrc/v3 v3.0.1
 	github.com/urfave/cli/v3 v3.3.8
 )
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
 	github.com/Masterminds/semver v1.5.0 // indirect
 	github.com/Masterminds/sprig v2.22.0+incompatible // indirect

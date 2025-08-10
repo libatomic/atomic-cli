@@ -13,6 +13,26 @@ The `atomic-cli` is a powerful command-line tool for interacting with the Atomic
 - Go 1.24.1 or later
 - Access to an Atomic API endpoint
 
+### Install via Homebrew (macOS/Linux)
+
+```bash
+brew tap libatomic/tap
+brew install libatomic/tap/atomic-cli
+
+# Upgrade later
+brew upgrade libatomic/tap/atomic-cli
+```
+
+### Download prebuilt binaries
+
+Prebuilt binaries are available on the GitHub releases page: [libatomic/atomic-cli releases](https://github.com/libatomic/atomic-cli/releases).
+
+Steps:
+
+- Download the archive for your OS/architecture
+- Extract and move the `atomic-cli` binary into a directory on your `PATH` (for example `/usr/local/bin`)
+- Make it executable if needed: `chmod +x /usr/local/bin/atomic-cli`
+
 ### Building from Source
 
 ```bash
@@ -31,6 +51,47 @@ The CLI supports configuration through environment variables or command-line fla
 - `ATOMIC_CLIENT_ID` - Your client ID for OAuth2 client credentials flow
 - `ATOMIC_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
 - `ATOMIC_API_HOST` - The Atomic API host (defaults to the client default)
+
+### Credentials file (TOML or YAML)
+
+You can also provide credentials in a config file. By default the CLI looks for `~/.atomic/credentials` and supports either TOML or YAML.
+
+- Default path: `~/.atomic/credentials`
+- Override path: use `--credentials` (alias `-c`)
+- Supported keys under the `default` section: `access_token`, `client_id`, `client_secret`, `host`
+- Precedence: flags > environment variables > credentials file
+
+TOML example (`~/.atomic/credentials`):
+
+```toml
+[default]
+access_token = "at_XXXXXXXXXXXXXXXX"
+# Alternatively use client credentials:
+# client_id = "your-client-id"
+# client_secret = "your-client-secret"
+host = "https://api.atomic.example.com"
+```
+
+YAML example (`~/.atomic/credentials`):
+
+```yaml
+default:
+  access_token: "at_XXXXXXXXXXXXXXXX"
+  # Alternatively use client credentials:
+  # client_id: "your-client-id"
+  # client_secret: "your-client-secret"
+  host: "https://api.atomic.example.com"
+```
+
+Usage:
+
+```bash
+# Uses default path
+atomic-cli instance list
+
+# Specify a custom credentials file
+atomic-cli --credentials /path/to/credentials instance list
+```
 
 ### Authentication
 

@@ -88,6 +88,12 @@ var (
 				},
 				Action: accessTokenCreate,
 			},
+			{
+				Name:      "get",
+				Usage:     "get an access token",
+				ArgsUsage: "<token_id>",
+				Action:    accessTokenGet,
+			},
 		},
 	}
 )
@@ -118,9 +124,60 @@ func accessTokenCreate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	accessTokenPrint(cmd, []*atomic.AccessToken{token})
+
+	return nil
+}
+
+func accessTokenGet(ctx context.Context, cmd *cli.Command) error {
+	var v atomic.AccessTokenGetInput
+
+	if err := BindFlagsFromContext(cmd, &v); err != nil {
+		return err
+	}
+
+	if cmd.Args().Len() > 0 {
+		id, err := atomic.ParseID(cmd.Args().First())
+		if err != nil {
+			return err
+		}
+		v.AccessTokenID = &id
+	} else {
+		return fmt.Errorf("token_id is required")
+	}
+
+	token, err := backend.AccessTokenGet(ctx, &v)
+	if err != nil {
+		return err
+	}
+
+	accessTokenPrint(cmd, []*atomic.AccessToken{token})
+
+	fmt.Println("Claims:")
+
+	data, err := json.MarshalIndent(token.Claims, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+
+	fmt.Println("Entitlements:")
+
+	if len(token.Entitlements) > 0 {
+		data, err = json.MarshalIndent(token.Entitlements, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+	}
+
+	return nil
+}
+
+func accessTokenPrint(cmd *cli.Command, tokens []*atomic.AccessToken) {
 	PrintResult(
 		cmd,
-		[]*atomic.AccessToken{token},
+		tokens,
 		WithFields("id", "created_at", "type", "owner_id", "scope", "expires_at"),
 		WithVirtualField("owner_id", func(value any) string {
 			token := value.(atomic.AccessToken)
@@ -150,6 +207,4 @@ func accessTokenCreate(ctx context.Context, cmd *cli.Command) error {
 			return strings.Join(token.Claims.Scope(), ",")
 		}),
 	)
-
-	return nil
 }

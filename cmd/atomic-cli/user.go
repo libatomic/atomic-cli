@@ -24,6 +24,7 @@ import (
 	"os"
 
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
 
@@ -112,11 +113,24 @@ var (
 				Usage:     "update a user",
 				Flags:     userUpdateFlags,
 				ArgsUsage: "update <user_id>",
+				Action:    userUpdate,
 			},
 			{
 				Name:      "get",
 				Usage:     "get a user",
 				ArgsUsage: "get <user_id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "stripe_customer",
+						Aliases: []string{"sc"},
+						Usage:   "get by stripe customer",
+					},
+					&cli.StringSliceFlag{
+						Name:  "expand",
+						Usage: "expand the user",
+					},
+				},
+				Action: userGet,
 			},
 			{
 				Name:      "list",
@@ -284,6 +298,120 @@ func userCreate(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+func userUpdate(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.UserUpdateInput
+
+	if cmd.IsSet("file") && cmd.Bool("file") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read user update input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input); err != nil {
+			return fmt.Errorf("failed to unmarshal user update input: %w", err)
+		}
+	}
+
+	if err := BindFlagsFromContext(cmd, &input, "profile", "metadata", "preferences"); err != nil {
+		return err
+	}
+
+	if cmd.IsSet("profile") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read user create input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input.Profile); err != nil {
+			return fmt.Errorf("failed to unmarshal user create input: %w", err)
+		}
+	}
+
+	if cmd.IsSet("metadata") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read user create input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input.Metadata); err != nil {
+			return fmt.Errorf("failed to unmarshal user create input: %w", err)
+		}
+	}
+
+	if cmd.IsSet("preferences") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read user create input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input.Preferences); err != nil {
+			return fmt.Errorf("failed to unmarshal user create input: %w", err)
+		}
+	}
+
+	user, err := backend.UserUpdate(ctx, &input)
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.User{user}, WithFields("id", "login", "created_at", "updated_at", "roles", "instance_id"))
+
+	return nil
+}
+
+func userGet(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.UserGetInput
+
+	if cmd.NArg() < 1 {
+		return fmt.Errorf("user id is required")
+	}
+
+	var expand atomic.ExpandFields
+
+	if expand := cmd.StringSlice("expand"); len(expand) > 0 {
+		input.Expand = expand
+	}
+
+	expand = expand.Append("stripe_account", "roles", "permissions").Unique()
+
+	if cmd.IsSet("stripe_customer") {
+		input := &atomic.UserListInput{
+			StripeCustomer: ptr.String(cmd.Args().First()),
+			Limit:          ptr.Uint64(1),
+			Expand:         expand,
+		}
+
+		users, err := backend.UserList(ctx, input)
+		if err != nil {
+			return err
+		}
+
+		if len(users) == 0 {
+			return fmt.Errorf("user not found")
+		}
+
+		PrintResult(cmd, users, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
+
+		return nil
+	}
+
+	id, err := atomic.ParseID(cmd.Args().First())
+	if err != nil {
+		return fmt.Errorf("failed to parse application id: %w", err)
+	}
+
+	input.UserID = &id
+
+	user, err := backend.UserGet(ctx, &input)
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.User{user}, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
+
+	return nil
+}
+
 func userList(ctx context.Context, cmd *cli.Command) error {
 	var input atomic.UserListInput
 
@@ -291,9 +419,11 @@ func userList(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if !cmd.IsSet("expand") {
-		input.Expand = atomic.ExpandFields{"roles", "permissions", "stripe_account"}
+	if expand := cmd.StringSlice("expand"); len(expand) > 0 {
+		input.Expand = expand
 	}
+
+	input.Expand = input.Expand.Append("stripe_account", "roles", "permissions").Unique()
 
 	users, err := backend.UserList(ctx, &input)
 	if err != nil {

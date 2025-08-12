@@ -177,6 +177,7 @@ func main() {
 		userCmd,
 		optionCmd,
 		accessTokenCmd,
+		dbCommand,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

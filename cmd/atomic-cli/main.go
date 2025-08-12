@@ -97,19 +97,14 @@ func main() {
 			Destination: &creds,
 		},
 		&cli.StringFlag{
-			Name:  "db_host",
+			Name:  "db_source",
 			Usage: "specify the db host",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_DB_HOST"),
-				TOML(func() string { return fmt.Sprintf("%s.db_host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.db_host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				cli.EnvVar("DB_SOURCE"),
+				TOML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
 			Hidden: true,
-		},
-		&cli.StringFlag{
-			Name:    "db-port",
-			Usage:   "specify the db port",
-			Sources: cli.EnvVars("DB_PORT"),
 		},
 		&cli.StringFlag{
 			Name:  "access_token",
@@ -193,6 +188,8 @@ func main() {
 			}
 
 			backend = a
+
+			log.Infof("connected to datastore %s", cmd.String("db_source"))
 
 			return ctx, nil
 		}

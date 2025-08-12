@@ -120,10 +120,15 @@ var (
 				Usage:     "get a user",
 				ArgsUsage: "get <user_id>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{
+					&cli.BoolFlag{
 						Name:    "stripe_customer",
-						Aliases: []string{"sc"},
-						Usage:   "get by stripe customer",
+						Aliases: []string{"stripe", "sc"},
+						Usage:   "get by stripe customer id",
+					},
+					&cli.BoolFlag{
+						Name:    "subject",
+						Aliases: []string{"sub"},
+						Usage:   "get by subject",
 					},
 					&cli.StringSliceFlag{
 						Name:  "expand",
@@ -374,11 +379,18 @@ func userGet(ctx context.Context, cmd *cli.Command) error {
 
 	expand = expand.Append("stripe_account", "roles", "permissions").Unique()
 
-	if cmd.IsSet("stripe_customer") {
+	if cmd.Bool("stripe_customer") || cmd.Bool("subject") {
 		input := &atomic.UserListInput{
-			StripeCustomer: ptr.String(cmd.Args().First()),
-			Limit:          ptr.Uint64(1),
-			Expand:         expand,
+			Limit:  ptr.Uint64(1),
+			Expand: expand,
+		}
+
+		if cmd.Bool("stripe_customer") {
+			input.StripeCustomer = ptr.String(cmd.Args().First())
+		}
+
+		if cmd.Bool("subject") {
+			input.Subject = ptr.String(cmd.Args().First())
 		}
 
 		users, err := backend.UserList(ctx, input)
@@ -390,7 +402,16 @@ func userGet(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("user not found")
 		}
 
-		PrintResult(cmd, users, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
+		PrintResult(cmd, users,
+			WithSingleValue(true),
+			WithFields("id", "subject", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"),
+			WithVirtualField("subject", func(v any) string {
+				if user, ok := v.(atomic.User); ok {
+					return user.ProfileVal.Subject
+				}
+
+				return ""
+			}))
 
 		return nil
 	}
@@ -407,7 +428,16 @@ func userGet(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.User{user}, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
+	PrintResult(cmd, []*atomic.User{user},
+		WithSingleValue(true),
+		WithFields("id", "subject", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"),
+		WithVirtualField("subject", func(v any) string {
+			if user, ok := v.(atomic.User); ok {
+				return user.ProfileVal.Subject
+			}
+
+			return ""
+		}))
 
 	return nil
 }
@@ -430,7 +460,15 @@ func userList(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, users, WithFields("id", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"))
+	PrintResult(cmd, users,
+		WithFields("id", "subject", "login", "created_at", "roles", "instance_id", "stripe_account.stripe_customer"),
+		WithVirtualField("subject", func(v any) string {
+			if user, ok := v.(atomic.User); ok {
+				return user.ProfileVal.Subject
+			}
+
+			return ""
+		}))
 
 	return nil
 }

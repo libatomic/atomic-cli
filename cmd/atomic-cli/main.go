@@ -43,6 +43,7 @@ type (
 		Fields          []string
 		FieldFormatters map[string]FieldFormatterFunc
 		VirtualFields   map[string]FieldFormatterFunc
+		SingleValue     bool
 	}
 
 	PrintResultOption func(o *PrintResultOptions)
@@ -157,7 +158,12 @@ func main() {
 			Name:    "out-format",
 			Aliases: []string{"o"},
 			Usage:   "specify the output format",
-			Value:   "table",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_OUT_FORMAT"),
+				TOML(func() string { return fmt.Sprintf("%s.out_format", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.out_format", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
+			Value: "table",
 		},
 		&cli.StringSliceFlag{
 			Name:    "fields",
@@ -236,15 +242,30 @@ func PrintResult[T any](cmd *cli.Command, v []T, options ...PrintResultOption) b
 
 	switch cmd.String("out-format") {
 	case "json":
-		out, err := json.Marshal(v)
+		var out []byte
+		var err error
+
+		if opts.SingleValue {
+			out, err = json.Marshal(v[0])
+		} else {
+			out, err = json.Marshal(v)
+		}
 		if err != nil {
 			fmt.Println(err.Error())
 		}
 		fmt.Println(string(out))
+
 		return true
 
 	case "json-pretty":
-		out, err := json.MarshalIndent(v, "", "\t")
+		var out []byte
+		var err error
+
+		if opts.SingleValue {
+			out, err = json.MarshalIndent(v[0], "", "\t")
+		} else {
+			out, err = json.MarshalIndent(v, "", "\t")
+		}
 		if err != nil {
 			fmt.Println(err.Error())
 		}
@@ -410,6 +431,12 @@ func BindFlagsFromContext(cmd *cli.Command, target interface{}, skip ...string) 
 func WithFields(fields ...string) PrintResultOption {
 	return func(o *PrintResultOptions) {
 		o.Fields = fields
+	}
+}
+
+func WithSingleValue(singleValue bool) PrintResultOption {
+	return func(o *PrintResultOptions) {
+		o.SingleValue = singleValue
 	}
 }
 

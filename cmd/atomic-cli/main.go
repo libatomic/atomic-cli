@@ -30,6 +30,7 @@ import (
 	"github.com/lensesio/tableprinter"
 	client "github.com/libatomic/atomic-go"
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/db"
 	"github.com/libatomic/atomic/pkg/util"
 	"github.com/spf13/cast"
 	altsrc "github.com/urfave/cli-altsrc/v3"
@@ -94,6 +95,21 @@ func main() {
 			Usage:       "specify the credentials file",
 			Value:       creds,
 			Destination: &creds,
+		},
+		&cli.StringFlag{
+			Name:  "db_host",
+			Usage: "specify the db host",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_DB_HOST"),
+				TOML(func() string { return fmt.Sprintf("%s.db_host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.db_host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
+			Hidden: true,
+		},
+		&cli.StringFlag{
+			Name:    "db-port",
+			Usage:   "specify the db port",
+			Sources: cli.EnvVars("DB_PORT"),
 		},
 		&cli.StringFlag{
 			Name:  "access_token",
@@ -165,6 +181,22 @@ func main() {
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		if cmd.IsSet("db_source") {
+			conn, err := db.Connect(ctx, cmd.String("db_source"))
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to datastore %s: %w", cmd.String("db_source"), err)
+			}
+
+			a, err := atomic.New(conn)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize atomic: %w", err)
+			}
+
+			backend = a
+
+			return ctx, nil
+		}
+
 		opts := []client.ApiOption{}
 
 		opts = append(opts, client.WithHost(cmd.String("host")))

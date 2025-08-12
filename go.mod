@@ -6,7 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/apex/log v1.9.0
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
-	github.com/libatomic/atomic v1.1.10-alpha.11
+	github.com/libatomic/atomic v1.1.10-alpha.14
 	github.com/libatomic/atomic-go v0.0.6
 	github.com/spf13/cast v1.9.2
 	github.com/urfave/cli-altsrc/v3 v3.0.1

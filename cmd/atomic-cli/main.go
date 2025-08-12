@@ -100,7 +100,7 @@ func main() {
 			Name:  "db_source",
 			Usage: "specify the db host",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("DB_SOURCE"),
+				cli.EnvVar("ATOMIC_DB_SOURCE"),
 				TOML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 				YAML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),

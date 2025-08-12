@@ -25,6 +25,7 @@ import (
 	"os/user"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/apex/log"
 	"github.com/lensesio/tableprinter"
@@ -59,7 +60,9 @@ var (
 	backend atomic.Backend
 	mainCmd *cli.Command
 
-	Version = "1.1.10-dev"
+	Version = "dev"
+	Commit  = "dev"
+	Date    = time.Now().Format(time.RFC3339)
 )
 
 const (
@@ -77,7 +80,8 @@ func main() {
 	mainCmd = &cli.Command{
 		Name:               "atomic-cli",
 		Usage:              "The atomic cli",
-		Version:            Version,
+		Version:            fmt.Sprintf("%s+%s", Version, Commit),
+		Copyright:          fmt.Sprintf("Copyright (c) 2026 Passport, LLC. [%s]", Date),
 		SliceFlagSeparator: "++",
 	}
 

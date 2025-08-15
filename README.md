@@ -51,6 +51,7 @@ The CLI supports configuration through environment variables or command-line fla
 - `ATOMIC_CLIENT_ID` - Your client ID for OAuth2 client credentials flow
 - `ATOMIC_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
 - `ATOMIC_API_HOST` - The Atomic API host (defaults to the client default)
+- `ATOMIC_DB_SOURCE` - Used for direct connection to the atomic db rather than API
 
 ### Credentials file (TOML or YAML)
 

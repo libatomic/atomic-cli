@@ -32,6 +32,7 @@ import (
 	client "github.com/libatomic/atomic-go"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/db"
+	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/libatomic/atomic/pkg/util"
 	"github.com/spf13/cast"
 	altsrc "github.com/urfave/cli-altsrc/v3"
@@ -60,6 +61,7 @@ type (
 var (
 	backend atomic.Backend
 	mainCmd *cli.Command
+	inst    *atomic.Instance
 
 	Version = "dev"
 	Commit  = "dev"
@@ -106,6 +108,7 @@ func main() {
 			Usage: "specify the db host",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_DB_SOURCE"),
+				cli.EnvVar("DB_SOURCE"),
 				TOML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 				YAML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
@@ -184,6 +187,7 @@ func main() {
 		optionCmd,
 		accessTokenCmd,
 		dbCommand,
+		partnerCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
@@ -216,6 +220,24 @@ func main() {
 		}
 
 		backend = client.New(opts...)
+
+		if cmd.IsSet("instance_id") {
+			var input atomic.InstanceGetInput
+			var err error
+
+			if id, err := atomic.ParseID(cmd.String("instance_id")); err == nil {
+				input.InstanceID = &id
+			} else {
+				input.Name = ptr.String(cmd.String("instance_id"))
+			}
+
+			inst, err = backend.InstanceGet(ctx, &input)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get instance %s: %w", cmd.String("instance_id"), err)
+			}
+
+			log.Infof("using instance %s", inst.Name)
+		}
 
 		return ctx, nil
 	}

@@ -151,7 +151,7 @@ func instCreate(ctx context.Context, cmd *cli.Command) error {
 		input.Name = cmd.Args().First()
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "name", "title", "description", "session_key", "session_cookie", "session_lifetime", "origins", "domains"); err != nil {
 		return err
 	}
 
@@ -197,7 +197,7 @@ func instUpdate(ctx context.Context, cmd *cli.Command) error {
 		input.InstanceID = id
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "name", "title", "description", "session_key", "session_cookie", "session_lifetime", "origins", "domains"); err != nil {
 		return err
 	}
 

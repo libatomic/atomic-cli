@@ -188,10 +188,11 @@ func main() {
 		accessTokenCmd,
 		dbCommand,
 		partnerCmd,
+		assetCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
-		if cmd.IsSet("db_source") {
+		if cmd.IsSet("db_source") && cmd.String("db_source") != "" {
 			conn, err := db.Connect(ctx, cmd.String("db_source"))
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to datastore %s: %w", cmd.String("db_source"), err)

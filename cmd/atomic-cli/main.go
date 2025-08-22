@@ -208,20 +208,20 @@ func main() {
 
 			log.Infof("connected to datastore %s", cmd.String("db_source"))
 
-			return ctx, nil
+		} else {
+
+			opts := []client.ApiOption{}
+
+			opts = append(opts, client.WithHost(cmd.String("host")))
+
+			if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
+				opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
+			} else if cmd.IsSet("access_token") {
+				opts = append(opts, client.WithToken(cmd.String("access-token")))
+			}
+
+			backend = client.New(opts...)
 		}
-
-		opts := []client.ApiOption{}
-
-		opts = append(opts, client.WithHost(cmd.String("host")))
-
-		if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
-			opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
-		} else if cmd.IsSet("access_token") {
-			opts = append(opts, client.WithToken(cmd.String("access-token")))
-		}
-
-		backend = client.New(opts...)
 
 		if cmd.IsSet("instance_id") {
 			var input atomic.InstanceGetInput
@@ -442,6 +442,10 @@ func BindFlagsFromContext(cmd *cli.Command, target interface{}, skip ...string) 
 
 		val := cmd.Value(name)
 		flagMap[name] = val
+	}
+
+	if inst != nil {
+		flagMap["instance_id"] = inst.UUID
 	}
 
 	data, err := json.Marshal(flagMap)

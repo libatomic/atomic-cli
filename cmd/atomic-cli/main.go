@@ -189,6 +189,7 @@ func main() {
 		dbCommand,
 		partnerCmd,
 		assetCmd,
+		jobCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

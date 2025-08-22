@@ -35,16 +35,13 @@ var (
 			Usage: "set the user input from a JSON file",
 		},
 		&cli.StringFlag{
-			Name:  "login",
-			Usage: "set the user login",
+			Name:    "login",
+			Aliases: []string{"email"},
+			Usage:   "set the user login",
 		},
 		&cli.StringFlag{
 			Name:  "password",
 			Usage: "set the user password",
-		},
-		&cli.StringFlag{
-			Name:  "email",
-			Usage: "set the user email",
 		},
 		&cli.StringFlag{
 			Name:  "profile",
@@ -53,7 +50,6 @@ var (
 		&cli.StringSliceFlag{
 			Name:  "roles",
 			Usage: "set the user roles from a JSON file",
-			Value: []string{"user"},
 		},
 		&cli.StringFlag{
 			Name:  "metadata",

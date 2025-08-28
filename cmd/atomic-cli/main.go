@@ -177,6 +177,11 @@ func main() {
 			Name:    "instance_id",
 			Usage:   "set the instance id for the command",
 			Aliases: []string{"i", "instance"},
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("ATOMIC_INSTANCE_ID"),
+				TOML(func() string { return fmt.Sprintf("%s.instance_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.instance_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
 		},
 	}
 

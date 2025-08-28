@@ -77,6 +77,14 @@ var (
 						Usage: "Create or Update the option value from a json file",
 					},
 					&cli.BoolFlag{
+						Name:  "protected",
+						Usage: "Create or Update the option value as protected",
+					},
+					&cli.BoolFlag{
+						Name:  "read_only",
+						Usage: "Create or Update the option value as read only",
+					},
+					&cli.BoolFlag{
 						Name:  "validate",
 						Usage: "Validate the option value",
 					},
@@ -189,10 +197,19 @@ func optionUpdate(ctx context.Context, cmd *cli.Command) error {
 		}
 	} else {
 		input.Name = cmd.Args().First()
+		input.Value = cmd.Args().Get(1)
+	}
+
+	if err := BindFlagsFromContext(cmd, &input); err != nil {
+		return err
 	}
 
 	if input.Name == "" {
 		return fmt.Errorf("option name is required")
+	}
+
+	if input.Value == "" {
+		return fmt.Errorf("option value is required")
 	}
 
 	if cmd.IsSet("force") && cmd.Bool("force") {

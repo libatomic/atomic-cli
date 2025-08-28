@@ -108,7 +108,7 @@ var (
 				Name:      "update",
 				Usage:     "update a user",
 				Flags:     userUpdateFlags,
-				ArgsUsage: "update <user_id>",
+				ArgsUsage: "<user_id>",
 				Action:    userUpdate,
 			},
 			{
@@ -176,7 +176,25 @@ var (
 			{
 				Name:      "delete",
 				Usage:     "delete a user",
-				ArgsUsage: "delete <user_id>",
+				ArgsUsage: "<user_id>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:    "admin_delete_override",
+						Aliases: []string{"admin-override"},
+						Usage:   "force the deletion of the user",
+					},
+					&cli.BoolFlag{
+						Name:    "delete_stripe_account",
+						Aliases: []string{"stripe"},
+						Usage:   "delete the stripe account",
+					},
+					&cli.BoolFlag{
+						Name:    "prorate_subscriptions",
+						Aliases: []string{"prorate"},
+						Usage:   "prorate the subscriptions",
+					},
+				},
+				Action: userDelete,
 			},
 			{
 				Name:      "import",
@@ -311,6 +329,13 @@ func userUpdate(ctx context.Context, cmd *cli.Command) error {
 		if err := json.Unmarshal(content, &input); err != nil {
 			return fmt.Errorf("failed to unmarshal user update input: %w", err)
 		}
+	} else {
+		id, err := atomic.ParseID(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to parse user id: %w", err)
+		}
+
+		input.UserID = &id
 	}
 
 	if err := BindFlagsFromContext(cmd, &input, "profile", "metadata", "preferences"); err != nil {
@@ -514,6 +539,33 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	PrintResult(cmd, []*atomic.Job{job}, WithFields("id", "type", "queue_status", "created_at"))
+
+	return nil
+}
+
+func userDelete(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.UserDeleteInput
+
+	if cmd.Args().First() == "" {
+		return fmt.Errorf("user id is required")
+	}
+
+	id, err := atomic.ParseID(cmd.Args().First())
+	if err != nil {
+		return fmt.Errorf("failed to parse user id: %w", err)
+	}
+
+	input.UserID = &id
+
+	if err := BindFlagsFromContext(cmd, &input); err != nil {
+		return err
+	}
+
+	if err := backend.UserDelete(ctx, &input); err != nil {
+		return err
+	}
+
+	fmt.Println("User deleted")
 
 	return nil
 }

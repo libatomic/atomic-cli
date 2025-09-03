@@ -19,6 +19,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/libatomic/atomic/pkg/atomic"
@@ -31,11 +34,42 @@ var (
 		Aliases: []string{"jobs"},
 		Usage:   "job management",
 		Commands: []*cli.Command{
+			jobCreateCmd,
 			jobListCmd,
 			jobGetCmd,
 			jobCancelCmd,
 			jobRestartCmd,
 		},
+	}
+
+	jobCreateCmd = &cli.Command{
+		Name:      "create",
+		Usage:     "create a job",
+		ArgsUsage: "<type>",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "file",
+				Usage: "specify job create input from a json file",
+			},
+			&cli.StringFlag{
+				Name:    "params",
+				Aliases: []string{"p"},
+				Usage:   "specify job params as a json string",
+				Value:   "{}",
+			},
+			&cli.StringFlag{
+				Name:    "state",
+				Aliases: []string{"s"},
+				Usage:   "specify job state as a json string",
+				Value:   "{}",
+			},
+			&cli.StringFlag{
+				Name:    "scheduled_at",
+				Aliases: []string{"sa"},
+				Usage:   "specify job scheduled at as a timestamp",
+			},
+		},
+		Action: jobCreate,
 	}
 
 	jobGetCmd = &cli.Command{
@@ -104,6 +138,54 @@ var (
 		},
 	}
 )
+
+func jobCreate(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.JobCreateInput
+
+	if cmd.IsSet("file") && cmd.Bool("file") {
+		content, err := os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read job create input file: %w", err)
+		}
+
+		if err := json.Unmarshal(content, &input); err != nil {
+			return fmt.Errorf("failed to unmarshal job create input: %w", err)
+		}
+	} else if cmd.Args().First() != "" {
+		input.Type = atomic.JobType(cmd.Args().First())
+	}
+
+	if err := BindFlagsFromContext(cmd, &input); err != nil {
+		return err
+	}
+
+	job, err := backend.JobCreate(ctx, &input)
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.Job{job}, WithFields("id", "type", "status", "scheduled_at", "completed_at"),
+		WithVirtualField("status", func(v any) string {
+			job := v.(atomic.Job)
+			return string(job.Status)
+		}),
+		WithVirtualField("scheduled_at", func(v any) string {
+			job := v.(atomic.Job)
+			if job.ScheduledAt == nil {
+				return ""
+			}
+			return job.ScheduledAt.Format(time.RFC3339)
+		}),
+		WithVirtualField("completed_at", func(v any) string {
+			job := v.(atomic.Job)
+			if job.CompletedAt == nil {
+				return ""
+			}
+			return job.CompletedAt.Format(time.RFC3339)
+		}))
+
+	return nil
+}
 
 func jobGet(ctx context.Context, cmd *cli.Command) error {
 	var input atomic.JobGetInput

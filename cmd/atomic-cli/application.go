@@ -43,15 +43,15 @@ var (
 			Usage: "set the application type",
 			Value: "web",
 		},
-		&cli.StringFlag{
+		&cli.Int64Flag{
 			Name:  "token_lifetime",
 			Usage: "set the token lifetime",
-			Value: "3600",
+			Value: 3600,
 		},
-		&cli.StringFlag{
+		&cli.Int64Flag{
 			Name:  "refresh_token_lifetime",
 			Usage: "set the refresh token lifetime",
-			Value: "3600",
+			Value: 3600,
 		},
 		&cli.StringSliceFlag{
 			Name:  "allowed_redirects",
@@ -73,7 +73,7 @@ var (
 			Name:  "session_domain",
 			Usage: "set the session domain",
 		},
-		&cli.StringFlag{
+		&cli.Int64Flag{
 			Name:  "session_lifetime",
 			Usage: "set the session lifetime",
 		},
@@ -125,6 +125,10 @@ var (
 )
 
 func appCreate(ctx context.Context, cmd *cli.Command) error {
+	if inst == nil {
+		return fmt.Errorf("instance is required for application commands. Use --instance flag or set ATOMIC_INSTANCE_ID environment variable")
+	}
+
 	var input atomic.ApplicationCreateInput
 
 	if cmd.IsSet("file") && cmd.Bool("file") {
@@ -143,6 +147,8 @@ func appCreate(ctx context.Context, cmd *cli.Command) error {
 	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
 		return err
 	}
+
+	input.InstanceID = inst.UUID
 
 	if cmd.IsSet("metadata") {
 		fd, err := os.Open(cmd.String("metadata"))
@@ -169,6 +175,10 @@ func appCreate(ctx context.Context, cmd *cli.Command) error {
 }
 
 func appUpdate(ctx context.Context, cmd *cli.Command) error {
+	if inst == nil {
+		return fmt.Errorf("instance is required for application commands. Use --instance flag or set ATOMIC_INSTANCE_ID environment variable")
+	}
+
 	var input atomic.ApplicationUpdateInput
 
 	if cmd.IsSet("file") && cmd.Bool("file") {
@@ -198,6 +208,8 @@ func appUpdate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	input.InstanceID = inst.UUID
+
 	if cmd.IsSet("metadata") {
 		fd, err := os.Open(cmd.String("metadata"))
 		if err != nil {
@@ -223,6 +235,10 @@ func appUpdate(ctx context.Context, cmd *cli.Command) error {
 }
 
 func appGet(ctx context.Context, cmd *cli.Command) error {
+	if inst == nil {
+		return fmt.Errorf("instance is required for application commands. Use --instance flag or set ATOMIC_INSTANCE_ID environment variable")
+	}
+
 	var input atomic.ApplicationGetInput
 
 	id, err := atomic.ParseID(cmd.Args().First())
@@ -231,14 +247,7 @@ func appGet(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	input.ApplicationID = &id
-
-	if cmd.IsSet("instance_id") {
-		id, err := atomic.ParseID(cmd.String("instance_id"))
-		if err != nil {
-			return fmt.Errorf("failed to parse instance id: %w", err)
-		}
-		input.InstanceID = &id
-	}
+	input.InstanceID = &inst.UUID
 
 	app, err := backend.ApplicationGet(ctx, &input)
 	if err != nil {
@@ -251,15 +260,12 @@ func appGet(ctx context.Context, cmd *cli.Command) error {
 }
 
 func appList(ctx context.Context, cmd *cli.Command) error {
-	var input atomic.ApplicationListInput
-
-	if cmd.IsSet("instance_id") {
-		id, err := atomic.ParseID(cmd.String("instance_id"))
-		if err != nil {
-			return fmt.Errorf("failed to parse instance id: %w", err)
-		}
-		input.InstanceID = id
+	if inst == nil {
+		return fmt.Errorf("instance is required for application commands. Use --instance flag or set ATOMIC_INSTANCE_ID environment variable")
 	}
+
+	var input atomic.ApplicationListInput
+	input.InstanceID = inst.UUID
 
 	if cmd.IsSet("name") {
 		input.Name = ptr.String(cmd.String("name"))
@@ -276,6 +282,10 @@ func appList(ctx context.Context, cmd *cli.Command) error {
 }
 
 func appDelete(ctx context.Context, cmd *cli.Command) error {
+	if inst == nil {
+		return fmt.Errorf("instance is required for application commands. Use --instance flag or set ATOMIC_INSTANCE_ID environment variable")
+	}
+
 	var input atomic.ApplicationDeleteInput
 
 	id, err := atomic.ParseID(cmd.Args().First())
@@ -284,6 +294,7 @@ func appDelete(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	input.ApplicationID = id
+	input.InstanceID = inst.UUID
 
 	if err := backend.ApplicationDelete(ctx, &input); err != nil {
 		return err

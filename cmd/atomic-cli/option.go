@@ -197,7 +197,18 @@ func optionUpdate(ctx context.Context, cmd *cli.Command) error {
 		}
 	} else {
 		input.Name = cmd.Args().First()
-		input.Value = cmd.Args().Get(1)
+		valueStr := cmd.Args().Get(1)
+
+		var jsonValue interface{}
+		if err := json.Unmarshal([]byte(valueStr), &jsonValue); err != nil {
+			jsonEncoded, err := json.Marshal(valueStr)
+			if err != nil {
+				return fmt.Errorf("failed to JSON-encode string value: %w", err)
+			}
+			input.Value = string(jsonEncoded)
+		} else {
+			input.Value = jsonValue
+		}
 	}
 
 	if err := BindFlagsFromContext(cmd, &input); err != nil {
@@ -248,6 +259,10 @@ func optionDelete(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	input.Name = cmd.Args().First()
+
+	if err := BindFlagsFromContext(cmd, &input); err != nil {
+		return err
+	}
 
 	if cmd.IsSet("force") && cmd.Bool("force") {
 		input.Force = ptr.Bool(true)

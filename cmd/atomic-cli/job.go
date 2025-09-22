@@ -52,16 +52,15 @@ var (
 				Usage: "specify job create input from a json file",
 			},
 			&cli.StringFlag{
-				Name:    "params",
-				Aliases: []string{"p"},
-				Usage:   "specify job params as a json string",
-				Value:   "{}",
+				Name:     "params",
+				Aliases:  []string{"p"},
+				Usage:    "specify job params as a json string",
+				Required: true,
 			},
 			&cli.StringFlag{
 				Name:    "state",
 				Aliases: []string{"s"},
 				Usage:   "specify job state as a json string",
-				Value:   "{}",
 			},
 			&cli.StringFlag{
 				Name:    "scheduled_at",
@@ -155,8 +154,22 @@ func jobCreate(ctx context.Context, cmd *cli.Command) error {
 		input.Type = atomic.JobType(cmd.Args().First())
 	}
 
-	if err := BindFlagsFromContext(cmd, &input); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "params", "state"); err != nil {
 		return err
+	}
+
+	if len(cmd.String("params")) > 0 {
+		params := make(map[string]any)
+		if err := json.Unmarshal([]byte(cmd.String("params")), &params); err != nil {
+			return fmt.Errorf("failed to unmarshal job params: %w", err)
+		}
+		input.Params = params
+	}
+
+	if len(cmd.String("state")) > 0 {
+		if err := json.Unmarshal([]byte(cmd.String("state")), &input.State); err != nil {
+			return fmt.Errorf("failed to unmarshal job state: %w", err)
+		}
 	}
 
 	job, err := backend.JobCreate(ctx, &input)

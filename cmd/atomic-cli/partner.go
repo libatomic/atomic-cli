@@ -36,10 +36,6 @@ var (
 			Usage: "set the partner input from a JSON file",
 		},
 		&cli.StringFlag{
-			Name:  "name",
-			Usage: "set the partner name",
-		},
-		&cli.StringFlag{
 			Name:  "description",
 			Usage: "set the partner description",
 		},
@@ -53,12 +49,12 @@ var (
 		},
 		&cli.StringSliceFlag{
 			Name:  "roles",
-			Usage: "set the partner roles from a JSON file",
+			Usage: "set the partner roles (can be specified multiple times, e.g., --roles admin --roles member)",
 			Value: []string{atomic.RoleAdmin},
 		},
 		&cli.StringSliceFlag{
 			Name:  "permissions",
-			Usage: "set the partner permissions from a JSON file",
+			Usage: "set the partner permissions (can be specified multiple times, e.g., --permissions read --permissions write)",
 		},
 	}
 
@@ -71,8 +67,22 @@ var (
 				Name:      "create",
 				Usage:     "create a new partner",
 				ArgsUsage: "<partner name>",
-				Flags:     partnerCreateFlags,
-				Action:    partnerCreate,
+				Description: `Create a new partner with the specified name and optional flags.
+
+Examples:
+  # Create a partner with default admin role
+  atomic-cli partner create "My Partner"
+
+  # Create a partner with specific roles and permissions
+  atomic-cli partner create "API Partner" --roles admin --roles member --permissions read --permissions write
+
+  # Create a partner from JSON file
+  atomic-cli partner create --file partner.json
+
+  # Create a partner with description and support contact
+  atomic-cli partner create "Support Partner" --description "Customer support partner" --support_contact "support@example.com"`,
+				Flags:  partnerCreateFlags,
+				Action: partnerCreate,
 			},
 			{
 				Name:      "update",
@@ -242,7 +252,7 @@ func partnerCreate(ctx context.Context, cmd *cli.Command) error {
 		input.Name = cmd.Args().First()
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "name", "description", "support_contact", "roles", "permissions"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "description", "support_contact"); err != nil {
 		return err
 	}
 
@@ -291,7 +301,7 @@ func partnerUpdate(ctx context.Context, cmd *cli.Command) error {
 
 	input.PartnerID = id
 
-	if err := BindFlagsFromContext(cmd, &input, "name", "description", "support_contact", "roles", "permissions"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "description", "support_contact"); err != nil {
 		return err
 	}
 

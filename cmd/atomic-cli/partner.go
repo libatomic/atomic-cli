@@ -134,16 +134,17 @@ Examples:
 				},
 				Commands: []*cli.Command{
 					{
-						Name:  "create",
-						Usage: "create a new partner credential",
+						Name:      "create",
+						Usage:     "create a new partner credential",
+						ArgsUsage: "<partner id>",
 						Flags: []cli.Flag{
 							&cli.StringSliceFlag{
 								Name:  "permissions",
-								Usage: "set the partner permissions from a JSON file",
+								Usage: "set the partner permissions (can be specified multiple times, e.g., --permissions read --permissions write)",
 							},
 							&cli.StringSliceFlag{
 								Name:  "roles",
-								Usage: "set the partner roles from a JSON file",
+								Usage: "set the partner roles (can be specified multiple times, e.g., --roles admin --roles member)",
 							},
 							&cli.StringFlag{
 								Name:  "instance_id",
@@ -196,11 +197,11 @@ Examples:
 							},
 							&cli.StringSliceFlag{
 								Name:  "permissions",
-								Usage: "set the partner permissions from a JSON file",
+								Usage: "set the partner permissions (can be specified multiple times, e.g., --permissions read --permissions write)",
 							},
 							&cli.StringSliceFlag{
 								Name:  "roles",
-								Usage: "set the partner roles from a JSON file",
+								Usage: "set the partner roles (can be specified multiple times, e.g., --roles admin --roles member)",
 							},
 						},
 						Action: partnerTokenCreate,
@@ -432,7 +433,15 @@ func partnerCredentialCreate(ctx context.Context, cmd *cli.Command) error {
 
 	input.PartnerID = partnerID
 
-	if err := BindFlagsFromContext(cmd, &input, "permissions", "roles", "instance_id", "expires_at"); err != nil {
+	if cmd.IsSet("instance_id") {
+		instanceID, err := atomic.ParseID(cmd.String("instance_id"))
+		if err != nil {
+			return fmt.Errorf("failed to parse instance id: %w", err)
+		}
+		input.InstanceID = &instanceID
+	}
+
+	if err := BindFlagsFromContext(cmd, &input, "instance_id"); err != nil {
 		return err
 	}
 
@@ -514,7 +523,7 @@ func partnerTokenCreate(ctx context.Context, cmd *cli.Command) error {
 
 	input.PartnerID = partnerID
 
-	if err := BindFlagsFromContext(cmd, &input, "permissions", "roles", "instance_id", "expires_at"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "instance_id"); err != nil {
 		return err
 	}
 

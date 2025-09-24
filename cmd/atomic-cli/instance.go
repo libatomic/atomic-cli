@@ -88,7 +88,7 @@ var (
 			{
 				Name:      "create",
 				Usage:     "create a new instance",
-				ArgsUsage: "create <name>",
+				ArgsUsage: "<name>",
 				Action:    instCreate,
 				Flags:     instCreateFlags,
 			},
@@ -96,26 +96,25 @@ var (
 				Name:      "get",
 				Usage:     "get an instance",
 				Action:    instGet,
-				ArgsUsage: "get <instance-id>",
+				ArgsUsage: "<instance-id>",
 			},
 			{
 				Name:      "update",
 				Usage:     "update an instance",
 				Action:    instUpdate,
-				ArgsUsage: "update <instance-id>",
+				ArgsUsage: "<instance-id>",
 				Flags:     instUpdateFlags,
 			},
 			{
 				Name:      "delete",
 				Usage:     "delete an instance",
 				Action:    instDelete,
-				ArgsUsage: "delete <instance-id>",
+				ArgsUsage: "<instance-id>",
 			},
 			{
-				Name:      "list",
-				Usage:     "list instances",
-				Action:    instList,
-				ArgsUsage: "list",
+				Name:   "list",
+				Usage:  "list instances",
+				Action: instList,
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "name",
@@ -151,7 +150,7 @@ func instCreate(ctx context.Context, cmd *cli.Command) error {
 		input.Name = cmd.Args().First()
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "metadata", "domains"); err != nil {
 		return err
 	}
 
@@ -166,6 +165,16 @@ func instCreate(ctx context.Context, cmd *cli.Command) error {
 
 		if err := json.NewDecoder(fd).Decode(&input.Metadata); err != nil {
 			return fmt.Errorf("failed to decode metadata: %w", err)
+		}
+
+		if cmd.IsSet("domains") {
+			doms := cmd.StringSlice("domains")
+			for i, d := range doms {
+				input.Domains = append(input.Domains, &atomic.InstanceDomain{
+					Domain:  d,
+					Primary: i == 0,
+				})
+			}
 		}
 	}
 
@@ -197,7 +206,8 @@ func instUpdate(ctx context.Context, cmd *cli.Command) error {
 		input.InstanceID = id
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
+	// Bind all flags except ones that need custom shaping before marshaling
+	if err := BindFlagsFromContext(cmd, &input, "metadata", "domains"); err != nil {
 		return err
 	}
 
@@ -212,6 +222,18 @@ func instUpdate(ctx context.Context, cmd *cli.Command) error {
 
 		if err := json.NewDecoder(fd).Decode(&input.Metadata); err != nil {
 			return fmt.Errorf("failed to decode metadata: %w", err)
+		}
+
+		// Convert --domains string slice to []*atomic.InstanceDomain
+		if cmd.IsSet("domains") {
+			doms := cmd.StringSlice("domains")
+			input.Domains = make([]*atomic.InstanceDomain, 0, len(doms))
+			for i, d := range doms {
+				input.Domains = append(input.Domains, &atomic.InstanceDomain{
+					Domain:  d,
+					Primary: i == 0,
+				})
+			}
 		}
 	}
 

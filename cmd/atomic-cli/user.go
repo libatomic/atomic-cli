@@ -101,7 +101,7 @@ var (
 				Name:      "create",
 				Usage:     "create a user",
 				Flags:     userCreateFlags,
-				ArgsUsage: "create <login>",
+				ArgsUsage: "<login>",
 				Action:    userCreate,
 			},
 			{
@@ -114,7 +114,7 @@ var (
 			{
 				Name:      "get",
 				Usage:     "get a user",
-				ArgsUsage: "get <user_id>",
+				ArgsUsage: "<user_id>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
 						Name:    "stripe_customer",
@@ -199,7 +199,7 @@ var (
 			{
 				Name:      "import",
 				Usage:     "import users from a file",
-				ArgsUsage: "import <file>",
+				ArgsUsage: "<file>",
 				Action:    userImport,
 				Flags: []cli.Flag{
 					&cli.StringFlag{

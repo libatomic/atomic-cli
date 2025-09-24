@@ -94,20 +94,20 @@ var (
 				Name:      "update",
 				Usage:     "update an application",
 				Action:    appUpdate,
-				ArgsUsage: "update <application-id>",
+				ArgsUsage: "<application-id>",
 				Flags:     appCommonFlags,
 			},
 			{
 				Name:      "get",
 				Usage:     "get an application",
 				Action:    appGet,
-				ArgsUsage: "get <application-id>",
+				ArgsUsage: "<application-id>",
 			},
 			{
 				Name:      "delete",
 				Usage:     "delete an application",
 				Action:    appDelete,
-				ArgsUsage: "delete <application-id>",
+				ArgsUsage: "<application-id>",
 			},
 			{
 				Name:   "list",

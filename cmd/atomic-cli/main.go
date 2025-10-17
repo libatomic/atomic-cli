@@ -183,6 +183,42 @@ func main() {
 				YAML(func() string { return fmt.Sprintf("%s.instance_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
 			),
 		},
+		&cli.StringFlag{
+			Name:  "spotify_client_id",
+			Usage: "specify the Spotify client ID",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("SPOTIFY_CLIENT_ID"),
+				TOML(func() string { return fmt.Sprintf("%s.spotify_client_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.spotify_client_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
+		},
+		&cli.StringFlag{
+			Name:  "spotify_client_secret",
+			Usage: "specify the Spotify client secret",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("SPOTIFY_CLIENT_SECRET"),
+				TOML(func() string { return fmt.Sprintf("%s.spotify_client_secret", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.spotify_client_secret", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
+		},
+		&cli.StringFlag{
+			Name:  "spotify_partner_name",
+			Usage: "specify the Spotify partner name",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("SPOTIFY_PARTNER_NAME"),
+				TOML(func() string { return fmt.Sprintf("%s.spotify_partner_name", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.spotify_partner_name", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
+		},
+		&cli.StringFlag{
+			Name:  "spotify_partner_id",
+			Usage: "specify the Spotify partner ID",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("SPOTIFY_PARTNER_ID"),
+				TOML(func() string { return fmt.Sprintf("%s.spotify_partner_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				YAML(func() string { return fmt.Sprintf("%s.spotify_partner_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+			),
+		},
 	}
 
 	mainCmd.Commands = []*cli.Command{
@@ -195,6 +231,7 @@ func main() {
 		partnerCmd,
 		assetCmd,
 		jobCmd,
+		distributionCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

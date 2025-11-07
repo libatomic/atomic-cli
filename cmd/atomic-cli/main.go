@@ -195,6 +195,7 @@ func main() {
 		partnerCmd,
 		assetCmd,
 		jobCmd,
+		integrationsCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

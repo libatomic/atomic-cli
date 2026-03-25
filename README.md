@@ -385,6 +385,156 @@ atomic-cli user delete <user-id>
 atomic-cli user delete user_1234567890abcdef
 ```
 
+#### Import Users
+
+Bulk-import users from a CSV file. The import is processed as a background job and supports subscriptions, Stripe customer linking, discounts, and more.
+
+```bash
+atomic-cli user import <file> [options]
+```
+
+**Options:**
+- `--mime_type` - MIME type of the import file (default: `text/csv`)
+- `--source` - Import source format: `atomic`, `ghost`, `substack`, etc. (default: `atomic`)
+- `--trial_plan_id` - Plan ID for trial subscriptions
+- `--trial_price_id` - Price ID for trial subscriptions
+- `--trial_end_at` - Trial end date
+- `--trial_existing_users` - Apply trial to existing users
+- `--user_email_verified` - Mark imported user emails as verified
+- `--source_params` - Path to a JSON file with source-specific parameters
+- `--import_audience_id` - Audience ID to add imported users to
+- `--import_audience_behavior` - Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users`
+- `--suppress_parent_triggers` - Suppress parent instance triggers during import
+
+**Example:**
+```bash
+atomic-cli user import migrate_users.csv \
+  -i inst_abc123 \
+  --source atomic \
+  --user_email_verified
+```
+
+##### CSV Format
+
+The import CSV uses the `UserImportRecord` format. All fields except `login` are optional:
+
+| Column | Description | Default |
+|--------|-------------|---------|
+| `login` | User login (must be a valid email address) | *required* |
+| `email` | Distribution email address | login |
+| `email_verified` | Mark email as verified | `false` |
+| `email_opt_in` | Mark email as opted in | `true` |
+| `name` | Display name | |
+| `roles` | Pipe-delimited roles (e.g. `member\|admin`) | `member` |
+| `phone_number` | Phone number (E.164 format) | |
+| `phone_number_verified` | Mark phone as verified | `false` |
+| `billing_email` | Billing email address | email |
+| `billing_phone_number` | Billing phone number | phone_number |
+| `stripe_customer_id` | Stripe customer ID to link | |
+| `subscription_plan_id` | Passport plan ID to subscribe to | |
+| `subscription_currency` | Subscription currency (ISO 4217) | `usd` |
+| `subscription_quantity` | Subscription seat quantity | `1` |
+| `subscription_interval` | Billing interval: `month` or `year` | |
+| `subscription_anchor_date` | Billing anchor date (`YYYYMMDD`) | today |
+| `subscription_end_at` | Subscription cancellation date (RFC 3339) | |
+| `subscription_prorate` | Prorate the subscription | `false` |
+| `discount_percentage` | Coupon discount percentage (0-100) | |
+| `discount_term` | Discount duration: `forever`, `once`, `repeating` | |
+
+### Migrate Command
+
+Migrate subscriber data from external platforms into Passport. The `migrate` command scans a source platform's Stripe account, maps subscriptions to Passport plans, calculates per-user discounts for grandfathered pricing, and outputs a CSV file compatible with `user import`.
+
+```bash
+atomic-cli migrate <platform> [options]
+```
+
+Currently supported platforms:
+
+- **substack** - Migrate Substack subscribers via Stripe
+
+#### Common Options
+
+These options apply to all migrate subcommands:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--stripe-key` | Stripe API key for the source account (or `$STRIPE_API_KEY`) | *required* |
+| `--dry-run` | Preview what would happen without creating plans | `false` |
+| `--output`, `--out` | Output CSV file path | `migrate_users.csv` |
+| `--subscription-prorate` | Set prorate flag on migrated subscriptions | `false` |
+| `--email-domain-overwrite` | Rewrite all emails to this domain (for testing) | |
+
+#### migrate substack
+
+Migrates Substack subscribers by scanning the Stripe account for prices tagged with Substack metadata, collecting active subscriptions across all prices (including inactive/grandfathered ones), and producing a Passport-compatible import CSV.
+
+```bash
+atomic-cli migrate substack [options]
+```
+
+**Substack-specific options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--subscriber-plan` | Existing Passport plan ID for regular subscribers | |
+| `--founder-plan` | Existing Passport plan ID for founding members | |
+| `--create-plans` | Auto-create Subscriber and Founder plans from Stripe data | `true` |
+| `--apply-discounts` | Calculate per-user forever discounts for price differences | `true` |
+
+**How it works:**
+
+1. **Price discovery** - Scans all Stripe prices for `metadata["substack"] = "yes"`. Classifies each as monthly, annual, or founding (via `metadata["founding"] = "yes"`). Active prices have no `metadata["inactive"]` key; inactive prices are included because subscribers may still be on them.
+
+2. **Price report** - Displays a table of all discovered prices showing type, amount, currency, active status, and currency options. Shows how prices map to Passport plans.
+
+3. **Plan resolution** - Either creates new Passport plans or fetches existing ones:
+   - With `--create-plans` (default): creates a hidden "Subscriber" plan with monthly/annual prices and a hidden "Founder" plan with an annual price, matching amounts and currency options from the active Stripe prices. Prompts for confirmation before creating (skipped with `--dry-run`).
+   - With `--subscriber-plan` / `--founder-plan`: fetches the existing Passport plans and reads their active price amounts for discount calculation.
+
+4. **Subscription collection** - Iterates every discovered Substack price (active and inactive) and lists all active Stripe subscriptions on each. For each subscriber, captures:
+   - Customer ID, email, name
+   - Subscription currency, quantity, billing cycle anchor
+   - The Stripe price and subscription IDs (written as `migrate_stripe_price` and `migrate_stripe_subscription` in the CSV for audit purposes)
+   - Cancellation handling: if `cancel_at` or `cancel_at_period_end` is set, the subscription end date is recorded and the billing anchor is omitted. Otherwise, the billing cycle anchor is advanced by one interval if it falls in the past.
+
+5. **Discount calculation** - When `--apply-discounts` is enabled, compares each subscriber's price (in their subscription currency) against the corresponding Passport plan price at the same interval and currency. If the subscriber's rate is lower, a forever percentage discount is calculated so they keep their grandfathered price. If their rate is equal to or higher than the current price, no discount is applied.
+
+6. **CSV output** - Writes the final CSV with all standard `UserImportRecord` fields plus `migrate_stripe_price` and `migrate_stripe_subscription` columns.
+
+**Examples:**
+
+```bash
+# Auto-create plans, preview with dry run
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_live_xxx \
+  --dry-run
+
+# Auto-create plans and apply discounts (defaults)
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_live_xxx \
+  --out production_migrate.csv
+
+# Use existing plans, skip discount calculation
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_live_xxx \
+  --subscriber-plan plan_abc123 \
+  --founder-plan plan_def456 \
+  --apply-discounts=false
+
+# Rewrite emails for safe testing against a staging environment
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_test_xxx \
+  --email-domain-overwrite passport.xyz \
+  --out test_migrate.csv
+```
+
+The `--email-domain-overwrite` flag rewrites every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`.
+
 ### Option Management
 
 Manage options with the `option` (or `options`) command.

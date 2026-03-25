@@ -522,17 +522,6 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("file is required")
 	}
 
-	if cmd.IsSet("source_params") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user import input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.SourceParams); err != nil {
-			return fmt.Errorf("failed to unmarshal user import input: %w", err)
-		}
-	}
-
 	job, err := backend.UserImport(ctx, &input)
 	if err != nil {
 		return err

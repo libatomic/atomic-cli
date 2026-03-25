@@ -110,7 +110,7 @@ func (m *passportPlanMapping) getAmount(planID string, interval atomic.Subscript
 }
 
 func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
-	dryRun, output, prorate, err := validateMigrateFlags(cmd)
+	dryRun, output, prorate, emailDomain, err := validateMigrateFlags(cmd)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 
 	// Pass 6: Write CSV
 	_, err = runSpinner(fmt.Sprintf("Writing %d records to %s...", len(records), output), func() (any, error) {
-		return nil, writeImportCSV(records, output, dryRun, prorate)
+		return nil, writeImportCSV(records, output, dryRun, prorate, emailDomain)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write CSV: %w", err)
@@ -620,9 +620,9 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			}
 
 			rec := &migrationRecord{
-				CustomerID:    sub.Customer.ID,
-				Email:         email,
-				Name:          sub.Customer.Name,
+				CustomerID:   sub.Customer.ID,
+				Email:        email,
+				Name:         sub.Customer.Name,
 				PlanID:        planID,
 				Interval:      interval,
 				Currency:      currency,

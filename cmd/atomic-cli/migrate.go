@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/apex/log"
@@ -39,6 +40,7 @@ type (
 	migrationRecord struct {
 		CustomerID    string
 		Email         string
+		BillingEmail  string
 		Name          string
 		PlanID        string
 		Interval      atomic.SubscriptionInterval
@@ -124,6 +126,10 @@ var (
 			Name:  "subscription-prorate",
 			Usage: "prorate subscriptions when migrating",
 			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "email-domain-overwrite",
+			Usage: "rewrite all email addresses to use this domain (e.g. passport.xyz); for testing",
 		},
 	}
 
@@ -297,10 +303,11 @@ func initStripeClient(apiKey string) *stripeclient.API {
 	return sc
 }
 
-func validateMigrateFlags(cmd *cli.Command) (dryRun bool, output string, prorate bool, err error) {
+func validateMigrateFlags(cmd *cli.Command) (dryRun bool, output string, prorate bool, emailDomain string, err error) {
 	dryRun = cmd.Bool("dry-run")
 	output = cmd.String("output")
 	prorate = cmd.Bool("subscription-prorate")
+	emailDomain = cmd.String("email-domain-overwrite")
 
 	if inst == nil {
 		err = fmt.Errorf("instance is required; use --instance_id or -i")
@@ -321,7 +328,11 @@ func confirmAction(title string) (bool, error) {
 	return confirmed, err
 }
 
-func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool) error {
+func rewriteEmail(email, domain string) string {
+	return strings.Replace(email, "@", "-", 1) + "@" + domain
+}
+
+func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, emailDomain string) error {
 	importRecords := make([]*importRecord, 0, len(records))
 
 	for _, rec := range records {
@@ -331,10 +342,18 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			continue
 		}
 
+		login := rec.Email
+		email := rec.Email
+
+		if emailDomain != "" {
+			login = rewriteEmail(login, emailDomain)
+			email = rewriteEmail(email, emailDomain)
+		}
+
 		ir := &importRecord{
 			UserImportRecord: atomic.UserImportRecord{
-				Login:                rec.Email,
-				Email:                &rec.Email,
+				Login:                login,
+				Email:                &email,
 				EmailVerified:        ptr.Bool(true),
 				Name:                 &rec.Name,
 				StripeCustomerID:     &rec.CustomerID,
@@ -346,6 +365,14 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			},
 			MigrateStripePrice:        rec.StripePriceID,
 			MigrateStripeSubscription: rec.StripeSubID,
+		}
+
+		if rec.BillingEmail != "" {
+			billingEmail := rec.BillingEmail
+			if emailDomain != "" {
+				billingEmail = rewriteEmail(billingEmail, emailDomain)
+			}
+			ir.BillingEmail = &billingEmail
 		}
 
 		if rec.EndAt != nil {

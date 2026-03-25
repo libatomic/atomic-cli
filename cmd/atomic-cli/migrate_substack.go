@@ -20,10 +20,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/apex/log"
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/stripe/stripe-go/v79"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"
@@ -34,6 +36,22 @@ type (
 		StripePrice *stripe.Price
 		PriceType   string // "monthly", "annual", "founding"
 		Active      bool
+	}
+
+	passportPlanMapping struct {
+		SubscriberPlanID string
+		FounderPlanID    string
+		MonthlyPriceID   string
+		AnnualPriceID    string
+		FounderPriceID   string
+		MonthlyAmounts   map[string]int64 // currency -> amount in cents
+		AnnualAmounts    map[string]int64
+		FounderAmounts   map[string]int64
+	}
+
+	sourcePriceInfo struct {
+		StripePrice *stripe.Price
+		PriceType   string // "monthly", "annual", "founding"
 	}
 )
 
@@ -69,7 +87,7 @@ var (
 )
 
 func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
-	dryRun, output, err := validateMigrateFlags(cmd)
+	dryRun, output, prorate, err := validateMigrateFlags(cmd)
 	if err != nil {
 		return err
 	}
@@ -104,17 +122,22 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Separate active prices and check for founding
+	// Founding prices are included even if inactive, since there may be
+	// active subscriptions on them that need a Passport plan to migrate to.
 	var activePriceInfos []*sourcePriceInfo
 	var hasFoundingPrice bool
 	for _, p := range allPrices {
-		if p.Active {
+		if p.PriceType == "founding" {
+			hasFoundingPrice = true
 			activePriceInfos = append(activePriceInfos, &sourcePriceInfo{
 				StripePrice: p.StripePrice,
 				PriceType:   p.PriceType,
 			})
-			if p.PriceType == "founding" {
-				hasFoundingPrice = true
-			}
+		} else if p.Active {
+			activePriceInfos = append(activePriceInfos, &sourcePriceInfo{
+				StripePrice: p.StripePrice,
+				PriceType:   p.PriceType,
+			})
 		}
 	}
 
@@ -162,7 +185,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 
 	// Pass 6: Write CSV
 	_, err = runSpinner(fmt.Sprintf("Writing %d records to %s...", len(records), output), func() (any, error) {
-		return nil, writeImportCSV(records, output, dryRun)
+		return nil, writeImportCSV(records, output, dryRun, prorate)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write CSV: %w", err)
@@ -280,6 +303,271 @@ func displaySubstackPriceReport(prices []*substackPrice) {
 	fmt.Println()
 }
 
+func handleCreatePlans(ctx context.Context, activePrices []*sourcePriceInfo, dryRun bool) (*passportPlanMapping, error) {
+	mapping := &passportPlanMapping{
+		MonthlyAmounts: make(map[string]int64),
+		AnnualAmounts:  make(map[string]int64),
+		FounderAmounts: make(map[string]int64),
+	}
+
+	var monthlyPrice, annualPrice, founderPrice *sourcePriceInfo
+	for _, p := range activePrices {
+		switch p.PriceType {
+		case "monthly":
+			monthlyPrice = p
+		case "annual":
+			annualPrice = p
+		case "founding":
+			founderPrice = p
+		}
+	}
+
+	fmt.Println("\nPlans to create:")
+	fmt.Println()
+
+	if monthlyPrice != nil || annualPrice != nil {
+		fmt.Println("  Subscriber plan (paid):")
+		if monthlyPrice != nil {
+			fmt.Printf("    Monthly: %d %s\n", monthlyPrice.StripePrice.UnitAmount, monthlyPrice.StripePrice.Currency)
+			printStripeCurrencyOptions(monthlyPrice.StripePrice)
+		}
+		if annualPrice != nil {
+			fmt.Printf("    Annual:  %d %s\n", annualPrice.StripePrice.UnitAmount, annualPrice.StripePrice.Currency)
+			printStripeCurrencyOptions(annualPrice.StripePrice)
+		}
+	}
+
+	if founderPrice != nil {
+		fmt.Println("  Founder plan (paid):")
+		fmt.Printf("    Annual:  %d %s\n", founderPrice.StripePrice.UnitAmount, founderPrice.StripePrice.Currency)
+		printStripeCurrencyOptions(founderPrice.StripePrice)
+	}
+
+	fmt.Println()
+
+	if dryRun {
+		fmt.Println("[DRY RUN] skipping plan creation")
+
+		mapping.SubscriberPlanID = "DRY_RUN_SUBSCRIBER_PLAN"
+		mapping.FounderPlanID = "DRY_RUN_FOUNDER_PLAN"
+
+		if monthlyPrice != nil {
+			buildAmountMap(monthlyPrice.StripePrice, mapping.MonthlyAmounts)
+		}
+		if annualPrice != nil {
+			buildAmountMap(annualPrice.StripePrice, mapping.AnnualAmounts)
+		}
+		if founderPrice != nil {
+			buildAmountMap(founderPrice.StripePrice, mapping.FounderAmounts)
+		}
+
+		return mapping, nil
+	}
+
+	confirmed, err := confirmAction("Create these plans?")
+	if err != nil {
+		return nil, err
+	}
+	if !confirmed {
+		return nil, fmt.Errorf("plan creation canceled by user")
+	}
+
+	// Create plans with spinner
+	result, err := runSpinner("Creating plans...", func() (any, error) {
+		// Create Subscriber plan
+		if monthlyPrice != nil || annualPrice != nil {
+			subscriberPlan, err := backend.PlanCreate(ctx, &atomic.PlanCreateInput{
+				InstanceID: inst.UUID,
+				Name:       "Subscriber",
+				Type:       atomic.PlanTypePaid,
+				Active:     ptr.Bool(true),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create Subscriber plan: %w", err)
+			}
+
+			mapping.SubscriberPlanID = string(subscriberPlan.UUID)
+
+			if monthlyPrice != nil {
+				price, err := createPassportPrice(ctx, subscriberPlan.UUID, "Monthly", monthlyPrice.StripePrice, "month")
+				if err != nil {
+					return nil, err
+				}
+				mapping.MonthlyPriceID = string(price.UUID)
+				buildAmountMap(monthlyPrice.StripePrice, mapping.MonthlyAmounts)
+			}
+
+			if annualPrice != nil {
+				price, err := createPassportPrice(ctx, subscriberPlan.UUID, "Annual", annualPrice.StripePrice, "year")
+				if err != nil {
+					return nil, err
+				}
+				mapping.AnnualPriceID = string(price.UUID)
+				buildAmountMap(annualPrice.StripePrice, mapping.AnnualAmounts)
+			}
+		}
+
+		// Create Founder plan
+		if founderPrice != nil {
+			founderPlan, err := backend.PlanCreate(ctx, &atomic.PlanCreateInput{
+				InstanceID: inst.UUID,
+				Name:       "Founder",
+				Type:       atomic.PlanTypePaid,
+				Active:     ptr.Bool(true),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create Founder plan: %w", err)
+			}
+
+			mapping.FounderPlanID = string(founderPlan.UUID)
+
+			price, err := createPassportPrice(ctx, founderPlan.UUID, "Annual", founderPrice.StripePrice, "year")
+			if err != nil {
+				return nil, err
+			}
+			mapping.FounderPriceID = string(price.UUID)
+			buildAmountMap(founderPrice.StripePrice, mapping.FounderAmounts)
+		}
+
+		return mapping, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result.(*passportPlanMapping), nil
+}
+
+func createPassportPrice(ctx context.Context, planID atomic.ID, name string, sp *stripe.Price, interval string) (*atomic.Price, error) {
+	currency := string(sp.Currency)
+
+	currencyOpts := make(atomic.CurrencyOptions)
+	for cur, opt := range sp.CurrencyOptions {
+		currencyOpts[cur] = atomic.CurrencyOption{
+			UnitAmount: &opt.UnitAmount,
+		}
+	}
+
+	instID := inst.UUID
+	price, err := backend.PriceCreate(ctx, &atomic.PriceCreateInput{
+		InstanceID:      &instID,
+		PlanID:          planID,
+		Name:            name,
+		Currency:        currency,
+		CurrencyOptions: currencyOpts,
+		Active:          ptr.Bool(true),
+		Amount:          &sp.UnitAmount,
+		Type:            atomic.PriceTypeRecurring,
+		Recurring: &atomic.PriceRecurring{
+			Interval:  interval,
+			Frequency: 1,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s price: %w", name, err)
+	}
+
+	return price, nil
+}
+
+func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr string) (*passportPlanMapping, error) {
+	result, err := runSpinner("Fetching Passport plans...", func() (any, error) {
+		mapping := &passportPlanMapping{
+			MonthlyAmounts: make(map[string]int64),
+			AnnualAmounts:  make(map[string]int64),
+			FounderAmounts: make(map[string]int64),
+		}
+
+		subscriberPlanID, err := atomic.ParseID(subscriberPlanStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid subscriber plan ID: %w", err)
+		}
+
+		plan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{
+			InstanceID: inst.UUID,
+			PlanID:     &subscriberPlanID,
+			Expand:     atomic.ExpandFields{"prices"},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get subscriber plan: %w", err)
+		}
+
+		mapping.SubscriberPlanID = string(plan.UUID)
+
+		for _, price := range plan.Prices {
+			if !price.Active || price.RecurringType != atomic.PriceTypeRecurring || price.RecurringInterval == nil {
+				continue
+			}
+			switch *price.RecurringInterval {
+			case atomic.SubscriptionIntervalMonth:
+				mapping.MonthlyPriceID = string(price.UUID)
+				if price.FlatAmount != nil {
+					mapping.MonthlyAmounts[price.Currency] = *price.FlatAmount
+				}
+				for cur, opt := range price.CurrencyOptions {
+					if opt.UnitAmount != nil {
+						mapping.MonthlyAmounts[cur] = *opt.UnitAmount
+					}
+				}
+			case atomic.SubscriptionIntervalYear:
+				mapping.AnnualPriceID = string(price.UUID)
+				if price.FlatAmount != nil {
+					mapping.AnnualAmounts[price.Currency] = *price.FlatAmount
+				}
+				for cur, opt := range price.CurrencyOptions {
+					if opt.UnitAmount != nil {
+						mapping.AnnualAmounts[cur] = *opt.UnitAmount
+					}
+				}
+			}
+		}
+
+		if founderPlanStr != "" {
+			founderPlanID, err := atomic.ParseID(founderPlanStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid founder plan ID: %w", err)
+			}
+
+			founderPlan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{
+				InstanceID: inst.UUID,
+				PlanID:     &founderPlanID,
+				Expand:     atomic.ExpandFields{"prices"},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to get founder plan: %w", err)
+			}
+
+			mapping.FounderPlanID = string(founderPlan.UUID)
+
+			for _, price := range founderPlan.Prices {
+				if !price.Active || price.RecurringType != atomic.PriceTypeRecurring || price.RecurringInterval == nil {
+					continue
+				}
+				if *price.RecurringInterval == atomic.SubscriptionIntervalYear {
+					mapping.FounderPriceID = string(price.UUID)
+					if price.FlatAmount != nil {
+						mapping.FounderAmounts[price.Currency] = *price.FlatAmount
+					}
+					for cur, opt := range price.CurrencyOptions {
+						if opt.UnitAmount != nil {
+							mapping.FounderAmounts[cur] = *opt.UnitAmount
+						}
+					}
+				}
+			}
+		}
+
+		return mapping, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result.(*passportPlanMapping), nil
+}
+
 func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, send func(progressTickMsg)) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
@@ -323,6 +611,16 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			currency := string(sub.Currency)
 			userAmount := getUserAmount(sp.StripePrice, currency)
 
+			quantity := 1
+			if sub.Items != nil {
+				for _, item := range sub.Items.Data {
+					if item.Price != nil && item.Price.ID == sp.StripePrice.ID && item.Quantity > 0 {
+						quantity = int(item.Quantity)
+						break
+					}
+				}
+			}
+
 			records = append(records, &migrationRecord{
 				CustomerID:     sub.Customer.ID,
 				Email:          email,
@@ -330,6 +628,7 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 				PlanID:         planID,
 				Interval:       interval,
 				Currency:       currency,
+				Quantity:       quantity,
 				UserAmount:     userAmount,
 				PassportAmount: getPassportAmount(mapping, sp.PriceType, currency),
 			})
@@ -356,5 +655,71 @@ func mapSubstackPriceToPassportPlan(sp *substackPrice, mapping *passportPlanMapp
 		return mapping.SubscriberPlanID, atomic.SubscriptionIntervalYear
 	default:
 		return "", ""
+	}
+}
+
+func calculatePerUserDiscounts(records []*migrationRecord, mapping *passportPlanMapping) {
+	for _, rec := range records {
+		if rec.PassportAmount <= 0 {
+			log.Warnf("no Passport price found in %s for %s; skipping discount", rec.Currency, rec.Email)
+			continue
+		}
+
+		if rec.UserAmount >= rec.PassportAmount {
+			continue
+		}
+
+		pct := math.Round((1.0-float64(rec.UserAmount)/float64(rec.PassportAmount))*10000) / 100
+		term := atomic.CreditTermForever
+		rec.DiscountPct = &pct
+		rec.DiscountTerm = &term
+	}
+}
+
+func getPassportAmount(mapping *passportPlanMapping, priceType, currency string) int64 {
+	var amounts map[string]int64
+
+	switch priceType {
+	case "monthly":
+		amounts = mapping.MonthlyAmounts
+	case "annual":
+		amounts = mapping.AnnualAmounts
+	case "founding":
+		amounts = mapping.FounderAmounts
+	}
+
+	if amounts == nil {
+		return 0
+	}
+
+	if amt, ok := amounts[currency]; ok {
+		return amt
+	}
+
+	return 0
+}
+
+func getUserAmount(p *stripe.Price, currency string) int64 {
+	if string(p.Currency) == currency {
+		return p.UnitAmount
+	}
+
+	if opt, ok := p.CurrencyOptions[currency]; ok {
+		return opt.UnitAmount
+	}
+
+	return p.UnitAmount
+}
+
+func buildAmountMap(sp *stripe.Price, amounts map[string]int64) {
+	amounts[string(sp.Currency)] = sp.UnitAmount
+	for cur, opt := range sp.CurrencyOptions {
+		amounts[cur] = opt.UnitAmount
+	}
+}
+
+func printStripeCurrencyOptions(sp *stripe.Price) {
+	for cur, opt := range sp.CurrencyOptions {
+		fmt.Printf("      └─ %s: %d\n", cur, opt.UnitAmount)
 	}
 }

@@ -56,6 +56,7 @@ var (
 		&cli.BoolFlag{
 			Name:  "apply-discounts",
 			Usage: "calculate and apply per-user forever discounts for price differences",
+			Value: true,
 		},
 	)
 
@@ -212,7 +213,7 @@ func classifySubstackPrice(p *stripe.Price) string {
 		return "unknown"
 	}
 
-	if p.Metadata["founding"] == "true" && p.Recurring.Interval == stripe.PriceRecurringIntervalYear {
+	if p.Metadata["founding"] == "yes" && p.Recurring.Interval == stripe.PriceRecurringIntervalYear {
 		return "founding"
 	}
 
@@ -238,8 +239,8 @@ func displaySubstackPriceReport(prices []*substackPrice) {
 		if !p.Active {
 			active = "no"
 		}
-		founding := ""
-		if p.StripePrice.Metadata["founding"] == "true" {
+		founding := "no"
+		if p.StripePrice.Metadata["founding"] == "yes" {
 			founding = "yes"
 		}
 

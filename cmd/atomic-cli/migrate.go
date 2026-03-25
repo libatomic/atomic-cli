@@ -20,6 +20,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/apex/log"
 	"github.com/charmbracelet/bubbles/progress"
@@ -29,23 +30,33 @@ import (
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
+	"github.com/libatomic/atomic/pkg/util"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"
 )
 
 type (
 	migrationRecord struct {
-		CustomerID     string
-		Email          string
-		Name           string
-		PlanID         string
-		Interval       atomic.SubscriptionInterval
-		Currency       string
-		Quantity       int
-		UserAmount     int64
-		PassportAmount int64
-		DiscountPct    *float64
-		DiscountTerm   *atomic.CreditTerm
+		CustomerID    string
+		Email         string
+		Name          string
+		PlanID        string
+		Interval      atomic.SubscriptionInterval
+		Currency      string
+		Quantity      int
+		AnchorDate    *time.Time
+		EndAt         *time.Time
+		UserAmount    int64
+		DiscountPct   *float64
+		DiscountTerm  *atomic.CreditTerm
+		StripePriceID string
+		StripeSubID   string
+	}
+
+	importRecord struct {
+		atomic.UserImportRecord
+		MigrateStripePrice        string `csv:"migrate_stripe_price,omitempty"`
+		MigrateStripeSubscription string `csv:"migrate_stripe_subscription,omitempty"`
 	}
 
 	// bubbletea models
@@ -112,7 +123,7 @@ var (
 		&cli.BoolFlag{
 			Name:  "subscription-prorate",
 			Usage: "prorate subscriptions when migrating",
-			Value: true,
+			Value: false,
 		},
 	}
 
@@ -311,7 +322,7 @@ func confirmAction(title string) (bool, error) {
 }
 
 func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool) error {
-	importRecords := make([]*atomic.UserImportRecord, 0, len(records))
+	importRecords := make([]*importRecord, 0, len(records))
 
 	for _, rec := range records {
 		planID, err := atomic.ParseID(rec.PlanID)
@@ -320,17 +331,27 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			continue
 		}
 
-		ir := &atomic.UserImportRecord{
-			Login:                rec.Email,
-			Email:                &rec.Email,
-			EmailVerified:        ptr.Bool(true),
-			Name:                 &rec.Name,
-			StripeCustomerID:     &rec.CustomerID,
-			SubscriptionPlanID:   &planID,
-			SubscriptionQuantity: &rec.Quantity,
-			SubscriptionInterval: (*atomic.SubscriptionInterval)(&rec.Interval),
-			SubscriptionCurrency: &rec.Currency,
-			SubscriptionProrate:  &prorate,
+		ir := &importRecord{
+			UserImportRecord: atomic.UserImportRecord{
+				Login:                rec.Email,
+				Email:                &rec.Email,
+				EmailVerified:        ptr.Bool(true),
+				Name:                 &rec.Name,
+				StripeCustomerID:     &rec.CustomerID,
+				SubscriptionPlanID:   &planID,
+				SubscriptionQuantity: &rec.Quantity,
+				SubscriptionInterval: (*atomic.SubscriptionInterval)(&rec.Interval),
+				SubscriptionCurrency: &rec.Currency,
+				SubscriptionProrate:  &prorate,
+			},
+			MigrateStripePrice:        rec.StripePriceID,
+			MigrateStripeSubscription: rec.StripeSubID,
+		}
+
+		if rec.EndAt != nil {
+			ir.SubscriptionEndAt = &util.Timestamp{Time: *rec.EndAt}
+		} else if rec.AnchorDate != nil {
+			ir.SubscriptionAnchorDate = &util.Date{Time: *rec.AnchorDate}
 		}
 
 		if rec.DiscountPct != nil {

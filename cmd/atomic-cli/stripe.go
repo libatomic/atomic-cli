@@ -40,15 +40,15 @@ var (
 				Required: true,
 			},
 			&cli.BoolFlag{
-				Name:  "sandbox",
-				Usage: "require the stripe key to be a test key (sk_test_); prevents accidental use of live keys",
+				Name:  "live-mode",
+				Usage: "allow live stripe keys; without this flag only test keys (sk_test_) are accepted",
 			},
 		},
 		Before: func(_ context.Context, cmd *cli.Command) (context.Context, error) {
 			key := cmd.String("stripe-key")
 
-			if cmd.Bool("sandbox") && !strings.HasPrefix(key, "sk_test_") && !strings.HasPrefix(key, "rk_test_") {
-				return nil, fmt.Errorf("--sandbox requires a test key (sk_test_ or rk_test_), got %s...", key[:12])
+			if !cmd.Bool("live-mode") && !strings.HasPrefix(key, "sk_test_") && !strings.HasPrefix(key, "rk_test_") {
+				return nil, fmt.Errorf("live key detected; pass --live-mode to use live keys, got %s...", key[:12])
 			}
 
 			stripe.Key = key

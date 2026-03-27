@@ -2,6 +2,39 @@
 
 A command-line interface for managing Atomic instances, applications, users, and options.
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Install via Homebrew (macOS/Linux)](#install-via-homebrew-macoslinux)
+  - [Download prebuilt binaries](#download-prebuilt-binaries)
+  - [Building from Source](#building-from-source)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Credentials file (TOML or YAML)](#credentials-file-toml-or-yaml)
+  - [Authentication](#authentication)
+- [Global Options](#global-options)
+- [Commands](#commands)
+  - [Instance Management](#instance-management)
+  - [Application Management](#application-management)
+  - [User Management](#user-management)
+  - [Access Token Management](#access-token-management)
+  - [Partner Management](#partner-management)
+  - [Asset Management](#asset-management)
+  - [Job Management](#job-management)
+  - [Option Management](#option-management)
+  - [Database Management](#database-management)
+  - [Migrate Command](#migrate-command)
+  - [Stripe Management](#stripe-management)
+- [Output Formats](#output-formats)
+- [Field Selection](#field-selection)
+- [File Input](#file-input)
+- [Examples](#examples)
+- [Error Handling](#error-handling)
+- [Version](#version)
+- [License](#license)
+
 ## Overview
 
 The `atomic-cli` is a powerful command-line tool for interacting with the Atomic platform. It provides comprehensive management capabilities for instances, applications, users, and options through an intuitive CLI interface.
@@ -441,6 +474,357 @@ The import CSV uses the `UserImportRecord` format. All fields except `login` are
 | `discount_percentage` | Coupon discount percentage (0-100) | |
 | `discount_term` | Discount duration: `forever`, `once`, `repeating` | |
 
+### Access Token Management
+
+Manage access tokens with the `access-token` (or `token`) command.
+
+#### Create Access Token
+
+```bash
+atomic-cli access-token create [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--application_id` | Application ID to associate with the token | |
+| `--user_id` | User ID to associate with the token | |
+| `--partner_id` | Partner ID to associate with the token | |
+| `--scope` | Token scope | `openid, profile` |
+| `--type` | Token type | `access` |
+| `--expires_at` | Token expiration timestamp | |
+| `--redirect_uri` | Redirect URI | |
+| `--force` | Force create the token | `false` |
+| `--stateless` | Create a stateless token | `false` |
+| `--use_client_id` | Create using the client ID | `false` |
+| `--additional_claims` | Path to a JSON file with additional claims | |
+
+**Example:**
+```bash
+atomic-cli access-token create \
+  --user_id user_1234567890abcdef \
+  --scope "openid,profile,email" \
+  --type access
+```
+
+#### Get Access Token
+
+```bash
+atomic-cli access-token get <token_id>
+```
+
+Returns the token details including claims and entitlements.
+
+#### Revoke Access Token
+
+```bash
+atomic-cli access-token revoke <token_id> [options]
+```
+
+**Options:**
+- `--delete` - Delete the token entirely instead of just revoking
+
+### Partner Management
+
+Manage partners with the `partner` (or `partners`) command.
+
+#### Create Partner
+
+```bash
+atomic-cli partner create <name> [options]
+```
+
+**Options:**
+- `--name` - Set the partner name
+- `--description` - Set the partner description
+- `--support_contact` - Set the partner support contact
+- `--metadata` - Set partner metadata from a JSON file
+- `--roles` - Set the partner roles (default: `admin`)
+- `--permissions` - Set the partner permissions
+- `--file` - Read partner input from a JSON file
+
+**Example:**
+```bash
+atomic-cli partner create "My Partner" \
+  --description "Integration partner" \
+  --support_contact "support@partner.com"
+```
+
+#### Get Partner
+
+```bash
+atomic-cli partner get <partner_id> [options]
+```
+
+**Options:**
+- `--credentials` / `-c` - Include credentials (default: true)
+- `--tokens` / `-t` - Include tokens (default: true)
+
+#### Update Partner
+
+```bash
+atomic-cli partner update <partner_id> [options]
+```
+
+**Options:** Same as create.
+
+#### List Partners
+
+```bash
+atomic-cli partner list
+```
+
+#### Delete Partner
+
+```bash
+atomic-cli partner delete <partner_id>
+```
+
+#### Partner Credentials
+
+Manage partner credentials with `partner credential` (or `credentials`, `creds`).
+
+Requires `--partner_id` on the parent command.
+
+```bash
+# Create a credential
+atomic-cli partner credential create --partner_id <id> [options]
+
+# Get a credential
+atomic-cli partner credential get <client_id> --partner_id <id>
+
+# Revoke a credential
+atomic-cli partner credential revoke <client_id> --partner_id <id>
+```
+
+**Create options:**
+- `--permissions` - Set credential permissions
+- `--roles` - Set credential roles
+- `--instance_id` - Scope to an instance
+- `--expires_at` - Set expiration timestamp
+
+#### Partner Tokens
+
+Manage partner tokens with `partner token`.
+
+Requires `--partner_id` on the parent command.
+
+```bash
+# Create a token
+atomic-cli partner token create --partner_id <id> [options]
+
+# Get a token
+atomic-cli partner token get <token_id> --partner_id <id>
+
+# Revoke a token
+atomic-cli partner token revoke <token_id> --partner_id <id>
+```
+
+**Create options:**
+- `--instance_id` - Scope to an instance
+- `--expires_at` - Set expiration timestamp
+- `--permissions` - Set token permissions
+- `--roles` - Set token roles
+
+### Asset Management
+
+Manage assets with the `asset` (or `assets`, `a`) command. Requires the `--asset_volume` flag to specify the storage volume URI.
+
+#### Create Asset
+
+```bash
+atomic-cli asset create <filename> [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--asset_volume` | URI of the asset volume | *required* |
+| `--description` | Set the asset description | |
+| `--mime_type` | Set the MIME type (auto-detected if omitted) | |
+| `--type` | Set the asset type | `media` |
+| `--public` | Make the asset publicly accessible | `false` |
+| `--expires_at` | Set expiration timestamp | |
+| `--metadata` | Set metadata from a JSON file | |
+| `--categories` | Category IDs to associate with the asset | |
+
+**Example:**
+```bash
+atomic-cli asset create photo.jpg \
+  --asset_volume "s3://my-bucket" \
+  --type media \
+  --public
+```
+
+### Job Management
+
+Manage background jobs with the `job` (or `jobs`) command.
+
+#### Create Job
+
+```bash
+atomic-cli job create <type> [options]
+```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--params` | `-p` | Job parameters as a JSON string | *required* |
+| `--state` | `-s` | Job state as a JSON string | |
+| `--scheduled_at` | `-sa` | Schedule the job for a future timestamp | |
+| `--file` | | Read job input from a JSON file | `false` |
+
+**Example:**
+```bash
+atomic-cli job create user_import \
+  --params '{"file": "users.csv"}' \
+  -i inst_abc123
+```
+
+#### Get Job
+
+```bash
+atomic-cli job get <job_id>
+```
+
+#### List Jobs
+
+```bash
+atomic-cli job list [options]
+```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--type` | `-t` | Filter by job type | |
+| `--status` | `-s` | Filter by status | `scheduled` |
+| `--offset` | | Pagination offset | |
+| `--limit` | | Number of results | `5` |
+| `--order_by` | | Sort order | |
+| `--expand` | | Expand fields | |
+
+**Example:**
+```bash
+atomic-cli job list --type user_import --status completed --limit 10
+```
+
+#### Cancel Job
+
+```bash
+atomic-cli job cancel <job_id>
+```
+
+#### Restart Job
+
+```bash
+atomic-cli job restart <job_id>
+```
+
+### Option Management
+
+Manage options with the `option` (or `options`) command.
+
+#### List Options
+
+```bash
+atomic-cli option list [options]
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--protected` - Include protected options
+
+**Example:**
+```bash
+atomic-cli option list --instance_id inst_1234567890abcdef
+```
+
+#### Get Option
+
+```bash
+atomic-cli option get <name> [options]
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--protected` - Include protected options
+- `--value` - Print the option value JSON only
+
+**Example:**
+```bash
+atomic-cli option get email.smtp.host --value
+```
+
+#### Create or Update Option
+
+```bash
+atomic-cli option create <name> <value> [options]
+# Alias: option update
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--force` - Force update even if protected (requires partner role)
+- `--file` - Read full input (including name and value) from JSON file
+- `--validate` - Validate option value only
+
+**Examples:**
+```bash
+# Simple JSON value
+atomic-cli option create feature.flags '{"beta":true}'
+
+# From file containing full input
+atomic-cli option create --file option-input.json
+```
+
+#### Delete Option
+
+```bash
+atomic-cli option delete <name> [options]
+```
+
+**Options:**
+- `--instance_id` - The instance id
+- `--force` - Force delete even if protected (requires partner role)
+
+**Example:**
+```bash
+atomic-cli option delete feature.flags --force
+```
+
+### Database Management
+
+Manage the Atomic database with the `db` command. Requires `--db_source` to be set.
+
+#### Migrate Database
+
+```bash
+atomic-cli db migrate [options]
+```
+
+Initializes or updates database functions, tables, and views using Atlas schema migrations.
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--create` | Create the database if it doesn't exist | `false` |
+| `--apply` | Apply the migrations (without this flag, changes are shown as a dry run) | `false` |
+| `--verbose` | Show verbose output of applied changes | `false` |
+
+**Examples:**
+```bash
+# Preview pending migrations
+atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate
+
+# Create database and apply migrations
+atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate --create --apply
+```
+
 ### Migrate Command
 
 Migrate subscriber data from external platforms into Passport. The `migrate` command scans a source platform's Stripe account, maps subscriptions to Passport plans, calculates per-user discounts for grandfathered pricing, and outputs a CSV file compatible with `user import`.
@@ -535,76 +919,70 @@ atomic-cli migrate substack \
 
 The `--email-domain-overwrite` flag rewrites every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`.
 
-### Option Management
+### Stripe Management
 
-Manage options with the `option` (or `options`) command.
+Manage Stripe data with the `stripe` command. All subcommands require a Stripe API key.
 
-#### List Options
+**Parent options:**
+
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--stripe-key` | `-k` | Stripe API key (or `$STRIPE_API_KEY`) | *required* |
+| `--live-mode` | | Allow live stripe keys; without this flag only test keys are accepted | `false` |
+
+#### Export
+
+Export Stripe data to JSONL files for backup. Creates a `stripe-export-<account_id>` folder containing one `.jsonl` file per object type and a `manifest.json` with account info and record counts.
 
 ```bash
-atomic-cli option list [options]
+atomic-cli stripe export [options]
 ```
 
 **Options:**
-- `--instance_id` - The instance id
-- `--protected` - Include protected options
 
-**Example:**
-```bash
-atomic-cli option list --instance_id inst_1234567890abcdef
-```
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--output` | `-o` | Output directory (the export folder is created inside) | `.` |
+| `--types` | `-t` | Object types to export (repeatable) | `all` |
 
-#### Get Option
+**Supported types:** `products`, `prices`, `customers`, `subscriptions`, `coupons`, `promotion-codes`, `all`
 
-```bash
-atomic-cli option get <name> [options]
-```
+**Expanded fields by type:**
 
-**Options:**
-- `--instance_id` - The instance id
-- `--protected` - Include protected options
-- `--value` - Print the option value JSON only
+| Type | Expansions |
+|------|-----------|
+| Prices | `currency_options`, `tiers` |
+| Customers | `default_source`, `invoice_settings.default_payment_method`, `tax` |
+| Subscriptions | `default_payment_method`, `default_source`, `discount`, `discounts`, `items.data.price`, `items.data.discounts` |
 
-**Example:**
-```bash
-atomic-cli option get email.smtp.host --value
-```
+Subscriptions are exported across all statuses: active, past_due, trialing, canceled, unpaid, and paused.
 
-#### Create or Update Option
-
-```bash
-atomic-cli option create <name> <value> [options]
-# Alias: option update
-```
-
-**Options:**
-- `--instance_id` - The instance id
-- `--force` - Force update even if protected (requires partner role)
-- `--file` - Read full input (including name and value) from JSON file
-- `--validate` - Validate option value only
+**manifest.json** includes:
+- `version` — manifest format version
+- `created_at` — export timestamp (RFC 3339)
+- `account_id` — Stripe account ID
+- `account_name` — dashboard display name
+- `livemode` — whether the export used a live key
+- `types` — list of exported object types
+- `files` — map of type to `{filename, count}`
 
 **Examples:**
-```bash
-# Simple JSON value
-atomic-cli option create feature.flags '{"beta":true}'
-
-# From file containing full input
-atomic-cli option create --file option-input.json
-```
-
-#### Delete Option
 
 ```bash
-atomic-cli option delete <name> [options]
-```
+# Export everything (test key)
+atomic-cli stripe export -k sk_test_xxx
 
-**Options:**
-- `--instance_id` - The instance id
-- `--force` - Force delete even if protected (requires partner role)
+# Export with a test key (default, no extra flag needed)
+atomic-cli stripe export -k sk_test_xxx
 
-**Example:**
-```bash
-atomic-cli option delete feature.flags --force
+# Export with a live key (must explicitly opt in)
+atomic-cli stripe export -k sk_live_xxx --live-mode
+
+# Export specific types to a custom directory
+atomic-cli stripe export -k sk_live_xxx --live-mode -t products -t prices -o /backups
+
+# Using environment variable
+STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
 ```
 
 ## Output Formats

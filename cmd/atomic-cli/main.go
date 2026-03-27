@@ -196,6 +196,7 @@ func main() {
 		assetCmd,
 		jobCmd,
 		migrateCmd,
+		stripeCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

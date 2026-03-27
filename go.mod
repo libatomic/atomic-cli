@@ -134,6 +134,7 @@ require (
 	github.com/mafredri/cdp v0.35.0 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.26 // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
@@ -154,6 +155,7 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sanketplus/go-mysql-lock v0.0.7 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
+	github.com/schollz/progressbar/v3 v3.19.0 // indirect
 	github.com/segmentio/fasthash v1.0.3 // indirect
 	github.com/sethgrid/pester v1.2.0 // indirect
 	github.com/shengdoushi/base58 v1.0.0 // indirect
@@ -181,6 +183,7 @@ require (
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/term v0.34.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect

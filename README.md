@@ -10,7 +10,7 @@ The `atomic-cli` is a powerful command-line tool for interacting with the Atomic
 
 ### Prerequisites
 
-- Go 1.24.1 or later
+- Go 1.25 or later
 - Access to an Atomic API endpoint
 
 ### Install via Homebrew (macOS/Linux)

@@ -1000,7 +1000,9 @@ STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
 
 #### Connect
 
-Connect a Stripe account via OAuth using Stripe Connect. Starts a temporary ngrok tunnel to receive the OAuth callback, then displays the resulting credentials.
+Connect a Stripe account to your platform via Stripe Connect OAuth. This is essential for creating sandbox environments with production-like data — you connect a test Stripe account to your platform's test Connect account, then use the returned secret key with `stripe export` and a future `stripe import` to replicate production subscriptions, customers, products, and pricing in a fully functional sandbox.
+
+**Why this matters:** When preparing for migrations or testing billing changes, you need a sandbox that mirrors production as closely as possible. Simply cloning data isn't enough — Stripe subscriptions, payment methods, and billing relationships must be structurally correct within Stripe itself. By connecting a test account via Connect and importing exported production data into it, you get a working sandbox where subscriptions actually bill, webhooks fire, and the full payment flow behaves like production.
 
 ```bash
 atomic-cli stripe connect --client-id <stripe_connect_client_id> [options]
@@ -1008,23 +1010,52 @@ atomic-cli stripe connect --client-id <stripe_connect_client_id> [options]
 
 **Options:**
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--client-id` | Stripe Connect client ID (or `$STRIPE_CLIENT_ID`) | *required* |
-| `--ngrok` | Use ngrok to create a public tunnel for the OAuth callback | `false` |
-| `--ngrok-authtoken` | ngrok auth token (overrides config file and `$NGROK_AUTHTOKEN`) | |
-| `--ngrok-config` | Path to ngrok config file | `~/.ngrok2/ngrok.yml` |
+| Option | Alias | Description | Default |
+|--------|-------|-------------|---------|
+| `--client-id` | | Stripe Connect client ID (or `$STRIPE_CLIENT_ID`) | *required* |
+| `--output` | `-o` | Directory to save the credentials file | `.` |
+| `--ngrok` | | Use ngrok to create a public tunnel for the OAuth callback | `false` |
+| `--ngrok-authtoken` | | ngrok auth token (overrides config file and `$NGROK_AUTHTOKEN`) | |
+| `--ngrok-config` | | Path to ngrok config file | `~/.ngrok2/ngrok.yml` |
 
 **How it works:**
 
-1. Starts a listener — either an ngrok tunnel (with `--ngrok`) or a local port (default, you proxy it yourself)
-2. Prints a Stripe Connect authorize URL for the user to open in their browser
-3. Waits for the user to authorize the connection on Stripe
-4. Exchanges the authorization code for access tokens
-5. Fetches the connected account details
-6. Displays the credentials (account ID, publishable key, secret key, etc.)
+1. Starts a listener — either an ngrok tunnel (with `--ngrok`) or a local port (default, you handle proxying)
+2. Reminds you to add the callback URI to your Stripe Dashboard under Connect > Settings > Redirects
+3. Prints the Stripe Connect authorize URL to open in your browser
+4. You log in to the target Stripe account and authorize the connection
+5. The CLI receives the OAuth callback, exchanges the authorization code for access tokens
+6. Fetches the connected account details and displays the credentials
+7. Saves credentials to `stripe-connect-<account_id>.json` (permissions `0600`)
 
-The `--stripe-key` from the parent command is used as the platform's secret key for the OAuth token exchange. Use `--live-mode` on the parent to connect live accounts.
+The `--stripe-key` from the parent command is your platform's secret key. The returned `secret_key` in the output is an access token that lets your platform make API calls on behalf of the connected account.
+
+**Typical sandbox workflow:**
+
+```bash
+# 1. Export production data (live mode)
+atomic-cli stripe export -k sk_live_xxx --live-mode
+
+# 2. Connect a test account to your platform's test Connect account
+atomic-cli stripe connect -k sk_test_platform_xxx --client-id ca_xxx --ngrok
+
+# 3. Use the returned secret_key to import data into the connected test account
+#    (stripe import command — coming soon)
+#    The imported subscriptions, products, and prices will be fully functional
+#    in the connected test account, mirroring your production structure.
+```
+
+**Output:** Credentials are printed in the configured `--out-format` (table, json, json-pretty) and saved as JSON:
+
+| Field | Description |
+|-------|-------------|
+| `account_id` | The connected Stripe account ID |
+| `account_name` | Dashboard display name |
+| `livemode` | Whether this is a live or test connection |
+| `publishable_key` | Publishable key for client-side usage |
+| `secret_key` | Access token — use this as the API key for the connected account |
+| `refresh_token` | For refreshing the token later |
+| `scope` | Permissions granted (`read_write`) |
 
 **Examples:**
 
@@ -1035,11 +1066,14 @@ atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx --ngrok
 # Connect a live account with ngrok
 atomic-cli stripe connect -k sk_live_xxx --live-mode --client-id ca_xxx --ngrok
 
-# Without ngrok (listen on random local port, you proxy it)
+# Without ngrok (listen on random local port, you handle proxying)
 atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx
 
 # Explicit ngrok authtoken
 atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx --ngrok-authtoken xxx
+
+# Save credentials to a specific directory
+atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx --ngrok -o /credentials
 
 # Using environment variables
 STRIPE_API_KEY=sk_test_xxx STRIPE_CLIENT_ID=ca_xxx \

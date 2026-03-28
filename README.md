@@ -137,7 +137,7 @@ The CLI supports two authentication methods:
 ## Global Options
 
 | Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
+|------------------------|-------|----------------------------------------------|---------|
 | `--access-token` | | Specify the access token | |
 | `--client-id` | | Specify the client ID | |
 | `--client-secret` | | Specify the client secret | |
@@ -451,7 +451,7 @@ atomic-cli user import migrate_users.csv \
 The import CSV uses the `UserImportRecord` format. All fields except `login` are optional:
 
 | Column | Description | Default |
-|--------|-------------|---------|
+|------------------------|----------------------------------------------|---------|
 | `login` | User login (must be a valid email address) | *required* |
 | `email` | Distribution email address | login |
 | `email_verified` | Mark email as verified | `false` |
@@ -486,7 +486,7 @@ atomic-cli access-token create [options]
 **Options:**
 
 | Option | Description | Default |
-|--------|-------------|---------|
+|------------------------|----------------------------------------------|---------|
 | `--application_id` | Application ID to associate with the token | |
 | `--user_id` | User ID to associate with the token | |
 | `--partner_id` | Partner ID to associate with the token | |
@@ -639,7 +639,7 @@ atomic-cli asset create <filename> [options]
 **Options:**
 
 | Option | Description | Default |
-|--------|-------------|---------|
+|------------------------|----------------------------------------------|---------|
 | `--asset_volume` | URI of the asset volume | *required* |
 | `--description` | Set the asset description | |
 | `--mime_type` | Set the MIME type (auto-detected if omitted) | |
@@ -670,7 +670,7 @@ atomic-cli job create <type> [options]
 **Options:**
 
 | Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
+|------------------------|-------|----------------------------------------------|---------|
 | `--params` | `-p` | Job parameters as a JSON string | *required* |
 | `--state` | `-s` | Job state as a JSON string | |
 | `--scheduled_at` | `-sa` | Schedule the job for a future timestamp | |
@@ -698,7 +698,7 @@ atomic-cli job list [options]
 **Options:**
 
 | Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
+|------------------------|-------|----------------------------------------------|---------|
 | `--type` | `-t` | Filter by job type | |
 | `--status` | `-s` | Filter by status | `scheduled` |
 | `--offset` | | Pagination offset | |
@@ -810,7 +810,7 @@ Initializes or updates database functions, tables, and views using Atlas schema 
 **Options:**
 
 | Option | Description | Default |
-|--------|-------------|---------|
+|------------------------|----------------------------------------------|---------|
 | `--create` | Create the database if it doesn't exist | `false` |
 | `--apply` | Apply the migrations (without this flag, changes are shown as a dry run) | `false` |
 | `--verbose` | Show verbose output of applied changes | `false` |
@@ -841,7 +841,7 @@ Currently supported platforms:
 These options apply to all migrate subcommands:
 
 | Option | Description | Default |
-|--------|-------------|---------|
+|------------------------|----------------------------------------------|---------|
 | `--stripe-key` | Stripe API key for the source account (or `$STRIPE_API_KEY`) | *required* |
 | `--dry-run` | Preview what would happen without creating plans | `false` |
 | `--output`, `--out` | Output CSV file path | `migrate_users.csv` |
@@ -859,7 +859,7 @@ atomic-cli migrate substack [options]
 **Substack-specific options:**
 
 | Option | Description | Default |
-|--------|-------------|---------|
+|------------------------|----------------------------------------------|---------|
 | `--subscriber-plan` | Existing Passport plan ID for regular subscribers | |
 | `--founder-plan` | Existing Passport plan ID for founding members | |
 | `--create-plans` | Auto-create Subscriber and Founder plans from Stripe data | `true` |
@@ -925,7 +925,7 @@ Manage Stripe data with the `stripe` command. All subcommands require a Stripe A
 **Parent options:**
 
 | Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
+|------------------------|-------|----------------------------------------------|---------|
 | `--stripe-key` | `-k` | Stripe API key (or `$STRIPE_API_KEY`) | *required* |
 | `--live-mode` | | Allow live stripe keys; without this flag only test keys are accepted | `false` |
 
@@ -940,7 +940,7 @@ atomic-cli stripe export [options]
 **Options:**
 
 | Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
+|------------------------|-------|----------------------------------------------|---------|
 | `--output` | `-o` | Output directory (the export folder is created inside) | `.` |
 | `--types` | `-t` | Object types to export (repeatable) | `all` |
 | `--clean` | | Clear existing export data and start fresh | `false` |
@@ -951,7 +951,7 @@ atomic-cli stripe export [options]
 **Expanded fields by type:**
 
 | Type | Expansions |
-|------|-----------|
+|-------------------|----------------------------------------------|
 | Prices | `currency_options`, `tiers` |
 | Customers | `default_source`, `invoice_settings.default_payment_method`, `tax` |
 | Subscriptions | `default_payment_method`, `default_source`, `discount`, `discounts`, `items.data.price`, `items.data.discounts` |
@@ -1011,7 +1011,7 @@ atomic-cli stripe connect --client-id <stripe_connect_client_id> [options]
 **Options:**
 
 | Option | Alias | Description | Default |
-|--------|-------|-------------|---------|
+|------------------------|-------|----------------------------------------------|---------|
 | `--client-id` | | Stripe Connect client ID (or `$STRIPE_CLIENT_ID`) | *required* |
 | `--output` | `-o` | Directory to save the credentials file | `.` |
 | `--ngrok` | | Use ngrok to create a public tunnel for the OAuth callback | `false` |
@@ -1048,7 +1048,7 @@ atomic-cli stripe connect -k sk_test_platform_xxx --client-id ca_xxx --ngrok
 **Output:** Credentials are printed in the configured `--out-format` (table, json, json-pretty) and saved as JSON:
 
 | Field | Description |
-|-------|-------------|
+|-------------------|----------------------------------------------|
 | `account_id` | The connected Stripe account ID |
 | `account_name` | Dashboard display name |
 | `livemode` | Whether this is a live or test connection |

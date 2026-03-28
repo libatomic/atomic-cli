@@ -58,9 +58,11 @@ var (
 				return nil, fmt.Errorf("failed to authenticate with stripe: %w", err)
 			}
 
-			cmd.Metadata = map[string]any{
-				"stripe_account": acct,
+			root := cmd.Root()
+			if root.Metadata == nil {
+				root.Metadata = make(map[string]any)
 			}
+			root.Metadata["stripe_account"] = acct
 
 			return nil, nil
 		},

@@ -20,7 +20,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,10 +40,16 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+const (
+	manifestVersion  = "2"
+	manifestFilename = "manifest.json"
+)
+
 type (
 	exportManifest struct {
 		Version     string                    `json:"version"`
 		CreatedAt   string                    `json:"created_at"`
+		UpdatedAt   string                    `json:"updated_at"`
 		AccountID   string                    `json:"account_id"`
 		AccountName string                    `json:"account_name,omitempty"`
 		Livemode    bool                      `json:"livemode"`
@@ -50,8 +58,15 @@ type (
 	}
 
 	exportFileInfo struct {
-		Filename string `json:"filename"`
-		Count    int    `json:"count"`
+		Filename   string `json:"filename"`
+		Count      int    `json:"count"`
+		MD5        string `json:"md5"`
+		ExportedAt string `json:"exported_at"`
+	}
+
+	exportOptions struct {
+		createdGTE *int64
+		activeOnly bool
 	}
 )
 
@@ -73,12 +88,22 @@ var (
 				Usage:   "object types to export: products, prices, customers, subscriptions, coupons, promotion-codes, or all",
 				Value:   []string{"all"},
 			},
+			&cli.BoolFlag{
+				Name:  "clean",
+				Usage: "clear existing export data and start fresh",
+			},
+			&cli.BoolFlag{
+				Name:  "active",
+				Usage: "only export active objects (applies to products, prices, promotion codes; subscriptions use active status only)",
+			},
 		},
 	}
 )
 
 func stripeExport(_ context.Context, cmd *cli.Command) error {
 	acct := cmd.Root().Metadata["stripe_account"].(*stripe.Account)
+	clean := cmd.Bool("clean")
+	activeOnly := cmd.Bool("active")
 
 	types := cmd.StringSlice("types")
 	exportAll := false
@@ -99,25 +124,61 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 	}
 
 	mode := "live"
-	if !acct.ChargesEnabled || strings.HasPrefix(cmd.Root().String("stripe-key"), "sk_test_") {
+	isTest := strings.HasPrefix(cmd.Root().String("stripe-key"), "sk_test_")
+	if isTest {
 		mode = "test"
+	}
+
+	// load or initialize manifest
+	manifest, err := loadManifest(exportDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to load manifest: %w", err)
+	}
+
+	opts := exportOptions{activeOnly: activeOnly}
+
+	if clean || manifest == nil {
+		if clean && manifest != nil {
+			fmt.Fprintf(os.Stderr, "clearing existing export data\n")
+			cleanExportDir(exportDir)
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		manifest = &exportManifest{
+			Version:     manifestVersion,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			AccountID:   acct.ID,
+			AccountName: acct.Settings.Dashboard.DisplayName,
+			Livemode:    !isTest,
+			Types:       []string{},
+			Files:       make(map[string]exportFileInfo),
+		}
+	} else {
+		// verify account matches
+		if manifest.AccountID != acct.ID {
+			return fmt.Errorf("export directory belongs to account %s, current account is %s", manifest.AccountID, acct.ID)
+		}
+
+		// verify file integrity
+		verifyManifestFiles(exportDir, manifest)
+
+		// use manifest updated_at as created.gte for incremental sync
+		if manifest.UpdatedAt != "" {
+			t, err := time.Parse(time.RFC3339, manifest.UpdatedAt)
+			if err == nil {
+				ts := t.Unix()
+				opts.createdGTE = &ts
+				fmt.Fprintf(os.Stderr, "incremental sync from %s\n", manifest.UpdatedAt)
+			}
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "exporting account %s (%s mode) to %s\n", acct.ID, mode, exportDir)
 
-	manifest := exportManifest{
-		Version:     "1",
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		AccountID:   acct.ID,
-		AccountName: acct.Settings.Dashboard.DisplayName,
-		Livemode:    !strings.HasPrefix(cmd.Root().String("stripe-key"), "sk_test_"),
-		Types:       []string{},
-		Files:       make(map[string]exportFileInfo),
-	}
-
 	exportTypes := []struct {
 		name string
-		fn   func(string) (int, error)
+		fn   func(string, exportOptions) (int, error)
 		file string
 	}{
 		{"products", exportProducts, "products.jsonl"},
@@ -133,30 +194,141 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 			continue
 		}
 
-		count, err := et.fn(exportDir)
+		count, err := et.fn(exportDir, opts)
 		if err != nil {
 			return fmt.Errorf("failed to export %s: %w", et.name, err)
 		}
 
-		manifest.Types = append(manifest.Types, et.name)
+		filePath := filepath.Join(exportDir, et.file)
+		md5sum, err := util.FileMD5(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to compute md5 for %s: %w", et.file, err)
+		}
+
+		if !containsString(manifest.Types, et.name) {
+			manifest.Types = append(manifest.Types, et.name)
+		}
+
 		manifest.Files[et.name] = exportFileInfo{
-			Filename: et.file,
-			Count:    count,
+			Filename:   et.file,
+			Count:      count,
+			MD5:        md5sum,
+			ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 
-	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal manifest: %w", err)
-	}
+	manifest.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	if err := os.WriteFile(filepath.Join(exportDir, "manifest.json"), manifestBytes, 0644); err != nil {
+	if err := writeManifestAtomic(exportDir, manifest); err != nil {
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "export complete: %s\n", exportDir)
 
 	return nil
+}
+
+// loadManifest reads and parses the manifest from the export directory.
+// Returns os.ErrNotExist if the manifest file does not exist.
+func loadManifest(dir string) (*exportManifest, error) {
+	data, err := os.ReadFile(filepath.Join(dir, manifestFilename))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
+	}
+
+	var m exportManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("corrupt manifest: %w", err)
+	}
+
+	return &m, nil
+}
+
+// verifyManifestFiles checks MD5 checksums for all files in the manifest.
+// Files that fail verification are removed from the manifest so they get re-exported.
+func verifyManifestFiles(dir string, m *exportManifest) {
+	for typeName, info := range m.Files {
+		filePath := filepath.Join(dir, info.Filename)
+
+		if _, err := os.Stat(filePath); errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "warning: %s missing, will re-export\n", info.Filename)
+			delete(m.Files, typeName)
+			m.Types = removeString(m.Types, typeName)
+			continue
+		}
+
+		if info.MD5 == "" {
+			continue
+		}
+
+		actual, err := util.FileMD5(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to verify %s, will re-export: %v\n", info.Filename, err)
+			delete(m.Files, typeName)
+			m.Types = removeString(m.Types, typeName)
+			continue
+		}
+
+		if actual != info.MD5 {
+			fmt.Fprintf(os.Stderr, "warning: %s modified outside export tool (md5 mismatch), will re-export\n", info.Filename)
+			os.Remove(filePath)
+			delete(m.Files, typeName)
+			m.Types = removeString(m.Types, typeName)
+		}
+	}
+}
+
+// writeManifestAtomic writes the manifest to a temp file and renames it atomically.
+func writeManifestAtomic(dir string, m *exportManifest) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	data = append(data, '\n')
+
+	tmpPath := filepath.Join(dir, manifestFilename+".tmp")
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, filepath.Join(dir, manifestFilename))
+}
+
+// cleanExportDir removes all jsonl files, tmp files, and the manifest from the directory.
+func cleanExportDir(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".tmp") || name == manifestFilename {
+			os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
+// stripeIterSeq adapts a stripe-go list iterator into an iter.Seq2[T, error].
+func stripeIterSeq[T any, I interface {
+	Next() bool
+	Err() error
+}](it I, extract func(I) *T, onEach func()) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		for it.Next() {
+			v := extract(it)
+			if onEach != nil {
+				onEach()
+			}
+			if !yield(*v, nil) {
+				return
+			}
+		}
+		if err := it.Err(); err != nil {
+			var zero T
+			yield(zero, err)
+		}
+	}
 }
 
 func newExportSpinner(description string) *progressbar.ProgressBar {
@@ -169,43 +341,40 @@ func newExportSpinner(description string) *progressbar.ProgressBar {
 	)
 }
 
-func exportProducts(dir string) (int, error) {
-	w, err := util.NewJSONLFileWriter[stripe.Product](filepath.Join(dir, "products.jsonl"))
-	if err != nil {
-		return 0, err
-	}
-	defer w.Close()
-
+func exportProducts(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting products")
 
 	params := &stripe.ProductListParams{}
 	params.Limit = stripe.Int64(100)
 
-	iter := product.List(params)
-	for iter.Next() {
-		if err := w.Write(*iter.Product()); err != nil {
-			return w.Count(), err
-		}
-		bar.Add(1)
+	if opts.activeOnly {
+		params.Active = stripe.Bool(true)
 	}
+	if opts.createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	}
+
+	seq := stripeIterSeq(product.List(params),
+		func(i *product.Iter) *stripe.Product { return i.Product() },
+		func() { bar.Add(1) },
+	)
+
+	path := filepath.Join(dir, "products.jsonl")
+	count, err := util.JSONLMergeWrite(path,
+		func(p stripe.Product) string { return p.ID },
+		seq,
+	)
 
 	bar.Finish()
-
-	if err := iter.Err(); err != nil {
-		return w.Count(), fmt.Errorf("failed to list products: %w", err)
+	if err != nil {
+		return count, fmt.Errorf("failed to export products: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "exported %d products\n", w.Count())
-	return w.Count(), nil
+	fmt.Fprintf(os.Stderr, "exported %d products\n", count)
+	return count, nil
 }
 
-func exportPrices(dir string) (int, error) {
-	w, err := util.NewJSONLFileWriter[stripe.Price](filepath.Join(dir, "prices.jsonl"))
-	if err != nil {
-		return 0, err
-	}
-	defer w.Close()
-
+func exportPrices(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting prices")
 
 	params := &stripe.PriceListParams{}
@@ -213,91 +382,97 @@ func exportPrices(dir string) (int, error) {
 	params.AddExpand("data.currency_options")
 	params.AddExpand("data.tiers")
 
-	iter := price.List(params)
-	for iter.Next() {
-		if err := w.Write(*iter.Price()); err != nil {
-			return w.Count(), err
-		}
-		bar.Add(1)
+	if opts.activeOnly {
+		params.Active = stripe.Bool(true)
 	}
+	if opts.createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	}
+
+	seq := stripeIterSeq(price.List(params),
+		func(i *price.Iter) *stripe.Price { return i.Price() },
+		func() { bar.Add(1) },
+	)
+
+	path := filepath.Join(dir, "prices.jsonl")
+	count, err := util.JSONLMergeWrite(path,
+		func(p stripe.Price) string { return p.ID },
+		seq,
+	)
 
 	bar.Finish()
-
-	if err := iter.Err(); err != nil {
-		return w.Count(), fmt.Errorf("failed to list prices: %w", err)
+	if err != nil {
+		return count, fmt.Errorf("failed to export prices: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "exported %d prices\n", w.Count())
-	return w.Count(), nil
+	fmt.Fprintf(os.Stderr, "exported %d prices\n", count)
+	return count, nil
 }
 
-func exportCoupons(dir string) (int, error) {
-	w, err := util.NewJSONLFileWriter[stripe.Coupon](filepath.Join(dir, "coupons.jsonl"))
-	if err != nil {
-		return 0, err
-	}
-	defer w.Close()
-
+func exportCoupons(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting coupons")
 
 	params := &stripe.CouponListParams{}
 	params.Limit = stripe.Int64(100)
 
-	iter := coupon.List(params)
-	for iter.Next() {
-		if err := w.Write(*iter.Coupon()); err != nil {
-			return w.Count(), err
-		}
-		bar.Add(1)
+	if opts.createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
 	}
+
+	seq := stripeIterSeq(coupon.List(params),
+		func(i *coupon.Iter) *stripe.Coupon { return i.Coupon() },
+		func() { bar.Add(1) },
+	)
+
+	path := filepath.Join(dir, "coupons.jsonl")
+	count, err := util.JSONLMergeWrite(path,
+		func(c stripe.Coupon) string { return c.ID },
+		seq,
+	)
 
 	bar.Finish()
-
-	if err := iter.Err(); err != nil {
-		return w.Count(), fmt.Errorf("failed to list coupons: %w", err)
+	if err != nil {
+		return count, fmt.Errorf("failed to export coupons: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "exported %d coupons\n", w.Count())
-	return w.Count(), nil
+	fmt.Fprintf(os.Stderr, "exported %d coupons\n", count)
+	return count, nil
 }
 
-func exportPromotionCodes(dir string) (int, error) {
-	w, err := util.NewJSONLFileWriter[stripe.PromotionCode](filepath.Join(dir, "promotion_codes.jsonl"))
-	if err != nil {
-		return 0, err
-	}
-	defer w.Close()
-
+func exportPromotionCodes(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting promotion codes")
 
 	params := &stripe.PromotionCodeListParams{}
 	params.Limit = stripe.Int64(100)
 
-	iter := promotioncode.List(params)
-	for iter.Next() {
-		if err := w.Write(*iter.PromotionCode()); err != nil {
-			return w.Count(), err
-		}
-		bar.Add(1)
+	if opts.activeOnly {
+		params.Active = stripe.Bool(true)
 	}
+	if opts.createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	}
+
+	seq := stripeIterSeq(promotioncode.List(params),
+		func(i *promotioncode.Iter) *stripe.PromotionCode { return i.PromotionCode() },
+		func() { bar.Add(1) },
+	)
+
+	path := filepath.Join(dir, "promotion_codes.jsonl")
+	count, err := util.JSONLMergeWrite(path,
+		func(pc stripe.PromotionCode) string { return pc.ID },
+		seq,
+	)
 
 	bar.Finish()
-
-	if err := iter.Err(); err != nil {
-		return w.Count(), fmt.Errorf("failed to list promotion codes: %w", err)
+	if err != nil {
+		return count, fmt.Errorf("failed to export promotion codes: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "exported %d promotion codes\n", w.Count())
-	return w.Count(), nil
+	fmt.Fprintf(os.Stderr, "exported %d promotion codes\n", count)
+	return count, nil
 }
 
-func exportCustomers(dir string) (int, error) {
-	w, err := util.NewJSONLFileWriter[stripe.Customer](filepath.Join(dir, "customers.jsonl"))
-	if err != nil {
-		return 0, err
-	}
-	defer w.Close()
-
+func exportCustomers(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting customers")
 
 	params := &stripe.CustomerListParams{}
@@ -306,61 +481,102 @@ func exportCustomers(dir string) (int, error) {
 	params.AddExpand("data.invoice_settings.default_payment_method")
 	params.AddExpand("data.tax")
 
-	iter := customer.List(params)
-	for iter.Next() {
-		if err := w.Write(*iter.Customer()); err != nil {
-			return w.Count(), err
-		}
-		bar.Add(1)
+	if opts.createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
 	}
+
+	seq := stripeIterSeq(customer.List(params),
+		func(i *customer.Iter) *stripe.Customer { return i.Customer() },
+		func() { bar.Add(1) },
+	)
+
+	path := filepath.Join(dir, "customers.jsonl")
+	count, err := util.JSONLMergeWrite(path,
+		func(c stripe.Customer) string { return c.ID },
+		seq,
+	)
 
 	bar.Finish()
-
-	if err := iter.Err(); err != nil {
-		return w.Count(), fmt.Errorf("failed to list customers: %w", err)
+	if err != nil {
+		return count, fmt.Errorf("failed to export customers: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "exported %d customers\n", w.Count())
-	return w.Count(), nil
+	fmt.Fprintf(os.Stderr, "exported %d customers\n", count)
+	return count, nil
 }
 
-func exportSubscriptions(dir string) (int, error) {
-	w, err := util.NewJSONLFileWriter[stripe.Subscription](filepath.Join(dir, "subscriptions.jsonl"))
-	if err != nil {
-		return 0, err
-	}
-	defer w.Close()
-
+func exportSubscriptions(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting subscriptions")
 
-	params := &stripe.SubscriptionListParams{}
-	params.Limit = stripe.Int64(100)
-	params.AddExpand("data.default_payment_method")
-	params.AddExpand("data.default_source")
-	params.AddExpand("data.discount")
-	params.AddExpand("data.discounts")
-	params.AddExpand("data.items.data.price")
-	params.AddExpand("data.items.data.discounts")
+	statuses := []string{"active", "past_due", "trialing", "canceled", "unpaid", "paused"}
+	if opts.activeOnly {
+		statuses = []string{"active"}
+	}
 
-	for _, status := range []string{"active", "past_due", "trialing", "canceled", "unpaid", "paused"} {
-		params.Status = stripe.String(status)
-		bar.Describe(fmt.Sprintf("Exporting subscriptions [%s]", status))
+	seq := func(yield func(stripe.Subscription, error) bool) {
+		params := &stripe.SubscriptionListParams{}
+		params.Limit = stripe.Int64(100)
+		params.AddExpand("data.default_payment_method")
+		params.AddExpand("data.default_source")
+		params.AddExpand("data.discount")
+		params.AddExpand("data.discounts")
+		params.AddExpand("data.items.data.price")
+		params.AddExpand("data.items.data.discounts")
 
-		iter := subscription.List(params)
-		for iter.Next() {
-			if err := w.Write(*iter.Subscription()); err != nil {
-				return w.Count(), err
-			}
-			bar.Add(1)
+		if opts.createdGTE != nil {
+			params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
 		}
 
-		if err := iter.Err(); err != nil {
-			return w.Count(), fmt.Errorf("failed to list %s subscriptions: %w", status, err)
+		for _, status := range statuses {
+			params.Status = stripe.String(status)
+			bar.Describe(fmt.Sprintf("Exporting subscriptions [%s]", status))
+
+			it := subscription.List(params)
+			for it.Next() {
+				bar.Add(1)
+				if !yield(*it.Subscription(), nil) {
+					return
+				}
+			}
+
+			if err := it.Err(); err != nil {
+				var zero stripe.Subscription
+				yield(zero, fmt.Errorf("failed to list %s subscriptions: %w", status, err))
+				return
+			}
 		}
 	}
 
-	bar.Finish()
+	path := filepath.Join(dir, "subscriptions.jsonl")
+	count, err := util.JSONLMergeWrite(path,
+		func(s stripe.Subscription) string { return s.ID },
+		seq,
+	)
 
-	fmt.Fprintf(os.Stderr, "exported %d subscriptions\n", w.Count())
-	return w.Count(), nil
+	bar.Finish()
+	if err != nil {
+		return count, fmt.Errorf("failed to export subscriptions: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "exported %d subscriptions\n", count)
+	return count, nil
+}
+
+func containsString(s []string, v string) bool {
+	for _, item := range s {
+		if item == v {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(s []string, v string) []string {
+	result := make([]string, 0, len(s))
+	for _, item := range s {
+		if item != v {
+			result = append(result, item)
+		}
+	}
+	return result
 }

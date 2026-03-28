@@ -142,7 +142,6 @@ The CLI supports two authentication methods:
 | `--client-id` | | Specify the client ID | |
 | `--client-secret` | | Specify the client secret | |
 | `--host` | | Specify the API host | Client default |
-| `--silent` | `-s` | Do not print any output | false |
 | `--out-format` | `-o` | Output format (table, json, json-pretty) | table |
 | `--fields` | `-f` | Specify fields to display | |
 
@@ -944,6 +943,8 @@ atomic-cli stripe export [options]
 |--------|-------|-------------|---------|
 | `--output` | `-o` | Output directory (the export folder is created inside) | `.` |
 | `--types` | `-t` | Object types to export (repeatable) | `all` |
+| `--clean` | | Clear existing export data and start fresh | `false` |
+| `--active` | | Only export active objects (products, prices, promotion codes, active subscriptions) | `false` |
 
 **Supported types:** `products`, `prices`, `customers`, `subscriptions`, `coupons`, `promotion-codes`, `all`
 
@@ -955,16 +956,19 @@ atomic-cli stripe export [options]
 | Customers | `default_source`, `invoice_settings.default_payment_method`, `tax` |
 | Subscriptions | `default_payment_method`, `default_source`, `discount`, `discounts`, `items.data.price`, `items.data.discounts` |
 
-Subscriptions are exported across all statuses: active, past_due, trialing, canceled, unpaid, and paused.
+Subscriptions are exported across all statuses: active, past_due, trialing, canceled, unpaid, and paused. With `--active`, only active subscriptions are exported.
+
+**Resume/sync behavior:** Running export again on the same account performs an incremental sync — only objects created since the last export are fetched from Stripe (using `created.gte` from the manifest `updated_at`), then merged into existing files by object ID (last-write-wins). Files are written atomically via temp file + rename, so interrupted exports never leave corrupt data. On resume, MD5 checksums are verified — tampered or corrupt files are re-exported from scratch. Use `--clean` to clear existing data and start fresh.
 
 **manifest.json** includes:
-- `version` — manifest format version
-- `created_at` — export timestamp (RFC 3339)
-- `account_id` — Stripe account ID
+- `version` — manifest format version (`"2"`)
+- `created_at` — first export timestamp (RFC 3339)
+- `updated_at` — most recent sync timestamp
+- `account_id` — Stripe account ID (verified on resume; mismatches are rejected)
 - `account_name` — dashboard display name
 - `livemode` — whether the export used a live key
 - `types` — list of exported object types
-- `files` — map of type to `{filename, count}`
+- `files` — map of type to `{filename, count, md5, exported_at}`
 
 **Examples:**
 
@@ -980,6 +984,15 @@ atomic-cli stripe export -k sk_live_xxx --live-mode
 
 # Export specific types to a custom directory
 atomic-cli stripe export -k sk_live_xxx --live-mode -t products -t prices -o /backups
+
+# Re-run to incrementally sync new records
+atomic-cli stripe export -k sk_test_xxx
+
+# Export only active objects
+atomic-cli stripe export -k sk_test_xxx --active
+
+# Clear existing data and start fresh
+atomic-cli stripe export -k sk_test_xxx --clean
 
 # Using environment variable
 STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
@@ -1068,14 +1081,6 @@ atomic-cli application list --instance_id $INSTANCE_ID
 
 echo "Users:"
 atomic-cli user list --instance_id $INSTANCE_ID
-```
-
-### Silent Mode
-
-Use `--silent` to suppress output (useful in scripts):
-
-```bash
-atomic-cli instance create my-instance --silent
 ```
 
 ### Custom Fields

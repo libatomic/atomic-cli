@@ -152,11 +152,6 @@ func main() {
 			),
 			Value: client.DefaultAPIHost,
 		},
-		&cli.BoolFlag{
-			Name:    "silent",
-			Aliases: []string{"s"},
-			Usage:   "do not print any output",
-		},
 		&cli.StringFlag{
 			Name:    "out-format",
 			Aliases: []string{"o"},
@@ -258,10 +253,6 @@ func main() {
 }
 
 func PrintResult[T any](cmd *cli.Command, v []T, options ...PrintResultOption) bool {
-	if cmd.Bool("silent") {
-		return true
-	}
-
 	opts := PrintResultOptions{
 		FieldFormatters: make(map[string]FieldFormatterFunc),
 		VirtualFields:   make(map[string]FieldFormatterFunc),

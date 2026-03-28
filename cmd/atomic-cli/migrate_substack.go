@@ -21,11 +21,13 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/apex/log"
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/schollz/progressbar/v3"
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/stripe/stripe-go/v79"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
@@ -131,22 +133,20 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	sc := initStripeClient(cmd.String("stripe-key"))
 
 	// Pass 1: Discover all Substack prices
-	result, err := runSpinner("Scanning Stripe for Substack prices...", func() (any, error) {
-		return discoverSubstackPrices(sc)
-	})
+	bar := newMigrateSpinner("Scanning Stripe for Substack prices")
+	allPrices, err := discoverSubstackPrices(sc, bar)
+	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to discover Substack prices: %w", err)
 	}
 
-	allPrices := result.([]*substackPrice)
+	fmt.Fprintf(os.Stderr, "found %d Substack prices\n", len(allPrices))
 
 	if len(allPrices) == 0 {
 		return fmt.Errorf("no Substack prices found in Stripe (looking for metadata substack=yes)")
 	}
 
 	// Separate active prices and check for founding
-	// Founding prices are included even if inactive, since there may be
-	// active subscriptions on them that need a Passport plan to migrate to.
 	var activePriceInfos []*sourcePriceInfo
 	var hasFoundingPrice bool
 	for _, p := range allPrices {
@@ -188,14 +188,14 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Pass 4: Collect active subscriptions
-	result, err = runProgress("Collecting active subscriptions...", func(send func(progressTickMsg)) (any, error) {
-		return collectSubstackSubscriptions(sc, allPrices, mapping, send)
-	})
+	bar = newMigrateProgress(len(allPrices), "Collecting subscriptions")
+	records, err := collectSubstackSubscriptions(sc, allPrices, mapping, bar)
+	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
 	}
 
-	records := result.([]*migrationRecord)
+	fmt.Fprintf(os.Stderr, "collected %d subscriptions\n", len(records))
 
 	if len(records) == 0 {
 		log.Warn("no active subscriptions found")
@@ -207,23 +207,20 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Pass 6: Write CSV
-	_, err = runSpinner(fmt.Sprintf("Writing %d records to %s...", len(records), output), func() (any, error) {
-		return nil, writeImportCSV(records, output, dryRun, prorate, emailDomain)
-	})
-	if err != nil {
+	if err := writeImportCSV(records, output, dryRun, prorate, emailDomain); err != nil {
 		return fmt.Errorf("failed to write CSV: %w", err)
 	}
 
 	if dryRun {
-		fmt.Printf("[DRY RUN] wrote %d records to %s\n", len(records), output)
+		fmt.Fprintf(os.Stderr, "[DRY RUN] wrote %d records to %s\n", len(records), output)
 	} else {
-		fmt.Printf("Wrote %d records to %s\n", len(records), output)
+		fmt.Fprintf(os.Stderr, "wrote %d records to %s\n", len(records), output)
 	}
 
 	return nil
 }
 
-func discoverSubstackPrices(sc *stripeclient.API) ([]*substackPrice, error) {
+func discoverSubstackPrices(sc *stripeclient.API, bar *progressbar.ProgressBar) ([]*substackPrice, error) {
 	var prices []*substackPrice
 
 	params := &stripe.PriceListParams{}
@@ -233,6 +230,7 @@ func discoverSubstackPrices(sc *stripeclient.API) ([]*substackPrice, error) {
 	iter := sc.Prices.List(params)
 	for iter.Next() {
 		p := iter.Price()
+		bar.Add(1)
 
 		if p.Metadata["substack"] != "yes" {
 			continue
@@ -391,75 +389,81 @@ func handleCreatePlans(ctx context.Context, activePrices []*sourcePriceInfo, dry
 		return nil, fmt.Errorf("plan creation canceled by user")
 	}
 
-	// Create plans with spinner
-	result, err := runSpinner("Creating plans...", func() (any, error) {
-		// Create Subscriber plan
-		if monthlyPrice != nil || annualPrice != nil {
-			subscriberPlan, err := backend.PlanCreate(ctx, &atomic.PlanCreateInput{
-				InstanceID:  inst.UUID,
-				Name:        "Subscriber",
-				Description: ptr.String("Substack subscriber migration"),
-				Type:        atomic.PlanTypePaid,
-				Active:      ptr.Bool(true),
-				Hidden:      ptr.Bool(true),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to create Subscriber plan: %w", err)
-			}
+	bar := newMigrateSpinner("Creating plans")
 
-			mapping.SubscriberPlanID = string(subscriberPlan.UUID)
-
-			if monthlyPrice != nil {
-				price, err := createPassportPrice(ctx, subscriberPlan.UUID, "Monthly", monthlyPrice.StripePrice, "month")
-				if err != nil {
-					return nil, err
-				}
-				mapping.MonthlyPriceID = string(price.UUID)
-				mapping.setAmount(mapping.SubscriberPlanID, atomic.SubscriptionIntervalMonth, monthlyPrice.StripePrice)
-			}
-
-			if annualPrice != nil {
-				price, err := createPassportPrice(ctx, subscriberPlan.UUID, "Annual", annualPrice.StripePrice, "year")
-				if err != nil {
-					return nil, err
-				}
-				mapping.AnnualPriceID = string(price.UUID)
-				mapping.setAmount(mapping.SubscriberPlanID, atomic.SubscriptionIntervalYear, annualPrice.StripePrice)
-			}
+	// Create Subscriber plan
+	if monthlyPrice != nil || annualPrice != nil {
+		subscriberPlan, err := backend.PlanCreate(ctx, &atomic.PlanCreateInput{
+			InstanceID:  inst.UUID,
+			Name:        "Subscriber",
+			Description: ptr.String("Substack subscriber migration"),
+			Type:        atomic.PlanTypePaid,
+			Active:      ptr.Bool(true),
+			Hidden:      ptr.Bool(true),
+		})
+		if err != nil {
+			bar.Finish()
+			return nil, fmt.Errorf("failed to create Subscriber plan: %w", err)
 		}
 
-		// Create Founder plan
-		if founderPrice != nil {
-			founderPlan, err := backend.PlanCreate(ctx, &atomic.PlanCreateInput{
-				InstanceID:  inst.UUID,
-				Name:        "Founder",
-				Description: ptr.String("Substack founder migration"),
-				Type:        atomic.PlanTypePaid,
-				Active:      ptr.Bool(true),
-				Hidden:      ptr.Bool(true),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to create Founder plan: %w", err)
-			}
+		mapping.SubscriberPlanID = string(subscriberPlan.UUID)
+		bar.Add(1)
 
-			mapping.FounderPlanID = string(founderPlan.UUID)
-
-			price, err := createPassportPrice(ctx, founderPlan.UUID, "Annual", founderPrice.StripePrice, "year")
+		if monthlyPrice != nil {
+			price, err := createPassportPrice(ctx, subscriberPlan.UUID, "Monthly", monthlyPrice.StripePrice, "month")
 			if err != nil {
+				bar.Finish()
 				return nil, err
 			}
-			mapping.FounderPriceID = string(price.UUID)
-			mapping.setAmount(mapping.FounderPlanID, atomic.SubscriptionIntervalYear, founderPrice.StripePrice)
+			mapping.MonthlyPriceID = string(price.UUID)
+			mapping.setAmount(mapping.SubscriberPlanID, atomic.SubscriptionIntervalMonth, monthlyPrice.StripePrice)
+			bar.Add(1)
 		}
 
-		return mapping, nil
-	})
-
-	if err != nil {
-		return nil, err
+		if annualPrice != nil {
+			price, err := createPassportPrice(ctx, subscriberPlan.UUID, "Annual", annualPrice.StripePrice, "year")
+			if err != nil {
+				bar.Finish()
+				return nil, err
+			}
+			mapping.AnnualPriceID = string(price.UUID)
+			mapping.setAmount(mapping.SubscriberPlanID, atomic.SubscriptionIntervalYear, annualPrice.StripePrice)
+			bar.Add(1)
+		}
 	}
 
-	return result.(*passportPlanMapping), nil
+	// Create Founder plan
+	if founderPrice != nil {
+		founderPlan, err := backend.PlanCreate(ctx, &atomic.PlanCreateInput{
+			InstanceID:  inst.UUID,
+			Name:        "Founder",
+			Description: ptr.String("Substack founder migration"),
+			Type:        atomic.PlanTypePaid,
+			Active:      ptr.Bool(true),
+			Hidden:      ptr.Bool(true),
+		})
+		if err != nil {
+			bar.Finish()
+			return nil, fmt.Errorf("failed to create Founder plan: %w", err)
+		}
+
+		mapping.FounderPlanID = string(founderPlan.UUID)
+		bar.Add(1)
+
+		price, err := createPassportPrice(ctx, founderPlan.UUID, "Annual", founderPrice.StripePrice, "year")
+		if err != nil {
+			bar.Finish()
+			return nil, err
+		}
+		mapping.FounderPriceID = string(price.UUID)
+		mapping.setAmount(mapping.FounderPlanID, atomic.SubscriptionIntervalYear, founderPrice.StripePrice)
+		bar.Add(1)
+	}
+
+	bar.Finish()
+	fmt.Fprintf(os.Stderr, "plans created\n")
+
+	return mapping, nil
 }
 
 func createPassportPrice(ctx context.Context, planID atomic.ID, name string, sp *stripe.Price, interval string) (*atomic.Price, error) {
@@ -495,92 +499,92 @@ func createPassportPrice(ctx context.Context, planID atomic.ID, name string, sp 
 }
 
 func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr string) (*passportPlanMapping, error) {
-	result, err := runSpinner("Fetching Passport plans...", func() (any, error) {
-		mapping := newPassportPlanMapping()
+	bar := newMigrateSpinner("Fetching Passport plans")
 
-		subscriberPlanID, err := atomic.ParseID(subscriberPlanStr)
+	mapping := newPassportPlanMapping()
+
+	subscriberPlanID, err := atomic.ParseID(subscriberPlanStr)
+	if err != nil {
+		bar.Finish()
+		return nil, fmt.Errorf("invalid subscriber plan ID: %w", err)
+	}
+
+	plan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{
+		InstanceID: inst.UUID,
+		PlanID:     &subscriberPlanID,
+		Expand:     atomic.ExpandFields{"prices"},
+	})
+	if err != nil {
+		bar.Finish()
+		return nil, fmt.Errorf("failed to get subscriber plan: %w", err)
+	}
+
+	mapping.SubscriberPlanID = string(plan.UUID)
+	bar.Add(1)
+
+	for _, price := range plan.Prices {
+		if !price.Active || price.RecurringType != atomic.PriceTypeRecurring || price.RecurringInterval == nil {
+			continue
+		}
+		switch *price.RecurringInterval {
+		case atomic.SubscriptionIntervalMonth:
+			mapping.MonthlyPriceID = string(price.UUID)
+			setPriceAmountsFromPassport(mapping, mapping.SubscriberPlanID, atomic.SubscriptionIntervalMonth, price)
+		case atomic.SubscriptionIntervalYear:
+			mapping.AnnualPriceID = string(price.UUID)
+			setPriceAmountsFromPassport(mapping, mapping.SubscriberPlanID, atomic.SubscriptionIntervalYear, price)
+		}
+	}
+
+	if founderPlanStr != "" {
+		founderPlanID, err := atomic.ParseID(founderPlanStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid subscriber plan ID: %w", err)
+			bar.Finish()
+			return nil, fmt.Errorf("invalid founder plan ID: %w", err)
 		}
 
-		plan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{
+		founderPlan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{
 			InstanceID: inst.UUID,
-			PlanID:     &subscriberPlanID,
+			PlanID:     &founderPlanID,
 			Expand:     atomic.ExpandFields{"prices"},
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to get subscriber plan: %w", err)
+			bar.Finish()
+			return nil, fmt.Errorf("failed to get founder plan: %w", err)
 		}
 
-		mapping.SubscriberPlanID = string(plan.UUID)
+		mapping.FounderPlanID = string(founderPlan.UUID)
+		bar.Add(1)
 
-		for _, price := range plan.Prices {
+		for _, price := range founderPlan.Prices {
 			if !price.Active || price.RecurringType != atomic.PriceTypeRecurring || price.RecurringInterval == nil {
 				continue
 			}
-			switch *price.RecurringInterval {
-			case atomic.SubscriptionIntervalMonth:
-				mapping.MonthlyPriceID = string(price.UUID)
-				setPriceAmountsFromPassport(mapping, mapping.SubscriberPlanID, atomic.SubscriptionIntervalMonth, price)
-			case atomic.SubscriptionIntervalYear:
-				mapping.AnnualPriceID = string(price.UUID)
-				setPriceAmountsFromPassport(mapping, mapping.SubscriberPlanID, atomic.SubscriptionIntervalYear, price)
+			if *price.RecurringInterval == atomic.SubscriptionIntervalYear {
+				mapping.FounderPriceID = string(price.UUID)
+				setPriceAmountsFromPassport(mapping, mapping.FounderPlanID, atomic.SubscriptionIntervalYear, price)
 			}
 		}
-
-		if founderPlanStr != "" {
-			founderPlanID, err := atomic.ParseID(founderPlanStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid founder plan ID: %w", err)
-			}
-
-			founderPlan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{
-				InstanceID: inst.UUID,
-				PlanID:     &founderPlanID,
-				Expand:     atomic.ExpandFields{"prices"},
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to get founder plan: %w", err)
-			}
-
-			mapping.FounderPlanID = string(founderPlan.UUID)
-
-			for _, price := range founderPlan.Prices {
-				if !price.Active || price.RecurringType != atomic.PriceTypeRecurring || price.RecurringInterval == nil {
-					continue
-				}
-				if *price.RecurringInterval == atomic.SubscriptionIntervalYear {
-					mapping.FounderPriceID = string(price.UUID)
-					setPriceAmountsFromPassport(mapping, mapping.FounderPlanID, atomic.SubscriptionIntervalYear, price)
-				}
-			}
-		}
-
-		return mapping, nil
-	})
-
-	if err != nil {
-		return nil, err
 	}
 
-	return result.(*passportPlanMapping), nil
+	bar.Finish()
+	fmt.Fprintf(os.Stderr, "plans loaded\n")
+
+	return mapping, nil
 }
 
-func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, send func(progressTickMsg)) ([]*migrationRecord, error) {
+func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
 
-	for i, sp := range prices {
+	for _, sp := range prices {
 		planID, interval := mapSubstackPriceToPassportPlan(sp, mapping)
 		if planID == "" {
+			bar.Add(1)
 			continue
 		}
 
-		send(progressTickMsg{
-			current: i,
-			total:   len(prices),
-			status:  fmt.Sprintf("Scanning price %s...", sp.StripePrice.ID),
-		})
+		bar.Describe(fmt.Sprintf("Scanning price %s", sp.StripePrice.ID))
 
 		params := &stripe.SubscriptionListParams{}
 		params.Filters.AddFilter("price", "", sp.StripePrice.ID)
@@ -620,9 +624,9 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			}
 
 			rec := &migrationRecord{
-				CustomerID:   sub.Customer.ID,
-				Email:        email,
-				Name:         sub.Customer.Name,
+				CustomerID:    sub.Customer.ID,
+				Email:         email,
+				Name:          sub.Customer.Name,
 				PlanID:        planID,
 				Interval:      interval,
 				Currency:      currency,
@@ -641,7 +645,6 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			} else if sub.BillingCycleAnchor > 0 {
 				anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
 
-				// if the anchor is in the past, advance by +1 interval
 				if anchor.Before(time.Now().UTC()) {
 					switch interval {
 					case atomic.SubscriptionIntervalMonth:
@@ -660,6 +663,8 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 		if err := iter.Err(); err != nil {
 			return nil, fmt.Errorf("failed to list subscriptions for price %s: %w", sp.StripePrice.ID, err)
 		}
+
+		bar.Add(1)
 	}
 
 	return records, nil

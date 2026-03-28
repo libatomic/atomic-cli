@@ -18,20 +18,18 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/apex/log"
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/libatomic/atomic/pkg/util"
+	"github.com/schollz/progressbar/v3"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"
 )
@@ -59,46 +57,6 @@ type (
 		atomic.UserImportRecord
 		MigrateStripePrice        string `csv:"migrate_stripe_price,omitempty"`
 		MigrateStripeSubscription string `csv:"migrate_stripe_subscription,omitempty"`
-	}
-
-	// bubbletea models
-
-	spinnerModel struct {
-		spinner spinner.Model
-		status  string
-		done    bool
-		err     error
-		result  any
-		work    func() (any, error)
-	}
-
-	progressModel struct {
-		progress progress.Model
-		current  int
-		total    int
-		status   string
-		done     bool
-		err      error
-		result   any
-		work     func(send func(progressTickMsg)) (any, error)
-	}
-
-	// bubbletea messages
-
-	spinnerDoneMsg struct {
-		result any
-		err    error
-	}
-
-	progressTickMsg struct {
-		current int
-		total   int
-		status  string
-	}
-
-	progressDoneMsg struct {
-		result any
-		err    error
 	}
 )
 
@@ -142,160 +100,24 @@ var (
 	}
 )
 
-// spinner model implementation
-
-func newSpinnerModel(status string, work func() (any, error)) spinnerModel {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	return spinnerModel{
-		spinner: s,
-		status:  status,
-		work:    work,
-	}
-}
-
-func (m spinnerModel) Init() tea.Cmd {
-	return tea.Batch(
-		m.spinner.Tick,
-		func() tea.Msg {
-			result, err := m.work()
-			return spinnerDoneMsg{result: result, err: err}
-		},
+func newMigrateSpinner(description string) *progressbar.ProgressBar {
+	return progressbar.NewOptions(-1,
+		progressbar.OptionSetDescription(description),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionSpinnerType(14),
+		progressbar.OptionShowCount(),
+		progressbar.OptionClearOnFinish(),
 	)
 }
 
-func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
-			m.err = fmt.Errorf("interrupted")
-			return m, tea.Quit
-		}
-	case spinnerDoneMsg:
-		m.done = true
-		m.result = msg.result
-		m.err = msg.err
-		return m, tea.Quit
-	default:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-	}
-	return m, nil
+func newMigrateProgress(total int, description string) *progressbar.ProgressBar {
+	return progressbar.NewOptions(total,
+		progressbar.OptionSetDescription(description),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionShowCount(),
+		progressbar.OptionClearOnFinish(),
+	)
 }
-
-func (m spinnerModel) View() string {
-	if m.done {
-		if m.err != nil {
-			return fmt.Sprintf("✗ %s\n", m.err)
-		}
-		return fmt.Sprintf("✓ %s\n", m.status)
-	}
-	return fmt.Sprintf("%s %s\n", m.spinner.View(), m.status)
-}
-
-func runSpinner(status string, work func() (any, error)) (any, error) {
-	m := newSpinnerModel(status, work)
-	p := tea.NewProgram(m)
-	final, err := p.Run()
-	if err != nil {
-		return nil, err
-	}
-	fm := final.(spinnerModel)
-	return fm.result, fm.err
-}
-
-// progress model implementation
-
-func newProgressModel(status string, work func(send func(progressTickMsg)) (any, error)) progressModel {
-	return progressModel{
-		progress: progress.New(progress.WithDefaultGradient()),
-		status:   status,
-		work:     work,
-	}
-}
-
-func (m progressModel) Init() tea.Cmd {
-	return func() tea.Msg {
-		// this is a placeholder; actual work is started via p.Send from the goroutine
-		return nil
-	}
-}
-
-func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
-			m.err = fmt.Errorf("interrupted")
-			return m, tea.Quit
-		}
-	case progressTickMsg:
-		m.current = msg.current
-		m.total = msg.total
-		if msg.status != "" {
-			m.status = msg.status
-		}
-		if m.total > 0 {
-			cmd := m.progress.SetPercent(float64(m.current) / float64(m.total))
-			return m, cmd
-		}
-		return m, nil
-	case progressDoneMsg:
-		m.done = true
-		m.result = msg.result
-		m.err = msg.err
-		cmd := m.progress.SetPercent(1.0)
-		return m, tea.Batch(cmd, tea.Quit)
-	case progress.FrameMsg:
-		var cmd tea.Cmd
-		tmp, cmd := m.progress.Update(msg)
-		m.progress = tmp.(progress.Model)
-		if m.done {
-			return m, tea.Batch(cmd, tea.Quit)
-		}
-		return m, cmd
-	}
-	return m, nil
-}
-
-func (m progressModel) View() string {
-	if m.done {
-		if m.err != nil {
-			return fmt.Sprintf("✗ %s\n", m.err)
-		}
-		return fmt.Sprintf("✓ %s (%d items)\n", m.status, m.current)
-	}
-
-	countStr := ""
-	if m.total > 0 {
-		countStr = fmt.Sprintf(" %d/%d", m.current, m.total)
-	} else if m.current > 0 {
-		countStr = fmt.Sprintf(" %d", m.current)
-	}
-
-	return fmt.Sprintf("%s\n  %s%s\n", m.progress.View(), m.status, countStr)
-}
-
-func runProgress(status string, work func(send func(progressTickMsg)) (any, error)) (any, error) {
-	m := newProgressModel(status, work)
-	p := tea.NewProgram(m)
-
-	go func() {
-		result, err := work(func(tick progressTickMsg) {
-			p.Send(tick)
-		})
-		p.Send(progressDoneMsg{result: result, err: err})
-	}()
-
-	final, err := p.Run()
-	if err != nil {
-		return nil, err
-	}
-	fm := final.(progressModel)
-	return fm.result, fm.err
-}
-
-// common migrate functions
 
 func initStripeClient(apiKey string) *stripeclient.API {
 	sc := &stripeclient.API{}
@@ -318,14 +140,14 @@ func validateMigrateFlags(cmd *cli.Command) (dryRun bool, output string, prorate
 }
 
 func confirmAction(title string) (bool, error) {
-	var confirmed bool
-	err := huh.NewConfirm().
-		Title(title).
-		Affirmative("Yes").
-		Negative("No").
-		Value(&confirmed).
-		Run()
-	return confirmed, err
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", title)
+	reader := bufio.NewReader(os.Stdin)
+	answer, err := reader.ReadString('\n')
+	if err != nil {
+		return false, err
+	}
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes", nil
 }
 
 func rewriteEmail(email, domain string) string {

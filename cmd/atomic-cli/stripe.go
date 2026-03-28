@@ -47,8 +47,16 @@ var (
 		Before: func(_ context.Context, cmd *cli.Command) (context.Context, error) {
 			key := cmd.String("stripe-key")
 
+			if key == "" {
+				return nil, fmt.Errorf("--stripe-key is required")
+			}
+
 			if !cmd.Bool("live-mode") && !strings.HasPrefix(key, "sk_test_") && !strings.HasPrefix(key, "rk_test_") {
-				return nil, fmt.Errorf("live key detected; pass --live-mode to use live keys, got %s...", key[:12])
+				prefix := key
+				if len(prefix) > 12 {
+					prefix = prefix[:12]
+				}
+				return nil, fmt.Errorf("live key detected; pass --live-mode to use live keys, got %s...", prefix)
 			}
 
 			stripe.Key = key
@@ -68,6 +76,7 @@ var (
 		},
 		Commands: []*cli.Command{
 			stripeExportCmd,
+			stripeConnectCmd,
 		},
 	}
 )

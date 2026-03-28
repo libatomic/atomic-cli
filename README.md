@@ -998,6 +998,54 @@ atomic-cli stripe export -k sk_test_xxx --clean
 STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
 ```
 
+#### Connect
+
+Connect a Stripe account via OAuth using Stripe Connect. Starts a temporary ngrok tunnel to receive the OAuth callback, then displays the resulting credentials.
+
+```bash
+atomic-cli stripe connect --client-id <stripe_connect_client_id> [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--client-id` | Stripe Connect client ID (or `$STRIPE_CLIENT_ID`) | *required* |
+| `--ngrok` | Use ngrok to create a public tunnel for the OAuth callback | `false` |
+| `--ngrok-authtoken` | ngrok auth token (overrides config file and `$NGROK_AUTHTOKEN`) | |
+| `--ngrok-config` | Path to ngrok config file | `~/.ngrok2/ngrok.yml` |
+
+**How it works:**
+
+1. Starts a listener — either an ngrok tunnel (with `--ngrok`) or a local port (default, you proxy it yourself)
+2. Prints a Stripe Connect authorize URL for the user to open in their browser
+3. Waits for the user to authorize the connection on Stripe
+4. Exchanges the authorization code for access tokens
+5. Fetches the connected account details
+6. Displays the credentials (account ID, publishable key, secret key, etc.)
+
+The `--stripe-key` from the parent command is used as the platform's secret key for the OAuth token exchange. Use `--live-mode` on the parent to connect live accounts.
+
+**Examples:**
+
+```bash
+# Connect a test account with ngrok (reads authtoken from ~/.ngrok2/ngrok.yml)
+atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx --ngrok
+
+# Connect a live account with ngrok
+atomic-cli stripe connect -k sk_live_xxx --live-mode --client-id ca_xxx --ngrok
+
+# Without ngrok (listen on random local port, you proxy it)
+atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx
+
+# Explicit ngrok authtoken
+atomic-cli stripe connect -k sk_test_xxx --client-id ca_xxx --ngrok-authtoken xxx
+
+# Using environment variables
+STRIPE_API_KEY=sk_test_xxx STRIPE_CLIENT_ID=ca_xxx \
+  atomic-cli stripe connect --ngrok
+```
+
 ## Output Formats
 
 The CLI supports multiple output formats controlled by the `--out-format` option:

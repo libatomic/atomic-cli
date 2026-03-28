@@ -34,3 +34,4 @@ go.work
 go.work.sum
 # Added by goreleaser init:
 dist/
+stripe-export-*/

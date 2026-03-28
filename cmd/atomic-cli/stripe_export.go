@@ -124,7 +124,7 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 	}
 
 	mode := "live"
-	isTest := strings.HasPrefix(cmd.Root().String("stripe-key"), "sk_test_")
+	isTest := strings.HasPrefix(stripe.Key, "sk_test_")
 	if isTest {
 		mode = "test"
 	}

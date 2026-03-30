@@ -250,15 +250,51 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		calculatePerUserDiscounts(records, mapping)
 	}
 
-	// Pass 6: Write CSV
-	if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode); err != nil {
-		return fmt.Errorf("failed to write CSV: %w", err)
-	}
+	// Pass 6: Write CSV(s)
+	// When in JSONL mode (no plans created/specified), split into subscriber and founder files
+	// with is_subscriber=true and no plan ID
+	isJSONLMode := !createPlans && subscriberPlan == ""
 
-	if dryRun {
-		fmt.Fprintf(os.Stderr, "[DRY RUN] wrote %d records to %s\n", len(records), output)
+	if isJSONLMode {
+		var subscriberRecords, founderRecords []*migrationRecord
+
+		for _, rec := range records {
+			rec.IsSubscriber = true
+			if rec.PlanID == "PENDING_FOUNDER_PLAN" {
+				rec.PlanID = ""
+				founderRecords = append(founderRecords, rec)
+			} else {
+				rec.PlanID = ""
+				subscriberRecords = append(subscriberRecords, rec)
+			}
+		}
+
+		ext := filepath.Ext(output)
+		base := strings.TrimSuffix(output, ext)
+		subscriberOutput := fmt.Sprintf("%s-subscribers%s", base, ext)
+		founderOutput := fmt.Sprintf("%s-founders%s", base, ext)
+
+		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode); err != nil {
+			return fmt.Errorf("failed to write subscriber CSV: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "wrote %d subscriber records to %s\n", len(subscriberRecords), subscriberOutput)
+
+		if len(founderRecords) > 0 {
+			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode); err != nil {
+				return fmt.Errorf("failed to write founder CSV: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "wrote %d founder records to %s\n", len(founderRecords), founderOutput)
+		}
 	} else {
-		fmt.Fprintf(os.Stderr, "wrote %d records to %s\n", len(records), output)
+		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode); err != nil {
+			return fmt.Errorf("failed to write CSV: %w", err)
+		}
+
+		if dryRun {
+			fmt.Fprintf(os.Stderr, "[DRY RUN] wrote %d records to %s\n", len(records), output)
+		} else {
+			fmt.Fprintf(os.Stderr, "wrote %d records to %s\n", len(records), output)
+		}
 	}
 
 	return nil

@@ -45,6 +45,7 @@ type (
 		BillingEmail  string
 		Name          string
 		PlanID        string
+		IsSubscriber  bool
 		Interval      atomicpkg.SubscriptionInterval
 		Currency      string
 		Quantity      int
@@ -296,12 +297,6 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 	importRecords := make([]*importRecord, 0, len(records))
 
 	for _, rec := range records {
-		planID, err := atomicpkg.ParseID(rec.PlanID)
-		if err != nil && !dryRun {
-			log.Warnf("invalid plan ID %s for %s; skipping", rec.PlanID, rec.Email)
-			continue
-		}
-
 		login := rewriter.Rewrite(rec.Email)
 		email := login
 
@@ -312,7 +307,6 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 				EmailVerified:        ptr.Bool(true),
 				Name:                 &rec.Name,
 				StripeCustomerID:     &rec.CustomerID,
-				SubscriptionPlanID:   &planID,
 				SubscriptionQuantity: &rec.Quantity,
 				SubscriptionInterval: (*atomicpkg.SubscriptionInterval)(&rec.Interval),
 				SubscriptionCurrency: &rec.Currency,
@@ -320,6 +314,19 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			},
 			MigrateStripePrice:        rec.StripePriceID,
 			MigrateStripeSubscription: rec.StripeSubID,
+		}
+
+		if rec.IsSubscriber {
+			ir.IsSubscriber = ptr.Bool(true)
+		}
+
+		if rec.PlanID != "" {
+			planID, err := atomicpkg.ParseID(rec.PlanID)
+			if err != nil && !dryRun {
+				log.Warnf("invalid plan ID %s for %s; skipping", rec.PlanID, rec.Email)
+				continue
+			}
+			ir.SubscriptionPlanID = &planID
 		}
 
 		if rec.BillingEmail != "" {

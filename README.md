@@ -904,7 +904,7 @@ atomic-cli migrate substack [options]
 2. **Price report** - Displays a table of all discovered prices showing type, amount, currency, active status, and currency options. Shows how prices map to Passport plans.
 
 3. **Plan resolution** - Resolves plans in one of three ways:
-   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. The CSV uses placeholder plan IDs (`PENDING_SUBSCRIBER_PLAN`, `PENDING_FOUNDER_PLAN`) that must be replaced after the plans are created via the admin tool.
+   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. Records are split into separate CSV files by plan type (subscribers and founders), with `is_subscriber=true` and no `subscription_plan_id`. The import-level `subscriber_plan_id` parameter is used at import time to resolve the actual plan.
    - With `--create-plans`: creates a hidden "Subscriber" plan with monthly/annual prices and a hidden "Founder" plan with an annual price, matching amounts and currency options from the active Stripe prices. Prompts for confirmation before creating (skipped with `--dry-run`).
    - With `--subscriber-plan` / `--founder-plan`: fetches the existing Passport plans and reads their active price amounts for discount calculation.
 
@@ -916,15 +916,15 @@ atomic-cli migrate substack [options]
 
 5. **Discount calculation** - When `--apply-discounts` is enabled, compares each subscriber's price (in their subscription currency) against the corresponding Passport plan price at the same interval and currency. If the subscriber's rate is lower, a forever percentage discount is calculated so they keep their grandfathered price. If their rate is equal to or higher than the current price, no discount is applied.
 
-6. **CSV output** - Writes the final CSV (suffixed with `-<stripe_account_id>`, e.g. `migrate_users-1A2B3C4D.csv`) with all standard `UserImportRecord` fields plus `migrate_stripe_price` and `migrate_stripe_subscription` columns.
+6. **CSV output** - In default mode (no plans), writes two CSVs: `migrate_users-<id>-subscribers.csv` and `migrate_users-<id>-founders.csv` (if founders exist), with `is_subscriber=true` and no `subscription_plan_id`. In plan mode, writes a single CSV (suffixed with `-<stripe_account_id>`) with `subscription_plan_id` set. All CSVs include `migrate_stripe_price` and `migrate_stripe_subscription` audit columns.
 
 **Examples:**
 
 ```bash
-# Generate plans JSONL and CSV with placeholder plan IDs (default behavior, no instance required)
+# Generate plans JSONL and subscriber/founder CSVs (default behavior, no instance required)
 atomic-cli migrate substack \
   --stripe-key sk_live_xxx
-# outputs: plans-1A2B3C4D.jsonl and migrate_users-1A2B3C4D.csv
+# outputs: plans-1A2B3C4D.jsonl, migrate_users-1A2B3C4D-subscribers.csv, migrate_users-1A2B3C4D-founders.csv
 
 # Auto-create plans, preview with dry run
 atomic-cli migrate substack \

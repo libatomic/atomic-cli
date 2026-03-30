@@ -134,22 +134,22 @@ func (m *passportPlanMapping) getAmount(planID string, interval atomic.Subscript
 }
 
 func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
-	dryRun, output, prorate, rewriter, appendMode, err := validateMigrateFlags(cmd)
+	subscriberPlan := cmd.String("subscriber-plan")
+	createPlans := cmd.Bool("create-plans")
+
+	// instance is only required when creating plans or using existing plans
+	requireInstance := createPlans || subscriberPlan != ""
+
+	dryRun, output, prorate, rewriter, appendMode, err := validateMigrateFlags(cmd, requireInstance)
 	if err != nil {
 		return err
 	}
 
-	subscriberPlan := cmd.String("subscriber-plan")
 	founderPlan := cmd.String("founder-plan")
-	createPlans := cmd.Bool("create-plans")
 	applyDiscounts := cmd.Bool("apply-discounts")
 
 	if subscriberPlan != "" && createPlans {
 		return fmt.Errorf("--subscriber-plan and --create-plans are mutually exclusive")
-	}
-
-	if subscriberPlan == "" && !createPlans {
-		// when create-plans is false and no subscriber-plan, we'll generate the plans JSONL
 	}
 
 	sc, err := initStripeClient(cmd.String("stripe-key"))

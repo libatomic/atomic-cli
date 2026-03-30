@@ -921,9 +921,8 @@ atomic-cli migrate substack [options]
 **Examples:**
 
 ```bash
-# Generate plans JSONL and CSV with placeholder plan IDs (default behavior)
+# Generate plans JSONL and CSV with placeholder plan IDs (default behavior, no instance required)
 atomic-cli migrate substack \
-  -i inst_abc123 \
   --stripe-key sk_live_xxx
 # outputs: plans-1A2B3C4D.jsonl and migrate_users-1A2B3C4D.csv
 
@@ -949,9 +948,8 @@ atomic-cli migrate substack \
   --founder-plan plan_def456 \
   --apply-discounts=false
 
-# Rewrite emails for safe testing against a staging environment
+# Rewrite emails for safe testing against a staging environment (no instance required)
 atomic-cli migrate substack \
-  -i inst_abc123 \
   --stripe-key sk_test_xxx \
   --email-domain-overwrite passport.xyz \
   --out test_migrate.csv

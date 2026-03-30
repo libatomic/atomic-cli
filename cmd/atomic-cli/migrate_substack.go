@@ -134,7 +134,7 @@ func (m *passportPlanMapping) getAmount(planID string, interval atomic.Subscript
 }
 
 func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
-	dryRun, output, prorate, emailDomain, err := validateMigrateFlags(cmd)
+	dryRun, output, prorate, rewriter, appendMode, err := validateMigrateFlags(cmd)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Pass 6: Write CSV
-	if err := writeImportCSV(records, output, dryRun, prorate, emailDomain); err != nil {
+	if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode); err != nil {
 		return fmt.Errorf("failed to write CSV: %w", err)
 	}
 

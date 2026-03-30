@@ -836,6 +836,11 @@ Currently supported platforms:
 
 - **substack** - Migrate Substack subscribers via Stripe
 
+Additional tools:
+
+- **convert** - Convert any third-party CSV to Passport user import format using a JSON mapping file
+- **verify** - Validate a user import CSV and optionally deduplicate records
+
 #### Common Options
 
 These options apply to all migrate subcommands:
@@ -844,9 +849,36 @@ These options apply to all migrate subcommands:
 |------------------------|----------------------------------------------|---------|
 | `--stripe-key` | Stripe API key for the source account (or `$STRIPE_API_KEY`) | *required* |
 | `--dry-run` | Preview what would happen without creating plans | `false` |
-| `--output`, `--out` | Output CSV file path (automatically suffixed with `-<stripe_account_id>`) | `migrate_users.csv` |
+| `--output`, `--out` | Output CSV file path (automatically suffixed with `-<stripe_account_id>` for substack) | `migrate_users.csv` |
 | `--subscription-prorate` | Set prorate flag on migrated subscriptions | `false` |
-| `--email-domain-overwrite` | Rewrite all emails to this domain (for testing) | |
+| `--email-domain-overwrite` | Rewrite all emails to use this domain (e.g. `passport.xyz`); mutually exclusive with `--email-template` | |
+| `--email-template` | Generate emails from a template with function placeholders (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
+| `--append` | Append to existing output CSV instead of overwriting; deduplicates on `login` (existing rows win) | `true` |
+
+#### Email Template Functions
+
+The `--email-template` flag generates email addresses from a template string. The following functions can be used inside `{{...}}` placeholders:
+
+| Function | Description | Example Input | Example Output |
+|---|---|---|---|
+| `{{seq}}` | Sequential number (1, 2, 3, ...) | `inbox+{{seq}}@mailtrap.io` | `inbox+1@mailtrap.io` |
+| `{{seq "user"}}` | Prefixed sequential number | `inbox+{{seq "user"}}@mailtrap.io` | `inbox+user1@mailtrap.io` |
+| `{{hash}}` | Short hash (8 hex chars) of the original email | `inbox+{{hash}}@mailtrap.io` | `inbox+3f2a1b9c@mailtrap.io` |
+| `{{hash "u"}}` | Prefixed hash | `inbox+{{hash "u"}}@mailtrap.io` | `inbox+u3f2a1b9c@mailtrap.io` |
+| `{{sanitize}}` | Sanitized original email (`@`, `.`, `+`, `-` → `_`) | (for `bob+test@hot.com`) `inbox+{{sanitize}}@mailtrap.io` | `inbox+bob_test_hot_com@mailtrap.io` |
+
+Functions can be combined in a single template. `{{seq}}` increments globally across all rewritten emails in the run.
+
+**Mailtrap sandbox example:**
+
+```bash
+# Using the per-sandbox address format: https://docs.mailtrap.io/email-sandbox/setup/email-address-per-sandbox
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_test_xxx \
+  --email-template "sandbox-12ab34+{{seq "user"}}@inbox.mailtrap.io"
+# produces: sandbox-12ab34+user1@inbox.mailtrap.io, sandbox-12ab34+user2@inbox.mailtrap.io, ...
+```
 
 #### migrate substack
 
@@ -932,7 +964,169 @@ atomic-cli migrate substack \
 {"name":"Founder","description":"Substack founder migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Annual","currency":"usd","currency_options":{"eur":{"unit_amount":9000},"gbp":{"unit_amount":8000},"sek":{"unit_amount":100000}},"active":true,"amount":10000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
 ```
 
-The `--email-domain-overwrite` flag rewrites every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`.
+The `--email-domain-overwrite` and `--email-template` flags rewrite every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, with `--email-domain-overwrite passport.xyz`, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`. With `--email-template "sandbox+{{seq}}@inbox.mailtrap.io"`, emails become `sandbox+1@inbox.mailtrap.io`, `sandbox+2@inbox.mailtrap.io`, etc.
+
+#### migrate convert
+
+Converts any third-party CSV into the Passport `UserImportRecord` format using a JSON mapping file. This is useful for sources that export subscriber data as a CSV with non-standard column names (e.g., Substack's free subscriber export). Multiple target fields can map to the same source column.
+
+```bash
+atomic-cli migrate convert [options]
+```
+
+**Convert-specific options** (in addition to [common options](#common-options)):
+
+| Option | Description | Default |
+|------------------------|----------------------------------------------|---------|
+| `--input`, `--in` | Input CSV file path | *required* |
+| `--mapping`, `-m` | JSON mapping file path | *required* |
+
+**Mapping file format:**
+
+The mapping file is a JSON object where keys are `UserImportRecord` field names (using their `csv` tag names) and values are either:
+
+- **string** — the source CSV column name to read from
+- **bool/number** — a static value applied to every row
+
+Multiple target fields can reference the same source column. For example, `login` and `email` can both map to the source `email` column.
+
+Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`.
+
+**Example mapping file (`substack-mapping.json`):**
+
+```json
+{
+  "login": "email",
+  "email": "email",
+  "name": "name",
+  "email_verified": false
+}
+```
+
+This maps the source CSV's `email` column to both `login` and `email` in the output, the `name` column to `name`, and sets `email_verified` to `false` for every row.
+
+**Examples:**
+
+```bash
+# Convert a Substack free subscriber export
+atomic-cli migrate convert \
+  -i inst_abc123 \
+  --input ./substack-subscribers.csv \
+  --mapping ./substack-mapping.json \
+  --output ./merged-users.csv
+
+# Append free users to an existing paid subscriber CSV (default: --append=true)
+# Run substack migrate first, then convert appends to the same file.
+# Existing rows (paid subscribers) win on login conflict.
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_test_xxx \
+  --output ./merged-users.csv
+
+atomic-cli migrate convert \
+  -i inst_abc123 \
+  --input ./substack-free-subscribers.csv \
+  --mapping ./substack-mapping.json \
+  --output ./merged-users.csv
+
+# Overwrite instead of appending
+atomic-cli migrate convert \
+  -i inst_abc123 \
+  --input ./substack-subscribers.csv \
+  --mapping ./substack-mapping.json \
+  --output ./free-users-only.csv \
+  --append=false
+
+# Convert with email rewriting for test environment
+atomic-cli migrate convert \
+  -i inst_abc123 \
+  --input ./substack-subscribers.csv \
+  --mapping ./substack-mapping.json \
+  --email-domain-overwrite passport.xyz \
+  --output ./free-users-test.csv
+```
+
+Rows without a `login` value after mapping are skipped and the count is reported to stderr.
+
+#### migrate verify
+
+Validates a user import CSV by running per-record validation (`UserImportRecord.Validate()`) and checking uniqueness constraints. Optionally deduplicates the file. Uses the global `--output` flag for the deduplicated output path.
+
+```bash
+atomic-cli migrate verify [options]
+```
+
+**Verify-specific options** (in addition to [common options](#common-options)):
+
+| Option | Description | Default |
+|------------------------|----------------------------------------------|---------|
+| `--input`, `--in` | Input CSV file path to verify | *required* |
+| `--dedupe` | Deduplicate on the specified field; first occurrence wins | |
+| `--verbose`, `-v` | Print each duplicate row with the colliding field and value | `false` |
+
+When `--dedupe` is set, the deduplicated CSV is written to `--output`. If `--output` resolves to the same file as `--input`, you will be prompted before overwriting.
+
+Valid `--dedupe` fields: `login`, `email`, `phone_number`, `stripe_customer_id`.
+
+**Uniqueness checks:**
+
+The following fields are checked for duplicates across all rows:
+
+| Field | Description |
+|---|---|
+| `login` | Must be globally unique |
+| `email` | Must be unique when present |
+| `phone_number` | Must be unique when present |
+| `stripe_customer_id` | Must be unique when present |
+
+`billing_email` is **not** checked for uniqueness.
+
+When `--dedupe` is not set, duplicates are reported as errors and the command exits with a non-zero status. When `--dedupe` is set, the first occurrence of each duplicate value is kept and later occurrences are removed.
+
+**Examples:**
+
+```bash
+# Validate only — report summary
+atomic-cli migrate verify \
+  -i inst_abc123 \
+  --input ./merged-users.csv
+
+# Validate with verbose duplicate details
+atomic-cli migrate verify \
+  -i inst_abc123 \
+  --input ./merged-users.csv \
+  --verbose
+
+# Deduplicate on login, writing to a separate file
+atomic-cli migrate verify \
+  -i inst_abc123 \
+  --input ./merged-users.csv \
+  --dedupe login \
+  --output ./merged-users-clean.csv
+
+# Deduplicate in place (prompts before overwriting)
+atomic-cli migrate verify \
+  -i inst_abc123 \
+  --input ./merged-users.csv \
+  --dedupe login \
+  --output ./merged-users.csv
+```
+
+**Example output (with `--verbose`):**
+
+```
+loaded 1500 records from ./merged-users.csv
+
+  row 42 [bob@example.com] (validation): email: must be a valid email address.
+  row 315 [alice@example.com] login="alice@example.com": duplicate login (first seen at row 12)
+  row 780 [] stripe_customer_id="cus_ABC123": duplicate stripe_customer_id (first seen at row 200)
+
+validation: 1 errors
+duplicates on login: 1
+duplicates on stripe_customer_id: 1
+```
+
+Without `--verbose`, only validation errors and the summary counts are shown — duplicate rows are not printed individually.
 
 ### Stripe Management
 

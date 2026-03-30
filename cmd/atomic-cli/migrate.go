@@ -160,7 +160,7 @@ func initStripeClient(apiKey string) (*stripeclient.API, error) {
 	return stripeclient.New(apiKey, nil), nil
 }
 
-func validateMigrateFlags(cmd *cli.Command) (dryRun bool, output string, prorate bool, rewriter *emailRewriter, appendMode bool, err error) {
+func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun bool, output string, prorate bool, rewriter *emailRewriter, appendMode bool, err error) {
 	dryRun = cmd.Bool("dry-run")
 	output = cmd.String("output")
 	prorate = cmd.Bool("subscription-prorate")
@@ -180,7 +180,8 @@ func validateMigrateFlags(cmd *cli.Command) (dryRun bool, output string, prorate
 		rewriter = &emailRewriter{template: emailTemplate}
 	}
 
-	if inst == nil {
+	needsInstance := len(requireInstance) == 0 || requireInstance[0]
+	if needsInstance && inst == nil {
 		err = fmt.Errorf("instance is required; use --instance_id or -i")
 		return
 	}

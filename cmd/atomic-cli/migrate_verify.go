@@ -65,7 +65,7 @@ type verifyIssue struct {
 }
 
 func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
-	_, outputPath, _, _, _, err := validateMigrateFlags(cmd)
+	_, outputPath, _, _, _, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
 	}
@@ -165,29 +165,54 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 	// report
 	validationErrors := 0
 	dupeErrors := 0
+	validationBreakdown := make(map[string]int) // field name from validation error -> count
+
 	for _, issue := range issues {
 		if issue.Field == "record" {
 			validationErrors++
+			// parse ozzo-validation error keys from the message (e.g. "login: cannot be blank; email: ...")
+			for _, fieldErr := range strings.Split(issue.Message, "; ") {
+				if parts := strings.SplitN(fieldErr, ":", 2); len(parts) == 2 {
+					validationBreakdown[strings.TrimSpace(parts[0])]++
+				} else {
+					validationBreakdown["other"]++
+				}
+			}
 		} else {
 			dupeErrors++
 		}
 	}
 
-	if len(issues) > 0 {
+	if verbose && len(issues) > 0 {
 		fmt.Fprintf(os.Stderr, "\n")
 		for _, issue := range issues {
 			if issue.Field == "record" {
 				fmt.Fprintf(os.Stderr, "  row %d [%s] (validation): %s\n", issue.Row, issue.Login, issue.Message)
-			} else if verbose {
+			} else {
 				fmt.Fprintf(os.Stderr, "  row %d [%s] %s=%q: %s\n", issue.Row, issue.Login, issue.Field, issue.Value, issue.Message)
 			}
 		}
 		fmt.Fprintf(os.Stderr, "\n")
 	}
 
-	fmt.Fprintf(os.Stderr, "validation: %d errors\n", validationErrors)
-	for field, count := range duplicateCounts {
-		fmt.Fprintf(os.Stderr, "duplicates on %s: %d\n", field, count)
+	fmt.Fprintf(os.Stderr, "\ntotal rows: %d\n", len(records))
+
+	if validationErrors > 0 {
+		fmt.Fprintf(os.Stderr, "validation errors: %d\n", validationErrors)
+		for field, count := range validationBreakdown {
+			fmt.Fprintf(os.Stderr, "  %s: %d\n", field, count)
+		}
+	}
+
+	if len(duplicateCounts) > 0 {
+		fmt.Fprintf(os.Stderr, "duplicate errors: %d\n", dupeErrors)
+		for field, count := range duplicateCounts {
+			fmt.Fprintf(os.Stderr, "  %s: %d\n", field, count)
+		}
+	}
+
+	if validationErrors == 0 && dupeErrors == 0 {
+		fmt.Fprintf(os.Stderr, "all records valid, no duplicates found\n")
 	}
 
 	// dedupe if requested
@@ -242,10 +267,6 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 
 	if validationErrors > 0 || (dupeErrors > 0 && dedupeField == "") {
 		return fmt.Errorf("verification failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
-	}
-
-	if len(issues) == 0 {
-		fmt.Fprintf(os.Stderr, "all records valid, no duplicates found\n")
 	}
 
 	return nil

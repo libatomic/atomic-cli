@@ -1010,7 +1010,6 @@ This maps the source CSV's `email` column to both `login` and `email` in the out
 ```bash
 # Convert a Substack free subscriber export
 atomic-cli migrate convert \
-  -i inst_abc123 \
   --input ./substack-subscribers.csv \
   --mapping ./substack-mapping.json \
   --output ./merged-users.csv
@@ -1024,14 +1023,12 @@ atomic-cli migrate substack \
   --output ./merged-users.csv
 
 atomic-cli migrate convert \
-  -i inst_abc123 \
   --input ./substack-free-subscribers.csv \
   --mapping ./substack-mapping.json \
   --output ./merged-users.csv
 
 # Overwrite instead of appending
 atomic-cli migrate convert \
-  -i inst_abc123 \
   --input ./substack-subscribers.csv \
   --mapping ./substack-mapping.json \
   --output ./free-users-only.csv \
@@ -1039,7 +1036,6 @@ atomic-cli migrate convert \
 
 # Convert with email rewriting for test environment
 atomic-cli migrate convert \
-  -i inst_abc123 \
   --input ./substack-subscribers.csv \
   --mapping ./substack-mapping.json \
   --email-domain-overwrite passport.xyz \
@@ -1088,28 +1084,38 @@ When `--dedupe` is not set, duplicates are reported as errors and the command ex
 ```bash
 # Validate only — report summary
 atomic-cli migrate verify \
-  -i inst_abc123 \
   --input ./merged-users.csv
 
 # Validate with verbose duplicate details
 atomic-cli migrate verify \
-  -i inst_abc123 \
   --input ./merged-users.csv \
   --verbose
 
 # Deduplicate on login, writing to a separate file
 atomic-cli migrate verify \
-  -i inst_abc123 \
   --input ./merged-users.csv \
   --dedupe login \
   --output ./merged-users-clean.csv
 
 # Deduplicate in place (prompts before overwriting)
 atomic-cli migrate verify \
-  -i inst_abc123 \
   --input ./merged-users.csv \
   --dedupe login \
   --output ./merged-users.csv
+```
+
+**Example output (default — no `--verbose`):**
+
+```
+loaded 1500 records from ./merged-users.csv
+
+total rows: 1500
+validation errors: 2
+  email: 1
+  login: 1
+duplicate errors: 2
+  login: 1
+  stripe_customer_id: 1
 ```
 
 **Example output (with `--verbose`):**
@@ -1118,15 +1124,18 @@ atomic-cli migrate verify \
 loaded 1500 records from ./merged-users.csv
 
   row 42 [bob@example.com] (validation): email: must be a valid email address.
+  row 99 [] (validation): login: cannot be blank.
   row 315 [alice@example.com] login="alice@example.com": duplicate login (first seen at row 12)
   row 780 [] stripe_customer_id="cus_ABC123": duplicate stripe_customer_id (first seen at row 200)
 
-validation: 1 errors
-duplicates on login: 1
-duplicates on stripe_customer_id: 1
+total rows: 1500
+validation errors: 2
+  email: 1
+  login: 1
+duplicate errors: 2
+  login: 1
+  stripe_customer_id: 1
 ```
-
-Without `--verbose`, only validation errors and the summary counts are shown — duplicate rows are not printed individually.
 
 ### Stripe Management
 

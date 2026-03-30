@@ -928,8 +928,8 @@ atomic-cli migrate substack \
 **Example `plans-1A2B3C4D.jsonl` output:**
 
 ```jsonl
-{"name":"Subscriber","description":"Substack subscriber migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Monthly","currency":"usd","active":true,"amount":500,"type":"recurring","recurring":{"interval":"month","interval_count":1}},{"name":"Annual","currency":"usd","currency_options":{"eur":{"unit_amount":4800}},"active":true,"amount":5000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
-{"name":"Founder","description":"Substack founder migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Annual","currency":"usd","active":true,"amount":10000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
+{"name":"Subscriber","description":"Substack subscriber migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Monthly","currency":"usd","currency_options":{"eur":{"unit_amount":450},"gbp":{"unit_amount":400},"sek":{"unit_amount":5500}},"active":true,"amount":500,"type":"recurring","recurring":{"interval":"month","interval_count":1}},{"name":"Annual","currency":"usd","currency_options":{"eur":{"unit_amount":4500},"gbp":{"unit_amount":4000},"sek":{"unit_amount":55000}},"active":true,"amount":5000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
+{"name":"Founder","description":"Substack founder migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Annual","currency":"usd","currency_options":{"eur":{"unit_amount":9000},"gbp":{"unit_amount":8000},"sek":{"unit_amount":100000}},"active":true,"amount":10000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
 ```
 
 The `--email-domain-overwrite` flag rewrites every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`.

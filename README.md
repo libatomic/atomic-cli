@@ -1162,6 +1162,8 @@ atomic-cli stripe export [options]
 | `--types` | `-t` | Object types to export (repeatable) | `all` |
 | `--clean` | | Clear existing export data and start fresh | `false` |
 | `--active` | | Only export active objects (products, prices, promotion codes, active subscriptions) | `false` |
+| `--email-domain-overwrite` | | Rewrite all customer emails to this domain; mutually exclusive with `--email-template` | |
+| `--email-template` | | Generate customer emails from a template (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
 
 **Supported types:** `products`, `prices`, `customers`, `subscriptions`, `coupons`, `promotion-codes`, `all`
 

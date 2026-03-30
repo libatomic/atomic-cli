@@ -67,6 +67,7 @@ type (
 	exportOptions struct {
 		createdGTE *int64
 		activeOnly bool
+		rewriter   *emailRewriter
 	}
 )
 
@@ -96,6 +97,14 @@ var (
 				Name:  "active",
 				Usage: "only export active objects (applies to products, prices, promotion codes; subscriptions use active status only)",
 			},
+			&cli.StringFlag{
+				Name:  "email-domain-overwrite",
+				Usage: "rewrite all customer email addresses to use this domain; mutually exclusive with --email-template",
+			},
+			&cli.StringFlag{
+				Name:  "email-template",
+				Usage: "generate customer email addresses from a template (see migrate --help for template functions); mutually exclusive with --email-domain-overwrite",
+			},
 		},
 	}
 )
@@ -104,6 +113,19 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 	acct := cmd.Root().Metadata["stripe_account"].(*stripe.Account)
 	clean := cmd.Bool("clean")
 	activeOnly := cmd.Bool("active")
+
+	emailDomain := cmd.String("email-domain-overwrite")
+	emailTemplate := cmd.String("email-template")
+	if emailDomain != "" && emailTemplate != "" {
+		return fmt.Errorf("--email-domain-overwrite and --email-template are mutually exclusive")
+	}
+
+	var rewriter *emailRewriter
+	if emailDomain != "" {
+		rewriter = &emailRewriter{domain: emailDomain}
+	} else if emailTemplate != "" {
+		rewriter = &emailRewriter{template: emailTemplate}
+	}
 
 	types := cmd.StringSlice("types")
 	exportAll := false
@@ -135,7 +157,7 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}
 
-	opts := exportOptions{activeOnly: activeOnly}
+	opts := exportOptions{activeOnly: activeOnly, rewriter: rewriter}
 
 	if clean || manifest == nil {
 		if clean && manifest != nil {
@@ -485,10 +507,23 @@ func exportCustomers(dir string, opts exportOptions) (int, error) {
 		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
 	}
 
-	seq := stripeIterSeq(customer.List(params),
+	baseSeq := stripeIterSeq(customer.List(params),
 		func(i *customer.Iter) *stripe.Customer { return i.Customer() },
 		func() { bar.Add(1) },
 	)
+
+	// wrap the iterator to rewrite emails if a rewriter is configured
+	seq := baseSeq
+	if opts.rewriter != nil {
+		seq = func(yield func(stripe.Customer, error) bool) {
+			baseSeq(func(c stripe.Customer, err error) bool {
+				if err == nil && c.Email != "" {
+					c.Email = opts.rewriter.Rewrite(c.Email)
+				}
+				return yield(c, err)
+			})
+		}
+	}
 
 	path := filepath.Join(dir, "customers.jsonl")
 	count, err := util.JSONLMergeWrite(path,

@@ -68,7 +68,7 @@ var (
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("STRIPE_API_KEY"),
 			),
-			Required: true,
+			Required: false,
 		},
 		&cli.BoolFlag{
 			Name:  "dry-run",
@@ -119,10 +119,12 @@ func newMigrateProgress(total int, description string) *progressbar.ProgressBar 
 	)
 }
 
-func initStripeClient(apiKey string) *stripeclient.API {
-	sc := &stripeclient.API{}
-	sc.Init(apiKey, nil)
-	return sc
+func initStripeClient(apiKey string) (*stripeclient.API, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("stripe API key is required")
+	}
+
+	return stripeclient.New(apiKey, nil), nil
 }
 
 func validateMigrateFlags(cmd *cli.Command) (dryRun bool, output string, prorate bool, emailDomain string, err error) {

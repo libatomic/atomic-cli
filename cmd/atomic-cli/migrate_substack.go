@@ -19,16 +19,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/apex/log"
 	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/schollz/progressbar/v3"
 	"github.com/libatomic/atomic/pkg/ptr"
+	"github.com/schollz/progressbar/v3"
 	"github.com/stripe/stripe-go/v79"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"
@@ -56,6 +58,26 @@ type (
 		StripePrice *stripe.Price
 		PriceType   string // "monthly", "annual", "founding"
 	}
+
+	// planJSONL is the JSONL output format for plans that need to be created
+	planJSONL struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Type        atomic.PlanType `json:"type"`
+		Active      bool            `json:"active"`
+		Hidden      bool            `json:"hidden"`
+		Prices      []priceJSONL    `json:"prices"`
+	}
+
+	priceJSONL struct {
+		Name            string                 `json:"name"`
+		Currency        string                 `json:"currency"`
+		CurrencyOptions atomic.CurrencyOptions `json:"currency_options,omitempty"`
+		Active          bool                   `json:"active"`
+		Amount          int64                  `json:"amount"`
+		Type            atomic.PriceType       `json:"type"`
+		Recurring       *atomic.PriceRecurring `json:"recurring"`
+	}
 )
 
 var (
@@ -72,7 +94,7 @@ var (
 		&cli.BoolFlag{
 			Name:  "create-plans",
 			Usage: "auto-create Subscriber and Founder plans in Passport from Stripe data",
-			Value: true,
+			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "apply-discounts",
@@ -127,10 +149,26 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if subscriberPlan == "" && !createPlans {
-		return fmt.Errorf("either --subscriber-plan or --create-plans must be set")
+		// when create-plans is false and no subscriber-plan, we'll generate the plans JSONL
 	}
 
-	sc := initStripeClient(cmd.String("stripe-key"))
+	sc, err := initStripeClient(cmd.String("stripe-key"))
+	if err != nil {
+		return fmt.Errorf("failed to initialize Stripe client: %w", err)
+	}
+
+	// retrieve the stripe account to suffix output files
+	acct, err := sc.Accounts.Get()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve Stripe account: %w", err)
+	}
+
+	stripeAccountSuffix := strings.TrimPrefix(acct.ID, "acct_")
+
+	// suffix the output file with the stripe account id
+	ext := filepath.Ext(output)
+	base := strings.TrimSuffix(output, ext)
+	output = fmt.Sprintf("%s-%s%s", base, stripeAccountSuffix, ext)
 
 	// Pass 1: Discover all Substack prices
 	bar := newMigrateSpinner("Scanning Stripe for Substack prices")
@@ -168,7 +206,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	displaySubstackPriceReport(allPrices)
 
 	// Check founding plan requirement
-	if hasFoundingPrice && founderPlan == "" && !createPlans {
+	if hasFoundingPrice && founderPlan == "" && !createPlans && subscriberPlan != "" {
 		return fmt.Errorf("founding member price found in Stripe but --founder-plan not set; use --founder-plan or --create-plans")
 	}
 
@@ -180,8 +218,14 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return err
 		}
-	} else {
+	} else if subscriberPlan != "" {
 		mapping, err = handleExistingPlans(ctx, subscriberPlan, founderPlan)
+		if err != nil {
+			return err
+		}
+	} else {
+		// no plans specified and create-plans is false: generate the plans JSONL and use placeholder mapping
+		mapping, err = handleGeneratePlansJSONL(activePriceInfos, stripeAccountSuffix)
 		if err != nil {
 			return err
 		}
@@ -464,6 +508,108 @@ func handleCreatePlans(ctx context.Context, activePrices []*sourcePriceInfo, dry
 	fmt.Fprintf(os.Stderr, "plans created\n")
 
 	return mapping, nil
+}
+
+func handleGeneratePlansJSONL(activePrices []*sourcePriceInfo, stripeAccountSuffix string) (*passportPlanMapping, error) {
+	mapping := newPassportPlanMapping()
+
+	var monthlyPrice, annualPrice, founderPrice *sourcePriceInfo
+	for _, p := range activePrices {
+		switch p.PriceType {
+		case "monthly":
+			monthlyPrice = p
+		case "annual":
+			annualPrice = p
+		case "founding":
+			founderPrice = p
+		}
+	}
+
+	var plans []planJSONL
+
+	// Subscriber plan
+	if monthlyPrice != nil || annualPrice != nil {
+		plan := planJSONL{
+			Name:        "Subscriber",
+			Description: "Substack subscriber migration",
+			Type:        atomic.PlanTypePaid,
+			Active:      true,
+			Hidden:      true,
+		}
+
+		mapping.SubscriberPlanID = "PENDING_SUBSCRIBER_PLAN"
+
+		if monthlyPrice != nil {
+			plan.Prices = append(plan.Prices, stripePriceToJSONL("Monthly", monthlyPrice.StripePrice, "month"))
+			mapping.setAmount(mapping.SubscriberPlanID, atomic.SubscriptionIntervalMonth, monthlyPrice.StripePrice)
+		}
+		if annualPrice != nil {
+			plan.Prices = append(plan.Prices, stripePriceToJSONL("Annual", annualPrice.StripePrice, "year"))
+			mapping.setAmount(mapping.SubscriberPlanID, atomic.SubscriptionIntervalYear, annualPrice.StripePrice)
+		}
+
+		plans = append(plans, plan)
+	}
+
+	// Founder plan
+	if founderPrice != nil {
+		plan := planJSONL{
+			Name:        "Founder",
+			Description: "Substack founder migration",
+			Type:        atomic.PlanTypePaid,
+			Active:      true,
+			Hidden:      true,
+			Prices: []priceJSONL{
+				stripePriceToJSONL("Annual", founderPrice.StripePrice, "year"),
+			},
+		}
+
+		mapping.FounderPlanID = "PENDING_FOUNDER_PLAN"
+		mapping.setAmount(mapping.FounderPlanID, atomic.SubscriptionIntervalYear, founderPrice.StripePrice)
+
+		plans = append(plans, plan)
+	}
+
+	// Write JSONL
+	plansFile := fmt.Sprintf("plans-%s.jsonl", stripeAccountSuffix)
+	f, err := os.Create(plansFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create plans file: %w", err)
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, plan := range plans {
+		if err := enc.Encode(plan); err != nil {
+			return nil, fmt.Errorf("failed to write plan: %w", err)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "wrote %d plans to %s\n", len(plans), plansFile)
+
+	return mapping, nil
+}
+
+func stripePriceToJSONL(name string, sp *stripe.Price, interval string) priceJSONL {
+	currencyOpts := make(atomic.CurrencyOptions)
+	for cur, opt := range sp.CurrencyOptions {
+		currencyOpts[cur] = atomic.CurrencyOption{
+			UnitAmount: &opt.UnitAmount,
+		}
+	}
+
+	return priceJSONL{
+		Name:            name,
+		Currency:        string(sp.Currency),
+		CurrencyOptions: currencyOpts,
+		Active:          true,
+		Amount:          sp.UnitAmount,
+		Type:            atomic.PriceTypeRecurring,
+		Recurring: &atomic.PriceRecurring{
+			Interval:  interval,
+			Frequency: 1,
+		},
+	}
 }
 
 func createPassportPrice(ctx context.Context, planID atomic.ID, name string, sp *stripe.Price, interval string) (*atomic.Price, error) {

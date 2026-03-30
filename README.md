@@ -844,7 +844,7 @@ These options apply to all migrate subcommands:
 |------------------------|----------------------------------------------|---------|
 | `--stripe-key` | Stripe API key for the source account (or `$STRIPE_API_KEY`) | *required* |
 | `--dry-run` | Preview what would happen without creating plans | `false` |
-| `--output`, `--out` | Output CSV file path | `migrate_users.csv` |
+| `--output`, `--out` | Output CSV file path (automatically suffixed with `-<stripe_account_id>`) | `migrate_users.csv` |
 | `--subscription-prorate` | Set prorate flag on migrated subscriptions | `false` |
 | `--email-domain-overwrite` | Rewrite all emails to this domain (for testing) | |
 
@@ -862,7 +862,7 @@ atomic-cli migrate substack [options]
 |------------------------|----------------------------------------------|---------|
 | `--subscriber-plan` | Existing Passport plan ID for regular subscribers | |
 | `--founder-plan` | Existing Passport plan ID for founding members | |
-| `--create-plans` | Auto-create Subscriber and Founder plans from Stripe data | `true` |
+| `--create-plans` | Auto-create Subscriber and Founder plans from Stripe data | `false` |
 | `--apply-discounts` | Calculate per-user forever discounts for price differences | `true` |
 
 **How it works:**
@@ -871,8 +871,9 @@ atomic-cli migrate substack [options]
 
 2. **Price report** - Displays a table of all discovered prices showing type, amount, currency, active status, and currency options. Shows how prices map to Passport plans.
 
-3. **Plan resolution** - Either creates new Passport plans or fetches existing ones:
-   - With `--create-plans` (default): creates a hidden "Subscriber" plan with monthly/annual prices and a hidden "Founder" plan with an annual price, matching amounts and currency options from the active Stripe prices. Prompts for confirmation before creating (skipped with `--dry-run`).
+3. **Plan resolution** - Resolves plans in one of three ways:
+   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. The CSV uses placeholder plan IDs (`PENDING_SUBSCRIBER_PLAN`, `PENDING_FOUNDER_PLAN`) that must be replaced after the plans are created via the admin tool.
+   - With `--create-plans`: creates a hidden "Subscriber" plan with monthly/annual prices and a hidden "Founder" plan with an annual price, matching amounts and currency options from the active Stripe prices. Prompts for confirmation before creating (skipped with `--dry-run`).
    - With `--subscriber-plan` / `--founder-plan`: fetches the existing Passport plans and reads their active price amounts for discount calculation.
 
 4. **Subscription collection** - Iterates every discovered Substack price (active and inactive) and lists all active Stripe subscriptions on each. For each subscriber, captures:
@@ -883,21 +884,29 @@ atomic-cli migrate substack [options]
 
 5. **Discount calculation** - When `--apply-discounts` is enabled, compares each subscriber's price (in their subscription currency) against the corresponding Passport plan price at the same interval and currency. If the subscriber's rate is lower, a forever percentage discount is calculated so they keep their grandfathered price. If their rate is equal to or higher than the current price, no discount is applied.
 
-6. **CSV output** - Writes the final CSV with all standard `UserImportRecord` fields plus `migrate_stripe_price` and `migrate_stripe_subscription` columns.
+6. **CSV output** - Writes the final CSV (suffixed with `-<stripe_account_id>`, e.g. `migrate_users-1A2B3C4D.csv`) with all standard `UserImportRecord` fields plus `migrate_stripe_price` and `migrate_stripe_subscription` columns.
 
 **Examples:**
 
 ```bash
+# Generate plans JSONL and CSV with placeholder plan IDs (default behavior)
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_live_xxx
+# outputs: plans-1A2B3C4D.jsonl and migrate_users-1A2B3C4D.csv
+
 # Auto-create plans, preview with dry run
 atomic-cli migrate substack \
   -i inst_abc123 \
   --stripe-key sk_live_xxx \
+  --create-plans \
   --dry-run
 
-# Auto-create plans and apply discounts (defaults)
+# Auto-create plans and apply discounts
 atomic-cli migrate substack \
   -i inst_abc123 \
   --stripe-key sk_live_xxx \
+  --create-plans \
   --out production_migrate.csv
 
 # Use existing plans, skip discount calculation
@@ -914,6 +923,13 @@ atomic-cli migrate substack \
   --stripe-key sk_test_xxx \
   --email-domain-overwrite passport.xyz \
   --out test_migrate.csv
+```
+
+**Example `plans-1A2B3C4D.jsonl` output:**
+
+```jsonl
+{"name":"Subscriber","description":"Substack subscriber migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Monthly","currency":"usd","active":true,"amount":500,"type":"recurring","recurring":{"interval":"month","interval_count":1}},{"name":"Annual","currency":"usd","currency_options":{"eur":{"unit_amount":4800}},"active":true,"amount":5000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
+{"name":"Founder","description":"Substack founder migration","type":"paid","active":true,"hidden":true,"prices":[{"name":"Annual","currency":"usd","active":true,"amount":10000,"type":"recurring","recurring":{"interval":"year","interval_count":1}}]}
 ```
 
 The `--email-domain-overwrite` flag rewrites every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`.

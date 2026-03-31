@@ -472,6 +472,21 @@ The import CSV uses the `UserImportRecord` format. All fields except `login` are
 | `subscription_prorate` | Prorate the subscription | `false` |
 | `discount_percentage` | Coupon discount percentage (0-100) | |
 | `discount_term` | Discount duration: `forever`, `once`, `repeating` | |
+| `is_team_owner` | Mark user as team owner; requires subscription with quantity > 1 | `false` |
+| `team_key` | Arbitrary key to group users into teams (e.g. `team-1`) | |
+| `team_limit_behavior` | What to do when team seats are exceeded (see below) | `drop_admin` |
+
+**Team imports:** When `create_teams` is enabled on the import job (default `true`), records with a `team_key` are grouped. The team owner (`is_team_owner=true`) must have a subscription with `subscription_quantity > 1`. Team members (same `team_key`, `is_team_owner` not set) do not get their own subscription — instead they receive an entitlement to the team owner's subscription, consuming one seat. Records are automatically sorted so team owners are processed before their members. The owner occupies 1 seat; each team member consumes 1 additional seat.
+
+**Team limit behavior** (`team_limit_behavior` column, default `drop_admin`): controls what happens when the number of team members exceeds the subscription quantity:
+
+| Behavior | Description |
+|------------------------|----------------------------------------------|
+| `drop_admin` | The first user over the limit causes the admin/owner's own entitlement to be dropped, freeing one seat for the member. Subsequent users over the limit are dropped (same as `drop_user`). |
+| `drop_user` | Users over the seat limit are skipped entirely — no entitlement is created. |
+| `expand_subscription` | The subscription quantity is automatically increased to accommodate all team members. |
+
+All team capacity events (drops, expansions, failures) are logged in the job report under the "Team Entitlements" section.
 
 ### Access Token Management
 
@@ -1215,6 +1230,111 @@ atomic-cli stripe export -k sk_test_xxx --clean
 
 # Using environment variable
 STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
+```
+
+#### Import
+
+Import Stripe data from an export directory into a target Stripe account. Reads the `manifest.json` and JSONL files produced by `stripe export` and recreates objects in dependency order: products, prices, coupons, promotion codes, customers, then subscriptions.
+
+Products are imported with their original IDs preserved. All imported objects receive `atomic:import_time` and `atomic:import_id` metadata fields for traceability.
+
+```bash
+atomic-cli stripe import --input <export-directory> [options]
+```
+
+**Options:**
+
+| Option                          | Description                                                              | Default       |
+|---------------------------------|--------------------------------------------------------------------------|---------------|
+| `--input`, `-i`                 | Path to the export directory (containing manifest.json)                  | *required*    |
+| `--types`, `-t`                 | Object types to import (repeatable, or "all")                            | `all`         |
+| `--validate`                    | Validate export data before importing (referential integrity, required fields) | `true`   |
+| `--dry-run`                     | Report what would be imported without making any changes                 | `false`       |
+| `--email-domain-overwrite`      | Rewrite customer emails with this domain                                 |               |
+| `--email-template`              | Generate customer emails from a template                                 |               |
+| `--application-fees`            | Retain application fees from exported subscriptions (requires Connect platform) | `true`  |
+| `--application-fee-percent`     | Override application fee % for all subscriptions (requires Connect platform) |            |
+| `--on-behalf-of`                | Connected account ID for subscriptions                                   |               |
+| `--create-test-cards`           | Attach test payment methods to customers (test mode only)                | `true`        |
+| `--default-test-card`           | Override the auto-detected test card for all customers                   | `pm_card_us`  |
+| `--retain-billing-anchor`       | Preserve billing_cycle_anchor from exported subscriptions                | `true`        |
+| `--prorate-subscriptions`       | Prorate subscriptions on creation                                        | `false`       |
+| `--abort-on-error`              | Stop the entire import on the first failure                              | `false`       |
+
+**Import behavior:**
+
+- **Validation** (`--validate`, default on): Checks all JSONL files for structural integrity before importing — verifies required fields, referential integrity (prices reference valid products, promotion codes reference valid coupons, etc.). Aborts if errors are found.
+- **Dry run** (`--dry-run`): Reports target account info, source account, which types would be imported with record counts, and configuration details — without making any API calls.
+- **Live mode**: Prompts the user to type `confirm livemode import` before proceeding. Subscriptions are skipped because customers have no payment methods.
+- **Test mode + `--create-test-cards`** (default): Attaches test payment methods based on customer currency, sets as default for invoices, then creates subscriptions with those payment methods.
+- **Test mode + `--create-test-cards=false`**: Skips subscriptions with a warning.
+- **Connect platform accounts**: Detected automatically via the Stripe account's `controller.type` (`application`). Application fees from exported subscriptions are retained by default (`--application-fees`). Use `--application-fees=false` to ignore fees entirely, or `--application-fee-percent` to override all fees with a fixed percentage.
+- **Billing cycle anchor**: Preserved by default (`--retain-billing-anchor`). Set to false to let Stripe assign new billing dates.
+- **Proration**: Disabled by default (`--prorate-subscriptions=false`). Enable to prorate subscription charges on creation.
+- **Errors**: By default, failures on individual records are logged as warnings and the import continues. Use `--abort-on-error` to stop on the first failure.
+
+**Test card mapping (currency → payment method):**
+
+All test cards are non-3D-Secure Visa cards from [Stripe's testing documentation](https://docs.stripe.com/testing?testing-method=payment-methods#visa).
+
+| Currency | Test Card      | Country       |
+|----------|----------------|---------------|
+| USD      | `pm_card_us`   | United States |
+| GBP      | `pm_card_gb`   | United Kingdom |
+| EUR      | `pm_card_de`   | Germany       |
+| CAD      | `pm_card_ca`   | Canada        |
+| AUD      | `pm_card_au`   | Australia     |
+| JPY      | `pm_card_jp`   | Japan         |
+| SGD      | `pm_card_sg`   | Singapore     |
+| HKD      | `pm_card_hk`   | Hong Kong     |
+| NZD      | `pm_card_nz`   | New Zealand   |
+| CHF      | `pm_card_ch`   | Switzerland   |
+| BRL      | `pm_card_br`   | Brazil        |
+| MXN      | `pm_card_mx`   | Mexico        |
+| INR      | `pm_card_in`   | India         |
+| SEK      | `pm_card_se`   | Sweden        |
+| NOK      | `pm_card_no`   | Norway        |
+| DKK      | `pm_card_dk`   | Denmark       |
+| PLN      | `pm_card_pl`   | Poland        |
+| CZK      | `pm_card_cz`   | Czech Republic |
+| RON      | `pm_card_ro`   | Romania       |
+| BGN      | `pm_card_bg`   | Bulgaria      |
+| HUF      | `pm_card_hu`   | Hungary       |
+| THB      | `pm_card_th`   | Thailand      |
+| MYR      | `pm_card_my`   | Malaysia      |
+
+Use `--default-test-card` to override all currency lookups with a specific test card.
+
+**Examples:**
+
+```bash
+# Dry run — see what would be imported
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 --dry-run
+
+# Import everything into a test account
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234
+
+# Import with email rewriting for sandbox
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
+  --email-template "sandbox+{{seq "user"}}@inbox.mailtrap.io"
+
+# Import with Connect application fees
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
+  --application-fee-percent 10
+
+# Import without subscriptions (just products, prices, customers)
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
+  --create-test-cards=false
+
+# Import without preserving billing anchors, with proration
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
+  --retain-billing-anchor=false --prorate-subscriptions
+
+# Skip validation (if you know the data is clean)
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 --validate=false
+
+# Import into live account (requires confirmation prompt)
+atomic-cli stripe import -k sk_live_xxx --live-mode --input stripe-export-1234
 ```
 
 #### Connect

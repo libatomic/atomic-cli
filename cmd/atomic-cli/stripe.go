@@ -76,6 +76,7 @@ var (
 		},
 		Commands: []*cli.Command{
 			stripeExportCmd,
+			stripeImportCmd,
 			stripeConnectCmd,
 		},
 	}

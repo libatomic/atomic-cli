@@ -55,6 +55,13 @@ type (
 		Livemode    bool                      `json:"livemode"`
 		Types       []string                  `json:"types"`
 		Files       map[string]exportFileInfo `json:"files"`
+		Options     *exportManifestOptions    `json:"options,omitempty"`
+	}
+
+	exportManifestOptions struct {
+		ActiveOnly         bool   `json:"active_only,omitempty"`
+		EmailDomainRewrite string `json:"email_domain_rewrite,omitempty"`
+		EmailTemplate      string `json:"email_template,omitempty"`
 	}
 
 	exportFileInfo struct {
@@ -157,6 +164,12 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}
 
+	currentOpts := &exportManifestOptions{
+		ActiveOnly:         activeOnly,
+		EmailDomainRewrite: emailDomain,
+		EmailTemplate:      emailTemplate,
+	}
+
 	opts := exportOptions{activeOnly: activeOnly, rewriter: rewriter}
 
 	if clean || manifest == nil {
@@ -175,11 +188,17 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 			Livemode:    !isTest,
 			Types:       []string{},
 			Files:       make(map[string]exportFileInfo),
+			Options:     currentOpts,
 		}
 	} else {
 		// verify account matches
 		if manifest.AccountID != acct.ID {
 			return fmt.Errorf("export directory belongs to account %s, current account is %s", manifest.AccountID, acct.ID)
+		}
+
+		// verify options match previous export
+		if err := verifyExportOptions(manifest.Options, currentOpts); err != nil {
+			return err
 		}
 
 		// verify file integrity
@@ -194,6 +213,9 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 				fmt.Fprintf(os.Stderr, "incremental sync from %s\n", manifest.UpdatedAt)
 			}
 		}
+
+		// update stored options
+		manifest.Options = currentOpts
 	}
 
 	fmt.Fprintf(os.Stderr, "exporting account %s (%s mode) to %s\n", acct.ID, mode, exportDir)
@@ -236,6 +258,38 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 			Count:      count,
 			MD5:        md5sum,
 			ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+
+	// post-pass: extract coupons from subscription discounts and merge into coupons.jsonl
+	if (exportAll || typeSet["subscriptions"]) && (exportAll || typeSet["coupons"]) {
+		extracted, err := extractSubscriptionCoupons(exportDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to extract subscription coupons: %v\n", err)
+		} else if extracted > 0 {
+			fmt.Fprintf(os.Stderr, "merged %d subscription-referenced coupons into coupons.jsonl\n", extracted)
+
+			// refresh coupons manifest entry
+			couponPath := filepath.Join(exportDir, "coupons.jsonl")
+			if md5sum, err := util.FileMD5(couponPath); err == nil {
+				reader, _ := util.NewJSONLFileReader[stripe.Coupon](couponPath)
+				count := 0
+				if reader != nil {
+					for _, err := range reader.All() {
+						if err != nil {
+							break
+						}
+						count++
+					}
+					reader.Close()
+				}
+				manifest.Files["coupons"] = exportFileInfo{
+					Filename:   "coupons.jsonl",
+					Count:      count,
+					MD5:        md5sum,
+					ExportedAt: time.Now().UTC().Format(time.RFC3339),
+				}
+			}
 		}
 	}
 
@@ -301,6 +355,39 @@ func verifyManifestFiles(dir string, m *exportManifest) {
 			m.Types = removeString(m.Types, typeName)
 		}
 	}
+}
+
+// verifyExportOptions checks that current export flags match the previous export.
+// Returns an error if critical options have changed that would produce inconsistent data.
+func verifyExportOptions(previous, current *exportManifestOptions) error {
+	if previous == nil {
+		return nil
+	}
+
+	var mismatches []string
+
+	if previous.EmailDomainRewrite != current.EmailDomainRewrite {
+		mismatches = append(mismatches, fmt.Sprintf("email-domain-overwrite changed: %q → %q", previous.EmailDomainRewrite, current.EmailDomainRewrite))
+	}
+
+	if previous.EmailTemplate != current.EmailTemplate {
+		mismatches = append(mismatches, fmt.Sprintf("email-template changed: %q → %q", previous.EmailTemplate, current.EmailTemplate))
+	}
+
+	if previous.ActiveOnly != current.ActiveOnly {
+		mismatches = append(mismatches, fmt.Sprintf("active changed: %v → %v", previous.ActiveOnly, current.ActiveOnly))
+	}
+
+	if len(mismatches) > 0 {
+		msg := "export options have changed since last run:\n"
+		for _, m := range mismatches {
+			msg += fmt.Sprintf("  - %s\n", m)
+		}
+		msg += "use --clean to start a fresh export with the new options"
+		return fmt.Errorf(msg)
+	}
+
+	return nil
 }
 
 // writeManifestAtomic writes the manifest to a temp file and renames it atomically.
@@ -614,4 +701,61 @@ func removeString(s []string, v string) []string {
 		}
 	}
 	return result
+}
+
+// extractSubscriptionCoupons reads subscriptions.jsonl, extracts coupons from
+// discounts, and merges them into coupons.jsonl. Returns the number of new coupons added.
+func extractSubscriptionCoupons(dir string) (int, error) {
+	subReader, err := util.NewJSONLFileReader[stripe.Subscription](filepath.Join(dir, "subscriptions.jsonl"))
+	if err != nil {
+		return 0, err
+	}
+	defer subReader.Close()
+
+	// collect coupons from subscription discounts
+	coupons := make(map[string]stripe.Coupon)
+
+	for sub, err := range subReader.All() {
+		if err != nil {
+			return 0, err
+		}
+
+		if sub.Discount != nil && sub.Discount.Coupon != nil {
+			c := sub.Discount.Coupon
+			if c.ID != "" {
+				coupons[c.ID] = *c
+			}
+		}
+
+		for _, d := range sub.Discounts {
+			if d != nil && d.Coupon != nil && d.Coupon.ID != "" {
+				coupons[d.Coupon.ID] = *d.Coupon
+			}
+		}
+	}
+
+	if len(coupons) == 0 {
+		return 0, nil
+	}
+
+	// merge into coupons.jsonl using JSONLMergeWrite with an empty seq
+	// (the coupons from subscriptions are merged via a seq)
+	seq := func(yield func(stripe.Coupon, error) bool) {
+		for _, c := range coupons {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}
+
+	couponPath := filepath.Join(dir, "coupons.jsonl")
+	_, err = util.JSONLMergeWrite(couponPath,
+		func(c stripe.Coupon) string { return c.ID },
+		seq,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(coupons), nil
 }

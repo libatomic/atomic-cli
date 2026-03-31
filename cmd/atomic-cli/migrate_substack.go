@@ -772,6 +772,8 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 		params.Filters.AddFilter("price", "", sp.StripePrice.ID)
 		params.Filters.AddFilter("status", "", "active")
 		params.AddExpand("data.customer")
+		params.AddExpand("data.discount")
+		params.AddExpand("data.discount.coupon")
 
 		iter := sc.Subscriptions.List(params)
 		for iter.Next() {
@@ -816,6 +818,33 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 				UserAmount:    userAmount,
 				StripePriceID: sp.StripePrice.ID,
 				StripeSubID:   sub.ID,
+			}
+
+			// detect group/team subscriptions
+			if sub.Metadata["is_group"] == "true" {
+				rec.IsTeamOwner = true
+				rec.TeamKey = sub.ID // use the subscription ID as the team key
+			}
+
+			// extract discount from subscription
+			if sub.Discount != nil && sub.Discount.Coupon != nil {
+				coupon := sub.Discount.Coupon
+				if coupon.PercentOff > 0 {
+					pct := coupon.PercentOff
+					rec.DiscountPct = &pct
+
+					switch coupon.Duration {
+					case stripe.CouponDurationForever:
+						term := atomic.CreditTermForever
+						rec.DiscountTerm = &term
+					case stripe.CouponDurationOnce:
+						term := atomic.CreditTermOnce
+						rec.DiscountTerm = &term
+					case stripe.CouponDurationRepeating:
+						term := atomic.CreditTermRepeating
+						rec.DiscountTerm = &term
+					}
+				}
 			}
 
 			if sub.CancelAt > 0 {

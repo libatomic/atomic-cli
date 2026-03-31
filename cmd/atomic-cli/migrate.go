@@ -46,6 +46,8 @@ type (
 		Name          string
 		PlanID        string
 		IsSubscriber  bool
+		IsTeamOwner   bool
+		TeamKey       string
 		Interval      atomicpkg.SubscriptionInterval
 		Currency      string
 		Quantity      int
@@ -318,6 +320,14 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 
 		if rec.IsSubscriber {
 			ir.IsSubscriber = ptr.Bool(true)
+		}
+
+		if rec.IsTeamOwner {
+			ir.IsTeamOwner = ptr.Bool(true)
+		}
+
+		if rec.TeamKey != "" {
+			ir.TeamKey = &rec.TeamKey
 		}
 
 		if rec.PlanID != "" {

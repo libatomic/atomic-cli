@@ -1171,11 +1171,12 @@ atomic-cli stripe export [options]
 **Options:**
 
 | Option | Alias | Description | Default |
-|------------------------|-------|----------------------------------------------|---------|
+|------------------------------|-------|----------------------------------------------|---------|
 | `--output` | `-o` | Output directory (the export folder is created inside) | `.` |
 | `--types` | `-t` | Object types to export (repeatable) | `all` |
 | `--clean` | | Clear existing export data and start fresh | `false` |
-| `--active` | | Only export active objects (products, prices, promotion codes, active subscriptions) | `false` |
+| `--active-only` | | Only export active products, prices, and promotion codes | `false` |
+| `--terminated-subscriptions` | | Include terminated subscriptions (canceled, unpaid, incomplete_expired) | `false` |
 | `--email-domain-overwrite` | | Rewrite all customer emails to this domain; mutually exclusive with `--email-template` | |
 | `--email-template` | | Generate customer emails from a template (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
 
@@ -1186,30 +1187,48 @@ atomic-cli stripe export [options]
 | Type | Expansions |
 |-------------------|----------------------------------------------|
 | Prices | `currency_options`, `tiers` |
-| Customers | `default_source`, `invoice_settings.default_payment_method`, `tax` |
+| Customers | `default_source`, `discount`, `invoice_settings.default_payment_method`, `tax` |
 | Subscriptions | `default_payment_method`, `default_source`, `discount`, `discounts`, `items.data.price`, `items.data.discounts` |
 
-Subscriptions are exported across all statuses: active, past_due, trialing, canceled, unpaid, and paused. With `--active`, only active subscriptions are exported.
+Subscriptions are exported across statuses: active, past_due, trialing, and paused. With `--terminated-subscriptions`, canceled, unpaid, incomplete, and incomplete_expired subscriptions are also included.
 
-**Resume/sync behavior:** Running export again on the same account performs an incremental sync — only objects created since the last export are fetched from Stripe (using `created.gte` from the manifest `updated_at`), then merged into existing files by object ID (last-write-wins). Files are written atomically via temp file + rename, so interrupted exports never leave corrupt data. On resume, MD5 checksums are verified — tampered or corrupt files are re-exported from scratch. Use `--clean` to clear existing data and start fresh.
+**Concurrency and rate limiting:** Customers and subscriptions are exported concurrently for performance, while smaller types (products, prices, coupons, promotion codes) are exported sequentially first. API requests are rate-limited to stay within Stripe's limits (80 req/s for live keys, 20 req/s for test keys) using a shared token-bucket limiter across all concurrent goroutines.
+
+**Periodic flushing:** For customers and subscriptions, progress is saved to disk every 200 records. Both the JSONL file and manifest are flushed, so if the export is interrupted (Ctrl+C, crash, etc.), re-running the command continues from where it left off rather than re-exporting from scratch.
+
+**Resume/sync behavior:** Resume tracking is per-object-type. On startup, the export prints a resume status summary:
+
+```
+resume status:
+  customers           continuing from 2026-03-15T10:30:00Z (5234 records exported)
+  subscriptions       incremental sync (12456 records)
+  products            fresh export
+```
+
+Each type follows one of three strategies:
+
+- **Fresh export** — no previous data exists (or `--clean` was used). Full export from the API.
+- **Incremental sync** — previous export completed successfully. Only fetches records created since the last export (`created.gte`), then merges into existing files by object ID (last-write-wins).
+- **Continue** — previous export was interrupted. Picks up where it left off using the oldest record's timestamp (`created.lt`), appending new records and skipping duplicates.
+
+Files are written atomically via temp file + rename for completed types, so interrupted exports never leave corrupt data. On resume, MD5 checksums are verified for completed types — tampered or corrupt files are re-exported from scratch. Use `--clean` to clear existing data and start fresh.
 
 **manifest.json** includes:
-- `version` — manifest format version (`"2"`)
+- `version` — manifest format version (`"3"`)
 - `created_at` — first export timestamp (RFC 3339)
 - `updated_at` — most recent sync timestamp
 - `account_id` — Stripe account ID (verified on resume; mismatches are rejected)
 - `account_name` — dashboard display name
 - `livemode` — whether the export used a live key
 - `types` — list of exported object types
-- `files` — map of type to `{filename, count, md5, exported_at}`
+- `files` — map of type to `{filename, count, md5, exported_at, complete, oldest_created}`
+  - `complete` — whether the export for this type finished successfully
+  - `oldest_created` — Unix timestamp of the oldest record exported (used for resume)
 
 **Examples:**
 
 ```bash
 # Export everything (test key)
-atomic-cli stripe export -k sk_test_xxx
-
-# Export with a test key (default, no extra flag needed)
 atomic-cli stripe export -k sk_test_xxx
 
 # Export with a live key (must explicitly opt in)
@@ -1221,8 +1240,11 @@ atomic-cli stripe export -k sk_live_xxx --live-mode -t products -t prices -o /ba
 # Re-run to incrementally sync new records
 atomic-cli stripe export -k sk_test_xxx
 
-# Export only active objects
-atomic-cli stripe export -k sk_test_xxx --active
+# Export only active products, prices, and promotion codes
+atomic-cli stripe export -k sk_test_xxx --active-only
+
+# Include terminated subscriptions
+atomic-cli stripe export -k sk_test_xxx --terminated-subscriptions
 
 # Clear existing data and start fresh
 atomic-cli stripe export -k sk_test_xxx --clean

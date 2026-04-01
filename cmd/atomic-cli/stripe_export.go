@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libatomic/atomic/pkg/util"
@@ -38,11 +39,17 @@ import (
 	"github.com/stripe/stripe-go/v79/promotioncode"
 	"github.com/stripe/stripe-go/v79/subscription"
 	"github.com/urfave/cli/v3"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
 )
 
 const (
-	manifestVersion  = "2"
+	manifestVersion  = "3"
 	manifestFilename = "manifest.json"
+
+	// flushInterval is the number of records after which large-type exports
+	// flush their file and manifest to disk for resume safety.
+	flushInterval = 200
 )
 
 type (
@@ -59,26 +66,92 @@ type (
 	}
 
 	exportManifestOptions struct {
-		ActiveOnly            bool   `json:"active_only,omitempty"`
+		ActiveOnly              bool   `json:"active_only,omitempty"`
 		TerminatedSubscriptions bool   `json:"terminated_subscriptions,omitempty"`
-		EmailDomainRewrite    string `json:"email_domain_rewrite,omitempty"`
-		EmailTemplate         string `json:"email_template,omitempty"`
+		EmailDomainRewrite      string `json:"email_domain_rewrite,omitempty"`
+		EmailTemplate           string `json:"email_template,omitempty"`
 	}
 
 	exportFileInfo struct {
-		Filename   string `json:"filename"`
-		Count      int    `json:"count"`
-		MD5        string `json:"md5"`
-		ExportedAt string `json:"exported_at"`
+		Filename      string `json:"filename"`
+		Count         int    `json:"count"`
+		MD5           string `json:"md5"`
+		ExportedAt    string `json:"exported_at"`
+		Complete      bool   `json:"complete"`
+		OldestCreated int64  `json:"oldest_created,omitempty"`
 	}
 
 	exportOptions struct {
-		createdGTE            *int64
-		activeOnly            bool
+		activeOnly              bool
 		terminatedSubscriptions bool
-		rewriter              *emailRewriter
+		rewriter                *emailRewriter
+	}
+
+	// exportContext holds shared state for export functions.
+	exportContext struct {
+		ctx      context.Context
+		dir      string
+		opts     exportOptions
+		limiter  *rate.Limiter
+		manifest *exportManifest
+		mu       *sync.Mutex // protects manifest reads/writes
+		progress *concurrentProgress
 	}
 )
+
+// concurrentProgress provides a thread-safe multi-counter progress display.
+type concurrentProgress struct {
+	mu       sync.Mutex
+	counters map[string]int
+	labels   map[string]string // optional suffix like "[active]"
+	bar      *progressbar.ProgressBar
+}
+
+func newConcurrentProgress() *concurrentProgress {
+	return &concurrentProgress{
+		counters: make(map[string]int),
+		labels:   make(map[string]string),
+		bar: progressbar.NewOptions(-1,
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionSpinnerType(14),
+			progressbar.OptionShowCount(),
+			progressbar.OptionClearOnFinish(),
+		),
+	}
+}
+
+func (p *concurrentProgress) Inc(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.counters[name]++
+	p.bar.Add(1)
+	p.refresh()
+}
+
+func (p *concurrentProgress) SetLabel(name, label string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.labels[name] = label
+	p.refresh()
+}
+
+func (p *concurrentProgress) refresh() {
+	var parts []string
+	for _, name := range []string{"customers", "subscriptions"} {
+		if count, ok := p.counters[name]; ok {
+			label := name
+			if l, ok := p.labels[name]; ok && l != "" {
+				label = name + " " + l
+			}
+			parts = append(parts, fmt.Sprintf("%s: %d", label, count))
+		}
+	}
+	p.bar.Describe("Exporting " + strings.Join(parts, " | "))
+}
+
+func (p *concurrentProgress) Finish() {
+	p.bar.Finish()
+}
 
 var (
 	stripeExportCmd = &cli.Command{
@@ -122,7 +195,17 @@ var (
 	}
 )
 
-func stripeExport(_ context.Context, cmd *cli.Command) error {
+// newStripeLimiter creates a rate limiter tuned to Stripe's API rate limits.
+// Test mode: 25 req/s limit → 20 req/s with burst 5.
+// Live mode: 100 req/s limit → 80 req/s with burst 10.
+func newStripeLimiter(isTest bool) *rate.Limiter {
+	if isTest {
+		return rate.NewLimiter(rate.Limit(20), 5)
+	}
+	return rate.NewLimiter(rate.Limit(80), 10)
+}
+
+func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	acct := cmd.Root().Metadata["stripe_account"].(*stripe.Account)
 	clean := cmd.Bool("clean")
 	activeOnly := cmd.Bool("active-only")
@@ -158,8 +241,8 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to create export directory: %w", err)
 	}
 
-	mode := "live"
 	isTest := strings.HasPrefix(stripe.Key, "sk_test_")
+	mode := "live"
 	if isTest {
 		mode = "test"
 	}
@@ -171,13 +254,17 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 	}
 
 	currentOpts := &exportManifestOptions{
-		ActiveOnly:            activeOnly,
+		ActiveOnly:              activeOnly,
 		TerminatedSubscriptions: cmd.Bool("terminated-subscriptions"),
-		EmailDomainRewrite:    emailDomain,
-		EmailTemplate:         emailTemplate,
+		EmailDomainRewrite:      emailDomain,
+		EmailTemplate:           emailTemplate,
 	}
 
-	opts := exportOptions{activeOnly: activeOnly, terminatedSubscriptions: cmd.Bool("terminated-subscriptions"), rewriter: rewriter}
+	opts := exportOptions{
+		activeOnly:              activeOnly,
+		terminatedSubscriptions: cmd.Bool("terminated-subscriptions"),
+		rewriter:                rewriter,
+	}
 
 	if clean || manifest == nil {
 		if clean && manifest != nil {
@@ -211,41 +298,57 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 		// verify file integrity
 		verifyManifestFiles(exportDir, manifest)
 
-		// use manifest updated_at as created.gte for incremental sync
-		if manifest.UpdatedAt != "" {
-			t, err := time.Parse(time.RFC3339, manifest.UpdatedAt)
-			if err == nil {
-				ts := t.Unix()
-				opts.createdGTE = &ts
-				fmt.Fprintf(os.Stderr, "incremental sync from %s\n", manifest.UpdatedAt)
+		// migrate v2 manifests
+		if manifest.Version == "2" {
+			for name, info := range manifest.Files {
+				info.Complete = true
+				manifest.Files[name] = info
 			}
+			manifest.Version = manifestVersion
 		}
 
 		// update stored options
 		manifest.Options = currentOpts
 	}
 
+	shouldExport := func(name string) bool {
+		return exportAll || typeSet[name]
+	}
+
+	// print resume status for types with existing data
+	printResumeStatus(manifest, shouldExport)
+
 	fmt.Fprintf(os.Stderr, "exporting account %s (%s mode) to %s\n", acct.ID, mode, exportDir)
 
-	exportTypes := []struct {
+	limiter := newStripeLimiter(isTest)
+
+	ectx := &exportContext{
+		ctx:      ctx,
+		dir:      exportDir,
+		opts:     opts,
+		limiter:  limiter,
+		manifest: manifest,
+		mu:       &sync.Mutex{},
+	}
+
+	// Phase 1: sequential export of small types
+	smallTypes := []struct {
 		name string
-		fn   func(string, exportOptions) (int, error)
+		fn   func(*exportContext) (int, error)
 		file string
 	}{
 		{"products", exportProducts, "products.jsonl"},
 		{"prices", exportPrices, "prices.jsonl"},
 		{"coupons", exportCoupons, "coupons.jsonl"},
 		{"promotion-codes", exportPromotionCodes, "promotion_codes.jsonl"},
-		{"customers", exportCustomers, "customers.jsonl"},
-		{"subscriptions", exportSubscriptions, "subscriptions.jsonl"},
 	}
 
-	for _, et := range exportTypes {
-		if !exportAll && !typeSet[et.name] {
+	for _, et := range smallTypes {
+		if !shouldExport(et.name) {
 			continue
 		}
 
-		count, err := et.fn(exportDir, opts)
+		count, err := et.fn(ectx)
 		if err != nil {
 			return fmt.Errorf("failed to export %s: %w", et.name, err)
 		}
@@ -256,22 +359,61 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("failed to compute md5 for %s: %w", et.file, err)
 		}
 
+		ectx.mu.Lock()
 		if !containsString(manifest.Types, et.name) {
 			manifest.Types = append(manifest.Types, et.name)
 		}
-
 		manifest.Files[et.name] = exportFileInfo{
 			Filename:   et.file,
 			Count:      count,
 			MD5:        md5sum,
 			ExportedAt: time.Now().UTC().Format(time.RFC3339),
+			Complete:   true,
+		}
+		ectx.mu.Unlock()
+
+		if err := writeManifestAtomic(exportDir, manifest); err != nil {
+			return fmt.Errorf("failed to write manifest: %w", err)
 		}
 	}
 
-	// post-pass: extract coupons from subscription and customer discounts and merge into coupons.jsonl
+	// Phase 2: concurrent export of large types (customers, subscriptions)
+	exportCust := shouldExport("customers")
+	exportSubs := shouldExport("subscriptions")
+
+	if exportCust || exportSubs {
+		ectx.progress = newConcurrentProgress()
+
+		g, gctx := errgroup.WithContext(ctx)
+		ectx.ctx = gctx
+
+		if exportCust {
+			g.Go(func() error {
+				_, err := exportCustomers(ectx)
+				return err
+			})
+		}
+
+		if exportSubs {
+			g.Go(func() error {
+				_, err := exportSubscriptions(ectx)
+				return err
+			})
+		}
+
+		if err := g.Wait(); err != nil {
+			ectx.progress.Finish()
+			return err
+		}
+
+		ectx.progress.Finish()
+		ectx.ctx = ctx
+	}
+
+	// post-pass: extract coupons from subscription and customer discounts
 	refreshCouponsManifest := false
 
-	if (exportAll || typeSet["subscriptions"]) && (exportAll || typeSet["coupons"]) {
+	if shouldExport("subscriptions") && shouldExport("coupons") {
 		extracted, err := extractSubscriptionCoupons(exportDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to extract subscription coupons: %v\n", err)
@@ -281,7 +423,7 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	if (exportAll || typeSet["customers"]) && (exportAll || typeSet["coupons"]) {
+	if shouldExport("customers") && shouldExport("coupons") {
 		extracted, err := extractCustomerCoupons(exportDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to extract customer coupons: %v\n", err)
@@ -310,6 +452,7 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 				Count:      count,
 				MD5:        md5sum,
 				ExportedAt: time.Now().UTC().Format(time.RFC3339),
+				Complete:   true,
 			}
 		}
 	}
@@ -323,6 +466,55 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 	fmt.Fprintf(os.Stderr, "export complete: %s\n", exportDir)
 
 	return nil
+}
+
+// printResumeStatus prints a summary of per-type resume state.
+func printResumeStatus(m *exportManifest, shouldExport func(string) bool) {
+	var lines []string
+
+	for _, name := range []string{"products", "prices", "coupons", "promotion-codes", "customers", "subscriptions"} {
+		if !shouldExport(name) {
+			continue
+		}
+
+		info, exists := m.Files[name]
+		if !exists {
+			lines = append(lines, fmt.Sprintf("  %-18s fresh export", name))
+			continue
+		}
+
+		if !info.Complete {
+			ts := "unknown"
+			if info.OldestCreated > 0 {
+				ts = time.Unix(info.OldestCreated, 0).UTC().Format(time.RFC3339)
+			}
+			lines = append(lines, fmt.Sprintf("  %-18s continuing from %s (%d records exported)", name, ts, info.Count))
+		} else {
+			lines = append(lines, fmt.Sprintf("  %-18s incremental sync (%d records)", name, info.Count))
+		}
+	}
+
+	if len(lines) == 0 {
+		return
+	}
+
+	// only print if there's something to resume (not all fresh)
+	hasResume := false
+	for _, name := range []string{"products", "prices", "coupons", "promotion-codes", "customers", "subscriptions"} {
+		if _, exists := m.Files[name]; exists && shouldExport(name) {
+			hasResume = true
+			break
+		}
+	}
+
+	if !hasResume {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "resume status:\n")
+	for _, line := range lines {
+		fmt.Fprintf(os.Stderr, "%s\n", line)
+	}
 }
 
 // loadManifest reads and parses the manifest from the export directory.
@@ -346,6 +538,7 @@ func loadManifest(dir string) (*exportManifest, error) {
 
 // verifyManifestFiles checks MD5 checksums for all files in the manifest.
 // Files that fail verification are removed from the manifest so they get re-exported.
+// Incomplete files skip MD5 verification since they are still being written.
 func verifyManifestFiles(dir string, m *exportManifest) {
 	for typeName, info := range m.Files {
 		filePath := filepath.Join(dir, info.Filename)
@@ -354,6 +547,11 @@ func verifyManifestFiles(dir string, m *exportManifest) {
 			fmt.Fprintf(os.Stderr, "warning: %s missing, will re-export\n", info.Filename)
 			delete(m.Files, typeName)
 			m.Types = removeString(m.Types, typeName)
+			continue
+		}
+
+		// skip MD5 check for incomplete files — they are expected to change
+		if !info.Complete {
 			continue
 		}
 
@@ -443,13 +641,25 @@ func cleanExportDir(dir string) {
 	}
 }
 
-// stripeIterSeq adapts a stripe-go list iterator into an iter.Seq2[T, error].
+// stripeIterSeq adapts a stripe-go list iterator into a rate-limited iter.Seq2[T, error].
 func stripeIterSeq[T any, I interface {
 	Next() bool
 	Err() error
-}](it I, extract func(I) *T, onEach func()) iter.Seq2[T, error] {
+}](ctx context.Context, it I, extract func(I) *T, limiter *rate.Limiter, onEach func()) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
-		for it.Next() {
+		for {
+			if limiter != nil {
+				if err := limiter.Wait(ctx); err != nil {
+					var zero T
+					yield(zero, err)
+					return
+				}
+			}
+
+			if !it.Next() {
+				break
+			}
+
 			v := extract(it)
 			if onEach != nil {
 				onEach()
@@ -475,25 +685,58 @@ func newExportSpinner(description string) *progressbar.ProgressBar {
 	)
 }
 
-func exportProducts(dir string, opts exportOptions) (int, error) {
+// resumeFilter determines the API filter for a type based on its manifest state.
+// Returns the filter type ("fresh", "incremental", "continue") and the created timestamp filter.
+func resumeFilter(info exportFileInfo, exists bool) (strategy string, createdGTE *int64, createdLT *int64) {
+	if !exists {
+		return "fresh", nil, nil
+	}
+
+	if info.Complete {
+		// incremental sync: fetch records created since the export completed
+		if info.ExportedAt != "" {
+			t, err := time.Parse(time.RFC3339, info.ExportedAt)
+			if err == nil {
+				ts := t.Unix()
+				return "incremental", &ts, nil
+			}
+		}
+		return "fresh", nil, nil
+	}
+
+	// incomplete: continue from where we left off
+	if info.OldestCreated > 0 {
+		return "continue", nil, &info.OldestCreated
+	}
+
+	return "fresh", nil, nil
+}
+
+func exportProducts(ectx *exportContext) (int, error) {
 	bar := newExportSpinner("Exporting products")
+
+	info, exists := ectx.manifest.Files["products"]
+	strategy, createdGTE, _ := resumeFilter(info, exists)
 
 	params := &stripe.ProductListParams{}
 	params.Limit = stripe.Int64(100)
 
-	if opts.activeOnly {
+	if ectx.opts.activeOnly {
 		params.Active = stripe.Bool(true)
 	}
-	if opts.createdGTE != nil {
-		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	if createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *createdGTE}
 	}
 
-	seq := stripeIterSeq(product.List(params),
+	_ = strategy
+
+	seq := stripeIterSeq(ectx.ctx, product.List(params),
 		func(i *product.Iter) *stripe.Product { return i.Product() },
+		ectx.limiter,
 		func() { bar.Add(1) },
 	)
 
-	path := filepath.Join(dir, "products.jsonl")
+	path := filepath.Join(ectx.dir, "products.jsonl")
 	count, err := util.JSONLMergeWrite(path,
 		func(p stripe.Product) string { return p.ID },
 		seq,
@@ -508,27 +751,31 @@ func exportProducts(dir string, opts exportOptions) (int, error) {
 	return count, nil
 }
 
-func exportPrices(dir string, opts exportOptions) (int, error) {
+func exportPrices(ectx *exportContext) (int, error) {
 	bar := newExportSpinner("Exporting prices")
+
+	info, exists := ectx.manifest.Files["prices"]
+	_, createdGTE, _ := resumeFilter(info, exists)
 
 	params := &stripe.PriceListParams{}
 	params.Limit = stripe.Int64(100)
 	params.AddExpand("data.currency_options")
 	params.AddExpand("data.tiers")
 
-	if opts.activeOnly {
+	if ectx.opts.activeOnly {
 		params.Active = stripe.Bool(true)
 	}
-	if opts.createdGTE != nil {
-		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	if createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *createdGTE}
 	}
 
-	seq := stripeIterSeq(price.List(params),
+	seq := stripeIterSeq(ectx.ctx, price.List(params),
 		func(i *price.Iter) *stripe.Price { return i.Price() },
+		ectx.limiter,
 		func() { bar.Add(1) },
 	)
 
-	path := filepath.Join(dir, "prices.jsonl")
+	path := filepath.Join(ectx.dir, "prices.jsonl")
 	count, err := util.JSONLMergeWrite(path,
 		func(p stripe.Price) string { return p.ID },
 		seq,
@@ -543,22 +790,26 @@ func exportPrices(dir string, opts exportOptions) (int, error) {
 	return count, nil
 }
 
-func exportCoupons(dir string, opts exportOptions) (int, error) {
+func exportCoupons(ectx *exportContext) (int, error) {
 	bar := newExportSpinner("Exporting coupons")
+
+	info, exists := ectx.manifest.Files["coupons"]
+	_, createdGTE, _ := resumeFilter(info, exists)
 
 	params := &stripe.CouponListParams{}
 	params.Limit = stripe.Int64(100)
 
-	if opts.createdGTE != nil {
-		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	if createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *createdGTE}
 	}
 
-	seq := stripeIterSeq(coupon.List(params),
+	seq := stripeIterSeq(ectx.ctx, coupon.List(params),
 		func(i *coupon.Iter) *stripe.Coupon { return i.Coupon() },
+		ectx.limiter,
 		func() { bar.Add(1) },
 	)
 
-	path := filepath.Join(dir, "coupons.jsonl")
+	path := filepath.Join(ectx.dir, "coupons.jsonl")
 	count, err := util.JSONLMergeWrite(path,
 		func(c stripe.Coupon) string { return c.ID },
 		seq,
@@ -573,25 +824,29 @@ func exportCoupons(dir string, opts exportOptions) (int, error) {
 	return count, nil
 }
 
-func exportPromotionCodes(dir string, opts exportOptions) (int, error) {
+func exportPromotionCodes(ectx *exportContext) (int, error) {
 	bar := newExportSpinner("Exporting promotion codes")
+
+	info, exists := ectx.manifest.Files["promotion-codes"]
+	_, createdGTE, _ := resumeFilter(info, exists)
 
 	params := &stripe.PromotionCodeListParams{}
 	params.Limit = stripe.Int64(100)
 
-	if opts.activeOnly {
+	if ectx.opts.activeOnly {
 		params.Active = stripe.Bool(true)
 	}
-	if opts.createdGTE != nil {
-		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	if createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *createdGTE}
 	}
 
-	seq := stripeIterSeq(promotioncode.List(params),
+	seq := stripeIterSeq(ectx.ctx, promotioncode.List(params),
 		func(i *promotioncode.Iter) *stripe.PromotionCode { return i.PromotionCode() },
+		ectx.limiter,
 		func() { bar.Add(1) },
 	)
 
-	path := filepath.Join(dir, "promotion_codes.jsonl")
+	path := filepath.Join(ectx.dir, "promotion_codes.jsonl")
 	count, err := util.JSONLMergeWrite(path,
 		func(pc stripe.PromotionCode) string { return pc.ID },
 		seq,
@@ -606,8 +861,38 @@ func exportPromotionCodes(dir string, opts exportOptions) (int, error) {
 	return count, nil
 }
 
-func exportCustomers(dir string, opts exportOptions) (int, error) {
-	bar := newExportSpinner("Exporting customers")
+func exportCustomers(ectx *exportContext) (int, error) {
+	info, exists := ectx.manifest.Files["customers"]
+	strategy, createdGTE, createdLT := resumeFilter(info, exists)
+
+	filePath := filepath.Join(ectx.dir, "customers.jsonl")
+
+	// incremental sync for completed types uses merge-write
+	if strategy == "incremental" {
+		return exportCustomersIncremental(ectx, createdGTE)
+	}
+
+	// fresh or continue: use append mode with periodic flushing
+	var seenIDs map[string]bool
+	var count int
+
+	if strategy == "continue" {
+		var err error
+		seenIDs, count, err = util.JSONLLoadIDs[stripe.Customer](filePath, func(c stripe.Customer) string { return c.ID })
+		if err != nil {
+			return 0, fmt.Errorf("failed to load existing customer IDs: %w", err)
+		}
+	} else {
+		seenIDs = make(map[string]bool)
+		// fresh: truncate any existing file
+		os.Remove(filePath)
+	}
+
+	writer, err := util.NewJSONLFileAppendWriter[stripe.Customer](filePath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open customers file: %w", err)
+	}
+	defer writer.Close()
 
 	params := &stripe.CustomerListParams{}
 	params.Limit = stripe.Int64(100)
@@ -616,55 +901,224 @@ func exportCustomers(dir string, opts exportOptions) (int, error) {
 	params.AddExpand("data.invoice_settings.default_payment_method")
 	params.AddExpand("data.tax")
 
-	if opts.createdGTE != nil {
-		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+	if createdLT != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{LesserThan: *createdLT}
 	}
 
-	baseSeq := stripeIterSeq(customer.List(params),
+	// mark as incomplete in manifest before starting
+	ectx.mu.Lock()
+	if !containsString(ectx.manifest.Types, "customers") {
+		ectx.manifest.Types = append(ectx.manifest.Types, "customers")
+	}
+	ectx.manifest.Files["customers"] = exportFileInfo{
+		Filename: "customers.jsonl",
+		Count:    count,
+		Complete: false,
+	}
+	ectx.mu.Unlock()
+
+	var oldestCreated int64
+	sinceFlush := 0
+
+	it := customer.List(params)
+	for {
+		if err := ectx.limiter.Wait(ectx.ctx); err != nil {
+			return count, err
+		}
+
+		if !it.Next() {
+			break
+		}
+
+		c := *it.Customer()
+
+		if seenIDs[c.ID] {
+			continue
+		}
+
+		if ectx.opts.rewriter != nil && c.Email != "" {
+			c.Email = ectx.opts.rewriter.Rewrite(c.Email)
+		}
+
+		if err := writer.Write(c); err != nil {
+			return count, fmt.Errorf("failed to write customer: %w", err)
+		}
+
+		seenIDs[c.ID] = true
+		count++
+		sinceFlush++
+
+		if c.Created > 0 && (oldestCreated == 0 || c.Created < oldestCreated) {
+			oldestCreated = c.Created
+		}
+
+		if ectx.progress != nil {
+			ectx.progress.Inc("customers")
+		}
+
+		if sinceFlush >= flushInterval {
+			writer.Flush()
+			ectx.mu.Lock()
+			ectx.manifest.Files["customers"] = exportFileInfo{
+				Filename:      "customers.jsonl",
+				Count:         count,
+				Complete:      false,
+				OldestCreated: oldestCreated,
+			}
+			writeManifestAtomic(ectx.dir, ectx.manifest)
+			ectx.mu.Unlock()
+			sinceFlush = 0
+		}
+	}
+
+	if err := it.Err(); err != nil {
+		return count, fmt.Errorf("failed to list customers: %w", err)
+	}
+
+	writer.Flush()
+
+	// compute MD5 and mark complete
+	md5sum, _ := util.FileMD5(filePath)
+
+	ectx.mu.Lock()
+	ectx.manifest.Files["customers"] = exportFileInfo{
+		Filename:      "customers.jsonl",
+		Count:         count,
+		MD5:           md5sum,
+		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		Complete:      true,
+		OldestCreated: oldestCreated,
+	}
+	writeManifestAtomic(ectx.dir, ectx.manifest)
+	ectx.mu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "exported %d customers\n", count)
+	return count, nil
+}
+
+func exportCustomersIncremental(ectx *exportContext, createdGTE *int64) (int, error) {
+	params := &stripe.CustomerListParams{}
+	params.Limit = stripe.Int64(100)
+	params.AddExpand("data.default_source")
+	params.AddExpand("data.discount")
+	params.AddExpand("data.invoice_settings.default_payment_method")
+	params.AddExpand("data.tax")
+
+	if createdGTE != nil {
+		params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *createdGTE}
+	}
+
+	baseSeq := stripeIterSeq(ectx.ctx, customer.List(params),
 		func(i *customer.Iter) *stripe.Customer { return i.Customer() },
-		func() { bar.Add(1) },
+		ectx.limiter,
+		func() {
+			if ectx.progress != nil {
+				ectx.progress.Inc("customers")
+			}
+		},
 	)
 
-	// wrap the iterator to rewrite emails if a rewriter is configured
 	seq := baseSeq
-	if opts.rewriter != nil {
+	if ectx.opts.rewriter != nil {
 		seq = func(yield func(stripe.Customer, error) bool) {
 			baseSeq(func(c stripe.Customer, err error) bool {
 				if err == nil && c.Email != "" {
-					c.Email = opts.rewriter.Rewrite(c.Email)
+					c.Email = ectx.opts.rewriter.Rewrite(c.Email)
 				}
 				return yield(c, err)
 			})
 		}
 	}
 
-	path := filepath.Join(dir, "customers.jsonl")
+	path := filepath.Join(ectx.dir, "customers.jsonl")
 	count, err := util.JSONLMergeWrite(path,
 		func(c stripe.Customer) string { return c.ID },
 		seq,
 	)
 
-	bar.Finish()
 	if err != nil {
 		return count, fmt.Errorf("failed to export customers: %w", err)
 	}
+
+	md5sum, _ := util.FileMD5(path)
+
+	ectx.mu.Lock()
+	if !containsString(ectx.manifest.Types, "customers") {
+		ectx.manifest.Types = append(ectx.manifest.Types, "customers")
+	}
+	ectx.manifest.Files["customers"] = exportFileInfo{
+		Filename:   "customers.jsonl",
+		Count:      count,
+		MD5:        md5sum,
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		Complete:   true,
+	}
+	writeManifestAtomic(ectx.dir, ectx.manifest)
+	ectx.mu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "exported %d customers\n", count)
 	return count, nil
 }
 
-func exportSubscriptions(dir string, opts exportOptions) (int, error) {
-	bar := newExportSpinner("Exporting subscriptions")
+func exportSubscriptions(ectx *exportContext) (int, error) {
+	info, exists := ectx.manifest.Files["subscriptions"]
+	strategy, createdGTE, createdLT := resumeFilter(info, exists)
+
+	filePath := filepath.Join(ectx.dir, "subscriptions.jsonl")
+
+	if strategy == "incremental" {
+		return exportSubscriptionsIncremental(ectx, createdGTE)
+	}
+
+	// fresh or continue
+	var seenIDs map[string]bool
+	var count int
+
+	if strategy == "continue" {
+		var err error
+		seenIDs, count, err = util.JSONLLoadIDs[stripe.Subscription](filePath, func(s stripe.Subscription) string { return s.ID })
+		if err != nil {
+			return 0, fmt.Errorf("failed to load existing subscription IDs: %w", err)
+		}
+	} else {
+		seenIDs = make(map[string]bool)
+		os.Remove(filePath)
+	}
+
+	writer, err := util.NewJSONLFileAppendWriter[stripe.Subscription](filePath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open subscriptions file: %w", err)
+	}
+	defer writer.Close()
 
 	statuses := []string{"active", "past_due", "trialing", "paused"}
-
-	if opts.terminatedSubscriptions {
+	if ectx.opts.terminatedSubscriptions {
 		statuses = append(statuses, "canceled", "unpaid", "incomplete", "incomplete_expired")
 	}
 
-	seq := func(yield func(stripe.Subscription, error) bool) {
+	// mark as incomplete
+	ectx.mu.Lock()
+	if !containsString(ectx.manifest.Types, "subscriptions") {
+		ectx.manifest.Types = append(ectx.manifest.Types, "subscriptions")
+	}
+	ectx.manifest.Files["subscriptions"] = exportFileInfo{
+		Filename: "subscriptions.jsonl",
+		Count:    count,
+		Complete: false,
+	}
+	ectx.mu.Unlock()
+
+	var oldestCreated int64
+	sinceFlush := 0
+
+	for _, status := range statuses {
+		if ectx.progress != nil {
+			ectx.progress.SetLabel("subscriptions", fmt.Sprintf("[%s]", status))
+		}
+
 		params := &stripe.SubscriptionListParams{}
 		params.Limit = stripe.Int64(100)
+		params.Status = stripe.String(status)
 		params.AddExpand("data.default_payment_method")
 		params.AddExpand("data.default_source")
 		params.AddExpand("data.discount")
@@ -672,17 +1126,126 @@ func exportSubscriptions(dir string, opts exportOptions) (int, error) {
 		params.AddExpand("data.items.data.price")
 		params.AddExpand("data.items.data.discounts")
 
-		if opts.createdGTE != nil {
-			params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *opts.createdGTE}
+		if createdLT != nil {
+			params.CreatedRange = &stripe.RangeQueryParams{LesserThan: *createdLT}
 		}
 
+		it := subscription.List(params)
+		for {
+			if err := ectx.limiter.Wait(ectx.ctx); err != nil {
+				return count, err
+			}
+
+			if !it.Next() {
+				break
+			}
+
+			sub := *it.Subscription()
+
+			if seenIDs[sub.ID] {
+				continue
+			}
+
+			if err := writer.Write(sub); err != nil {
+				return count, fmt.Errorf("failed to write subscription: %w", err)
+			}
+
+			seenIDs[sub.ID] = true
+			count++
+			sinceFlush++
+
+			if sub.Created > 0 && (oldestCreated == 0 || sub.Created < oldestCreated) {
+				oldestCreated = sub.Created
+			}
+
+			if ectx.progress != nil {
+				ectx.progress.Inc("subscriptions")
+			}
+
+			if sinceFlush >= flushInterval {
+				writer.Flush()
+				ectx.mu.Lock()
+				ectx.manifest.Files["subscriptions"] = exportFileInfo{
+					Filename:      "subscriptions.jsonl",
+					Count:         count,
+					Complete:      false,
+					OldestCreated: oldestCreated,
+				}
+				writeManifestAtomic(ectx.dir, ectx.manifest)
+				ectx.mu.Unlock()
+				sinceFlush = 0
+			}
+		}
+
+		if err := it.Err(); err != nil {
+			return count, fmt.Errorf("failed to list %s subscriptions: %w", status, err)
+		}
+	}
+
+	writer.Flush()
+
+	md5sum, _ := util.FileMD5(filePath)
+
+	ectx.mu.Lock()
+	ectx.manifest.Files["subscriptions"] = exportFileInfo{
+		Filename:      "subscriptions.jsonl",
+		Count:         count,
+		MD5:           md5sum,
+		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		Complete:      true,
+		OldestCreated: oldestCreated,
+	}
+	writeManifestAtomic(ectx.dir, ectx.manifest)
+	ectx.mu.Unlock()
+
+	fmt.Fprintf(os.Stderr, "exported %d subscriptions\n", count)
+	return count, nil
+}
+
+func exportSubscriptionsIncremental(ectx *exportContext, createdGTE *int64) (int, error) {
+	statuses := []string{"active", "past_due", "trialing", "paused"}
+	if ectx.opts.terminatedSubscriptions {
+		statuses = append(statuses, "canceled", "unpaid", "incomplete", "incomplete_expired")
+	}
+
+	seq := func(yield func(stripe.Subscription, error) bool) {
 		for _, status := range statuses {
+			if ectx.progress != nil {
+				ectx.progress.SetLabel("subscriptions", fmt.Sprintf("[%s]", status))
+			}
+
+			params := &stripe.SubscriptionListParams{}
+			params.Limit = stripe.Int64(100)
 			params.Status = stripe.String(status)
-			bar.Describe(fmt.Sprintf("Exporting subscriptions [%s]", status))
+			params.AddExpand("data.default_payment_method")
+			params.AddExpand("data.default_source")
+			params.AddExpand("data.discount")
+			params.AddExpand("data.discounts")
+			params.AddExpand("data.items.data.price")
+			params.AddExpand("data.items.data.discounts")
+
+			if createdGTE != nil {
+				params.CreatedRange = &stripe.RangeQueryParams{GreaterThanOrEqual: *createdGTE}
+			}
 
 			it := subscription.List(params)
-			for it.Next() {
-				bar.Add(1)
+			for {
+				if ectx.limiter != nil {
+					if err := ectx.limiter.Wait(ectx.ctx); err != nil {
+						var zero stripe.Subscription
+						yield(zero, err)
+						return
+					}
+				}
+
+				if !it.Next() {
+					break
+				}
+
+				if ectx.progress != nil {
+					ectx.progress.Inc("subscriptions")
+				}
+
 				if !yield(*it.Subscription(), nil) {
 					return
 				}
@@ -696,16 +1259,31 @@ func exportSubscriptions(dir string, opts exportOptions) (int, error) {
 		}
 	}
 
-	path := filepath.Join(dir, "subscriptions.jsonl")
+	path := filepath.Join(ectx.dir, "subscriptions.jsonl")
 	count, err := util.JSONLMergeWrite(path,
 		func(s stripe.Subscription) string { return s.ID },
 		seq,
 	)
 
-	bar.Finish()
 	if err != nil {
 		return count, fmt.Errorf("failed to export subscriptions: %w", err)
 	}
+
+	md5sum, _ := util.FileMD5(path)
+
+	ectx.mu.Lock()
+	if !containsString(ectx.manifest.Types, "subscriptions") {
+		ectx.manifest.Types = append(ectx.manifest.Types, "subscriptions")
+	}
+	ectx.manifest.Files["subscriptions"] = exportFileInfo{
+		Filename:   "subscriptions.jsonl",
+		Count:      count,
+		MD5:        md5sum,
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		Complete:   true,
+	}
+	writeManifestAtomic(ectx.dir, ectx.manifest)
+	ectx.mu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "exported %d subscriptions\n", count)
 	return count, nil
@@ -784,7 +1362,6 @@ func extractSubscriptionCoupons(dir string) (int, error) {
 	}
 	defer subReader.Close()
 
-	// collect coupons from subscription discounts
 	coupons := make(map[string]stripe.Coupon)
 
 	for sub, err := range subReader.All() {
@@ -810,8 +1387,6 @@ func extractSubscriptionCoupons(dir string) (int, error) {
 		return 0, nil
 	}
 
-	// merge into coupons.jsonl using JSONLMergeWrite with an empty seq
-	// (the coupons from subscriptions are merged via a seq)
 	seq := func(yield func(stripe.Coupon, error) bool) {
 		for _, c := range coupons {
 			if !yield(c, nil) {

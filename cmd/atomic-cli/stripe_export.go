@@ -60,7 +60,7 @@ type (
 
 	exportManifestOptions struct {
 		ActiveOnly            bool   `json:"active_only,omitempty"`
-		InactiveSubscriptions bool   `json:"inactive_subscriptions,omitempty"`
+		TerminatedSubscriptions bool   `json:"terminated_subscriptions,omitempty"`
 		EmailDomainRewrite    string `json:"email_domain_rewrite,omitempty"`
 		EmailTemplate         string `json:"email_template,omitempty"`
 	}
@@ -75,7 +75,7 @@ type (
 	exportOptions struct {
 		createdGTE            *int64
 		activeOnly            bool
-		inactiveSubscriptions bool
+		terminatedSubscriptions bool
 		rewriter              *emailRewriter
 	}
 )
@@ -103,12 +103,12 @@ var (
 				Usage: "clear existing export data and start fresh",
 			},
 			&cli.BoolFlag{
-				Name:  "active",
-				Usage: "only export active objects (applies to products, prices, promotion codes; subscriptions use active status only)",
+				Name:  "active-only",
+				Usage: "only export active products, prices, and promotion codes",
 			},
 			&cli.BoolFlag{
-				Name:  "inactive-subscriptions",
-				Usage: "include inactive subscriptions (canceled, unpaid, incomplete_expired) in the export",
+				Name:  "terminated-subscriptions",
+				Usage: "include terminated subscriptions (canceled, unpaid, incomplete_expired) in the export",
 			},
 			&cli.StringFlag{
 				Name:  "email-domain-overwrite",
@@ -125,7 +125,7 @@ var (
 func stripeExport(_ context.Context, cmd *cli.Command) error {
 	acct := cmd.Root().Metadata["stripe_account"].(*stripe.Account)
 	clean := cmd.Bool("clean")
-	activeOnly := cmd.Bool("active")
+	activeOnly := cmd.Bool("active-only")
 
 	emailDomain := cmd.String("email-domain-overwrite")
 	emailTemplate := cmd.String("email-template")
@@ -172,12 +172,12 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 
 	currentOpts := &exportManifestOptions{
 		ActiveOnly:            activeOnly,
-		InactiveSubscriptions: cmd.Bool("inactive-subscriptions"),
+		TerminatedSubscriptions: cmd.Bool("terminated-subscriptions"),
 		EmailDomainRewrite:    emailDomain,
 		EmailTemplate:         emailTemplate,
 	}
 
-	opts := exportOptions{activeOnly: activeOnly, inactiveSubscriptions: cmd.Bool("inactive-subscriptions"), rewriter: rewriter}
+	opts := exportOptions{activeOnly: activeOnly, terminatedSubscriptions: cmd.Bool("terminated-subscriptions"), rewriter: rewriter}
 
 	if clean || manifest == nil {
 		if clean && manifest != nil {
@@ -268,34 +268,48 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	// post-pass: extract coupons from subscription discounts and merge into coupons.jsonl
+	// post-pass: extract coupons from subscription and customer discounts and merge into coupons.jsonl
+	refreshCouponsManifest := false
+
 	if (exportAll || typeSet["subscriptions"]) && (exportAll || typeSet["coupons"]) {
 		extracted, err := extractSubscriptionCoupons(exportDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to extract subscription coupons: %v\n", err)
 		} else if extracted > 0 {
 			fmt.Fprintf(os.Stderr, "merged %d subscription-referenced coupons into coupons.jsonl\n", extracted)
+			refreshCouponsManifest = true
+		}
+	}
 
-			// refresh coupons manifest entry
-			couponPath := filepath.Join(exportDir, "coupons.jsonl")
-			if md5sum, err := util.FileMD5(couponPath); err == nil {
-				reader, _ := util.NewJSONLFileReader[stripe.Coupon](couponPath)
-				count := 0
-				if reader != nil {
-					for _, err := range reader.All() {
-						if err != nil {
-							break
-						}
-						count++
+	if (exportAll || typeSet["customers"]) && (exportAll || typeSet["coupons"]) {
+		extracted, err := extractCustomerCoupons(exportDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to extract customer coupons: %v\n", err)
+		} else if extracted > 0 {
+			fmt.Fprintf(os.Stderr, "merged %d customer-referenced coupons into coupons.jsonl\n", extracted)
+			refreshCouponsManifest = true
+		}
+	}
+
+	if refreshCouponsManifest {
+		couponPath := filepath.Join(exportDir, "coupons.jsonl")
+		if md5sum, err := util.FileMD5(couponPath); err == nil {
+			reader, _ := util.NewJSONLFileReader[stripe.Coupon](couponPath)
+			count := 0
+			if reader != nil {
+				for _, err := range reader.All() {
+					if err != nil {
+						break
 					}
-					reader.Close()
+					count++
 				}
-				manifest.Files["coupons"] = exportFileInfo{
-					Filename:   "coupons.jsonl",
-					Count:      count,
-					MD5:        md5sum,
-					ExportedAt: time.Now().UTC().Format(time.RFC3339),
-				}
+				reader.Close()
+			}
+			manifest.Files["coupons"] = exportFileInfo{
+				Filename:   "coupons.jsonl",
+				Count:      count,
+				MD5:        md5sum,
+				ExportedAt: time.Now().UTC().Format(time.RFC3339),
 			}
 		}
 	}
@@ -382,11 +396,11 @@ func verifyExportOptions(previous, current *exportManifestOptions) error {
 	}
 
 	if previous.ActiveOnly != current.ActiveOnly {
-		mismatches = append(mismatches, fmt.Sprintf("active changed: %v → %v", previous.ActiveOnly, current.ActiveOnly))
+		mismatches = append(mismatches, fmt.Sprintf("active-only changed: %v → %v", previous.ActiveOnly, current.ActiveOnly))
 	}
 
-	if previous.InactiveSubscriptions != current.InactiveSubscriptions {
-		mismatches = append(mismatches, fmt.Sprintf("inactive-subscriptions changed: %v → %v", previous.InactiveSubscriptions, current.InactiveSubscriptions))
+	if previous.TerminatedSubscriptions != current.TerminatedSubscriptions {
+		mismatches = append(mismatches, fmt.Sprintf("terminated-subscriptions changed: %v → %v", previous.TerminatedSubscriptions, current.TerminatedSubscriptions))
 	}
 
 	if len(mismatches) > 0 {
@@ -598,6 +612,7 @@ func exportCustomers(dir string, opts exportOptions) (int, error) {
 	params := &stripe.CustomerListParams{}
 	params.Limit = stripe.Int64(100)
 	params.AddExpand("data.default_source")
+	params.AddExpand("data.discount")
 	params.AddExpand("data.invoice_settings.default_payment_method")
 	params.AddExpand("data.tax")
 
@@ -642,10 +657,9 @@ func exportSubscriptions(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting subscriptions")
 
 	statuses := []string{"active", "past_due", "trialing", "paused"}
-	if opts.activeOnly {
-		statuses = []string{"active"}
-	} else if opts.inactiveSubscriptions {
-		statuses = append(statuses, "canceled", "unpaid", "incomplete_expired")
+
+	if opts.terminatedSubscriptions {
+		statuses = append(statuses, "canceled", "unpaid", "incomplete", "incomplete_expired")
 	}
 
 	seq := func(yield func(stripe.Subscription, error) bool) {
@@ -714,6 +728,51 @@ func removeString(s []string, v string) []string {
 		}
 	}
 	return result
+}
+
+// extractCustomerCoupons reads customers.jsonl, extracts coupons from
+// customer discounts, and merges them into coupons.jsonl. Returns the number of new coupons added.
+func extractCustomerCoupons(dir string) (int, error) {
+	custReader, err := util.NewJSONLFileReader[stripe.Customer](filepath.Join(dir, "customers.jsonl"))
+	if err != nil {
+		return 0, err
+	}
+	defer custReader.Close()
+
+	coupons := make(map[string]stripe.Coupon)
+
+	for c, err := range custReader.All() {
+		if err != nil {
+			return 0, err
+		}
+
+		if c.Discount != nil && c.Discount.Coupon != nil && c.Discount.Coupon.ID != "" {
+			coupons[c.Discount.Coupon.ID] = *c.Discount.Coupon
+		}
+	}
+
+	if len(coupons) == 0 {
+		return 0, nil
+	}
+
+	seq := func(yield func(stripe.Coupon, error) bool) {
+		for _, c := range coupons {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}
+
+	couponPath := filepath.Join(dir, "coupons.jsonl")
+	_, err = util.JSONLMergeWrite(couponPath,
+		func(c stripe.Coupon) string { return c.ID },
+		seq,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(coupons), nil
 }
 
 // extractSubscriptionCoupons reads subscriptions.jsonl, extracts coupons from

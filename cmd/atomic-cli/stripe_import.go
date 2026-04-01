@@ -356,7 +356,7 @@ func stripeImport(_ context.Context, cmd *cli.Command) error {
 
 	if shouldImport("customers") {
 		var err error
-		customerIDMap, customerCardMap, err = importCustomers(opts)
+		customerIDMap, customerCardMap, err = importCustomers(opts, couponIDMap)
 		if err != nil {
 			return fmt.Errorf("failed to import customers: %w", err)
 		}
@@ -435,8 +435,8 @@ func printImportReport(
 		if opts.ActiveOnly {
 			fmt.Fprintf(os.Stderr, "export active-only: true\n")
 		}
-		if opts.InactiveSubscriptions {
-			fmt.Fprintf(os.Stderr, "export inactive-subscriptions: true\n")
+		if opts.TerminatedSubscriptions {
+			fmt.Fprintf(os.Stderr, "export terminated-subscriptions: true\n")
 		}
 	}
 
@@ -911,7 +911,7 @@ func importPromotionCodes(opts importOptions, couponIDMap map[string]string) err
 	return nil
 }
 
-func importCustomers(opts importOptions) (map[string]string, map[string]string, error) {
+func importCustomers(opts importOptions, couponIDMap map[string]string) (map[string]string, map[string]string, error) {
 	idMap := make(map[string]string)
 	cardMap := make(map[string]string)
 	bar := newImportSpinner("Importing customers")
@@ -1003,6 +1003,21 @@ func importCustomers(opts importOptions) (map[string]string, map[string]string, 
 			}
 
 			cardMap[newCust.ID] = pm.ID
+		}
+
+		// apply coupon from customer discount
+		if c.Discount != nil && c.Discount.Coupon != nil && c.Discount.Coupon.ID != "" {
+			newCouponID, ok := couponIDMap[c.Discount.Coupon.ID]
+			if ok {
+				_, err := stripecustomer.Update(newCust.ID, &stripe.CustomerParams{
+					Coupon: stripe.String(newCouponID),
+				})
+				if err != nil {
+					log.Warnf("failed to apply discount to customer %s: %v", newCust.ID, err)
+				}
+			} else {
+				log.Warnf("customer %s: coupon %s not found in import map, skipping discount", c.ID, c.Discount.Coupon.ID)
+			}
 		}
 	}
 

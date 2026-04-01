@@ -59,9 +59,10 @@ type (
 	}
 
 	exportManifestOptions struct {
-		ActiveOnly         bool   `json:"active_only,omitempty"`
-		EmailDomainRewrite string `json:"email_domain_rewrite,omitempty"`
-		EmailTemplate      string `json:"email_template,omitempty"`
+		ActiveOnly            bool   `json:"active_only,omitempty"`
+		InactiveSubscriptions bool   `json:"inactive_subscriptions,omitempty"`
+		EmailDomainRewrite    string `json:"email_domain_rewrite,omitempty"`
+		EmailTemplate         string `json:"email_template,omitempty"`
 	}
 
 	exportFileInfo struct {
@@ -72,9 +73,10 @@ type (
 	}
 
 	exportOptions struct {
-		createdGTE *int64
-		activeOnly bool
-		rewriter   *emailRewriter
+		createdGTE            *int64
+		activeOnly            bool
+		inactiveSubscriptions bool
+		rewriter              *emailRewriter
 	}
 )
 
@@ -103,6 +105,10 @@ var (
 			&cli.BoolFlag{
 				Name:  "active",
 				Usage: "only export active objects (applies to products, prices, promotion codes; subscriptions use active status only)",
+			},
+			&cli.BoolFlag{
+				Name:  "inactive-subscriptions",
+				Usage: "include inactive subscriptions (canceled, unpaid, incomplete_expired) in the export",
 			},
 			&cli.StringFlag{
 				Name:  "email-domain-overwrite",
@@ -165,12 +171,13 @@ func stripeExport(_ context.Context, cmd *cli.Command) error {
 	}
 
 	currentOpts := &exportManifestOptions{
-		ActiveOnly:         activeOnly,
-		EmailDomainRewrite: emailDomain,
-		EmailTemplate:      emailTemplate,
+		ActiveOnly:            activeOnly,
+		InactiveSubscriptions: cmd.Bool("inactive-subscriptions"),
+		EmailDomainRewrite:    emailDomain,
+		EmailTemplate:         emailTemplate,
 	}
 
-	opts := exportOptions{activeOnly: activeOnly, rewriter: rewriter}
+	opts := exportOptions{activeOnly: activeOnly, inactiveSubscriptions: cmd.Bool("inactive-subscriptions"), rewriter: rewriter}
 
 	if clean || manifest == nil {
 		if clean && manifest != nil {
@@ -376,6 +383,10 @@ func verifyExportOptions(previous, current *exportManifestOptions) error {
 
 	if previous.ActiveOnly != current.ActiveOnly {
 		mismatches = append(mismatches, fmt.Sprintf("active changed: %v → %v", previous.ActiveOnly, current.ActiveOnly))
+	}
+
+	if previous.InactiveSubscriptions != current.InactiveSubscriptions {
+		mismatches = append(mismatches, fmt.Sprintf("inactive-subscriptions changed: %v → %v", previous.InactiveSubscriptions, current.InactiveSubscriptions))
 	}
 
 	if len(mismatches) > 0 {
@@ -630,9 +641,11 @@ func exportCustomers(dir string, opts exportOptions) (int, error) {
 func exportSubscriptions(dir string, opts exportOptions) (int, error) {
 	bar := newExportSpinner("Exporting subscriptions")
 
-	statuses := []string{"active", "past_due", "trialing", "canceled", "unpaid", "paused"}
+	statuses := []string{"active", "past_due", "trialing", "paused"}
 	if opts.activeOnly {
 		statuses = []string{"active"}
+	} else if opts.inactiveSubscriptions {
+		statuses = append(statuses, "canceled", "unpaid", "incomplete_expired")
 	}
 
 	seq := func(yield func(stripe.Subscription, error) bool) {

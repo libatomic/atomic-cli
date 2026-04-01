@@ -474,19 +474,18 @@ The import CSV uses the `UserImportRecord` format. All fields except `login` are
 | `discount_term` | Discount duration: `forever`, `once`, `repeating` | |
 | `is_team_owner` | Mark user as team owner; requires subscription with quantity > 1 | `false` |
 | `team_key` | Arbitrary key to group users into teams (e.g. `team-1`) | |
-| `team_limit_behavior` | What to do when team seats are exceeded (see below) | `drop_admin` |
 
-**Team imports:** When `create_teams` is enabled on the import job (default `true`), records with a `team_key` are grouped. The team owner (`is_team_owner=true`) must have a subscription with `subscription_quantity > 1`. Team members (same `team_key`, `is_team_owner` not set) do not get their own subscription — instead they receive an entitlement to the team owner's subscription, consuming one seat. Records are automatically sorted so team owners are processed before their members. The owner occupies 1 seat; each team member consumes 1 additional seat.
+**Team imports:** When `create_teams` is enabled on the import job (default `true`), records with a `team_key` are grouped. The team owner (`is_team_owner=true`) must have a subscription with `subscription_quantity > 1`. Team members (same `team_key`, `is_team_owner` not set) do not get their own subscription — instead they receive an entitlement to the team owner's subscription, consuming one seat. Records are automatically sorted so team owners are processed before their members. The owner occupies 1 seat; each team member consumes 1 additional seat. For the `migrate substack` command, subscriptions with `metadata["is_group"]="true"` are automatically marked as team owners with the Stripe subscription ID as the `team_key`.
 
-**Team limit behavior** (`team_limit_behavior` column, default `drop_admin`): controls what happens when the number of team members exceeds the subscription quantity:
+**Team limit behavior** (`team_limit_behavior` API parameter, default `drop_admin`): controls what happens when the number of team members exceeds the subscription quantity. Set on the import job, not per CSV row.
 
-| Behavior | Description |
-|------------------------|----------------------------------------------|
+| Behavior                          | Description                                                              |
+|-----------------------------------|--------------------------------------------------------------------------|
 | `drop_admin` | The first user over the limit causes the admin/owner's own entitlement to be dropped, freeing one seat for the member. Subsequent users over the limit are dropped (same as `drop_user`). |
 | `drop_user` | Users over the seat limit are skipped entirely — no entitlement is created. |
 | `expand_subscription` | The subscription quantity is automatically increased to accommodate all team members. |
 
-All team capacity events (drops, expansions, failures) are logged in the job report under the "Team Entitlements" section.
+All team capacity events (drops, expansions, orphaned members, failures) are logged in the job report under the "Team Entitlements" section. Orphaned team members (no matching owner for their `team_key`) are reported with the expected owner's login.
 
 ### Access Token Management
 

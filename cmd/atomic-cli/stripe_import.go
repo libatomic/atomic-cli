@@ -435,6 +435,9 @@ func printImportReport(
 		if opts.ActiveOnly {
 			fmt.Fprintf(os.Stderr, "export active-only: true\n")
 		}
+		if opts.InactiveSubscriptions {
+			fmt.Fprintf(os.Stderr, "export inactive-subscriptions: true\n")
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\nobjects to import:\n")

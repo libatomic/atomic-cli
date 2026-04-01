@@ -16,6 +16,7 @@ require (
 	github.com/stripe/stripe-go/v79 v79.12.0
 	github.com/urfave/cli-altsrc/v3 v3.0.1
 	github.com/urfave/cli/v3 v3.3.8
+	go.etcd.io/bbolt v1.3.11
 	golang.ngrok.com/ngrok/v2 v2.1.2
 	golang.org/x/sync v0.19.0
 	golang.org/x/time v0.12.0

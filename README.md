@@ -1283,10 +1283,13 @@ atomic-cli stripe import --input <export-directory> [options]
 | `--retain-billing-anchor`       | Preserve billing_cycle_anchor from exported subscriptions                | `true`        |
 | `--prorate-subscriptions`       | Prorate subscriptions on creation                                        | `false`       |
 | `--abort-on-error`              | Stop the entire import on the first failure                              | `false`       |
+| `--workers`                     | Number of concurrent workers for customer and subscription imports       | CPU count     |
+| `--clean`                       | Clear import state and start a fresh import                              | `false`       |
+| `--update-existing`             | Update previously imported objects whose source data has changed (by SHA-256) | `true`   |
 
 **Import behavior:**
 
-- **Validation** (`--validate`, default on): Checks all JSONL files for structural integrity before importing — verifies required fields, referential integrity (prices reference valid products, promotion codes reference valid coupons, etc.). Aborts if errors are found.
+- **Validation** (`--validate`, default on): Checks all JSONL files for structural integrity before importing — verifies required fields, referential integrity (prices reference valid products, promotion codes reference valid coupons, etc.). Also verifies that all requested export types completed successfully (rejects incomplete exports). Aborts if errors are found.
 - **Dry run** (`--dry-run`): Reports target account info, source account, which types would be imported with record counts, and configuration details — without making any API calls.
 - **Live mode**: Prompts the user to type `confirm livemode import` before proceeding. Subscriptions are skipped because customers have no payment methods.
 - **Test mode + `--create-test-cards`** (default): Attaches test payment methods based on customer currency, sets as default for invoices, then creates subscriptions with those payment methods.
@@ -1295,6 +1298,15 @@ atomic-cli stripe import --input <export-directory> [options]
 - **Billing cycle anchor**: Preserved by default (`--retain-billing-anchor`). Set to false to let Stripe assign new billing dates.
 - **Proration**: Disabled by default (`--prorate-subscriptions=false`). Enable to prorate subscription charges on creation.
 - **Errors**: By default, failures on individual records are logged as warnings and the import continues. Use `--abort-on-error` to stop on the first failure.
+- **Error propagation**: Errors in upstream types automatically abort dependent downstream types. Product errors abort price import; price errors abort subscription import; coupon errors abort promotion code import; customer errors abort subscription import. This prevents cascading failures.
+- **Concurrency**: Customer and subscription imports use multiple concurrent workers (default: CPU count, configurable via `--workers`). API requests are rate-limited to stay within Stripe's limits. Imports run sequentially in dependency order (products → prices → coupons → promotion codes → customers → subscriptions), but within each type the individual record creates are parallelized.
+- **Import state**: Persisted in the export directory alongside `manifest.json`. Consists of two parts:
+  - `import-state.json` — lightweight metadata: per-type completion status, source MD5 checksums, record counts, and error counts.
+  - `<type>.map.db` files — [bbolt](https://github.com/etcd-io/bbolt) key-value databases storing old ID → new ID mappings for each type. These are memory-mapped, so lookups are fast without loading entire maps into memory. This keeps import state efficient even for large datasets (tens of thousands of customers/subscriptions).
+- **Smart skip**: Types whose source JSONL file hasn't changed (MD5 match) since the last completed import are skipped entirely. This makes re-running import after a successful run nearly instant.
+- **Resume**: If an import is interrupted (Ctrl+C, crash), re-running the command continues from where it left off. Already-created objects are skipped via the persisted bbolt ID maps. For customers and subscriptions, the database is synced every 200 records.
+- **Change detection**: Each imported record's SHA-256 hash is stored alongside its ID mapping. On re-import, records whose hash hasn't changed are skipped automatically — no unnecessary API calls. With `--update-existing` (default), records that have changed are updated via the Stripe Update API: products and customers are fully updated, prices and coupons update metadata/active status (immutable fields like amount are unchanged), and subscriptions are always skipped (too complex to diff safely). With `--update-existing=false`, changed records are skipped entirely (only new records are created).
+- **`--clean`**: Clears `import-state.json` and all `.map` files, forcing a full re-import. Note: `stripe export --clean` also clears the import state automatically.
 
 **Test card mapping (currency → payment method):**
 

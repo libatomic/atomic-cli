@@ -436,17 +436,7 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	if refreshCouponsManifest {
 		couponPath := filepath.Join(exportDir, "coupons.jsonl")
 		if md5sum, err := util.FileMD5(couponPath); err == nil {
-			reader, _ := util.NewJSONLFileReader[stripe.Coupon](couponPath)
-			count := 0
-			if reader != nil {
-				for _, err := range reader.All() {
-					if err != nil {
-						break
-					}
-					count++
-				}
-				reader.Close()
-			}
+			count, _ := util.JSONLCount(couponPath)
 			manifest.Files["coupons"] = exportFileInfo{
 				Filename:   "coupons.jsonl",
 				Count:      count,
@@ -635,7 +625,7 @@ func cleanExportDir(dir string) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".tmp") || name == manifestFilename {
+		if strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".map.db") || strings.HasSuffix(name, ".tmp") || name == manifestFilename || name == importStateFilename {
 			os.Remove(filepath.Join(dir, name))
 		}
 	}

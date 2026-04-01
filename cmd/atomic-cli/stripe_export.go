@@ -97,15 +97,57 @@ type (
 		mu       *sync.Mutex // protects manifest reads/writes
 		progress *concurrentProgress
 	}
+
+	// concurrentProgress provides a thread-safe multi-counter progress display.
+	concurrentProgress struct {
+		mu       sync.Mutex
+		counters map[string]int
+		labels   map[string]string // optional suffix like "[active]"
+		bar      *progressbar.ProgressBar
+	}
 )
 
-// concurrentProgress provides a thread-safe multi-counter progress display.
-type concurrentProgress struct {
-	mu       sync.Mutex
-	counters map[string]int
-	labels   map[string]string // optional suffix like "[active]"
-	bar      *progressbar.ProgressBar
-}
+var (
+	stripeExportCmd = &cli.Command{
+		Name:   "export",
+		Usage:  "export stripe data to jsonl files for backup",
+		Action: stripeExport,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "output",
+				Aliases: []string{"o"},
+				Usage:   "output directory (the export folder will be created inside this directory)",
+				Value:   ".",
+			},
+			&cli.StringSliceFlag{
+				Name:    "types",
+				Aliases: []string{"t"},
+				Usage:   "object types to export: products, prices, customers, subscriptions, coupons, promotion-codes, or all",
+				Value:   []string{"all"},
+			},
+			&cli.BoolFlag{
+				Name:  "clean",
+				Usage: "clear existing export data and start fresh",
+			},
+			&cli.BoolFlag{
+				Name:  "active-only",
+				Usage: "only export active products, prices, and promotion codes",
+			},
+			&cli.BoolFlag{
+				Name:  "terminated-subscriptions",
+				Usage: "include terminated subscriptions (canceled, unpaid, incomplete_expired) in the export",
+			},
+			&cli.StringFlag{
+				Name:  "email-domain-overwrite",
+				Usage: "rewrite all customer email addresses to use this domain; mutually exclusive with --email-template",
+			},
+			&cli.StringFlag{
+				Name:  "email-template",
+				Usage: "generate customer email addresses from a template (see migrate --help for template functions); mutually exclusive with --email-domain-overwrite",
+			},
+		},
+	}
+)
 
 func newConcurrentProgress() *concurrentProgress {
 	return &concurrentProgress{
@@ -152,48 +194,6 @@ func (p *concurrentProgress) refresh() {
 func (p *concurrentProgress) Finish() {
 	p.bar.Finish()
 }
-
-var (
-	stripeExportCmd = &cli.Command{
-		Name:   "export",
-		Usage:  "export stripe data to jsonl files for backup",
-		Action: stripeExport,
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "output",
-				Aliases: []string{"o"},
-				Usage:   "output directory (the export folder will be created inside this directory)",
-				Value:   ".",
-			},
-			&cli.StringSliceFlag{
-				Name:    "types",
-				Aliases: []string{"t"},
-				Usage:   "object types to export: products, prices, customers, subscriptions, coupons, promotion-codes, or all",
-				Value:   []string{"all"},
-			},
-			&cli.BoolFlag{
-				Name:  "clean",
-				Usage: "clear existing export data and start fresh",
-			},
-			&cli.BoolFlag{
-				Name:  "active-only",
-				Usage: "only export active products, prices, and promotion codes",
-			},
-			&cli.BoolFlag{
-				Name:  "terminated-subscriptions",
-				Usage: "include terminated subscriptions (canceled, unpaid, incomplete_expired) in the export",
-			},
-			&cli.StringFlag{
-				Name:  "email-domain-overwrite",
-				Usage: "rewrite all customer email addresses to use this domain; mutually exclusive with --email-template",
-			},
-			&cli.StringFlag{
-				Name:  "email-template",
-				Usage: "generate customer email addresses from a template (see migrate --help for template functions); mutually exclusive with --email-domain-overwrite",
-			},
-		},
-	}
-)
 
 // newStripeLimiter creates a rate limiter tuned to Stripe's API rate limits.
 // Test mode: 25 req/s limit → 20 req/s with burst 5.
@@ -877,8 +877,14 @@ func exportCustomers(ectx *exportContext) (int, error) {
 	var count int
 
 	if strategy == "continue" {
+		if repaired, err := util.JSONLRepair(filePath); err != nil {
+			return 0, fmt.Errorf("failed to repair customers file: %w", err)
+		} else if repaired {
+			fmt.Fprintf(os.Stderr, "repaired truncated record in customers.jsonl\n")
+		}
+
 		var err error
-		seenIDs, count, err = util.JSONLLoadIDs[stripe.Customer](filePath, func(c stripe.Customer) string { return c.ID })
+		seenIDs, count, err = util.JSONLLoadIDs(filePath, func(c stripe.Customer) string { return c.ID })
 		if err != nil {
 			return 0, fmt.Errorf("failed to load existing customer IDs: %w", err)
 		}
@@ -936,9 +942,7 @@ func exportCustomers(ectx *exportContext) (int, error) {
 			continue
 		}
 
-		if ectx.opts.rewriter != nil && c.Email != "" {
-			c.Email = ectx.opts.rewriter.Rewrite(c.Email)
-		}
+		rewriteCustomerEmails(&c, ectx.opts.rewriter)
 
 		if err := writer.Write(c); err != nil {
 			return count, fmt.Errorf("failed to write customer: %w", err)
@@ -1022,8 +1026,8 @@ func exportCustomersIncremental(ectx *exportContext, createdGTE *int64) (int, er
 	if ectx.opts.rewriter != nil {
 		seq = func(yield func(stripe.Customer, error) bool) {
 			baseSeq(func(c stripe.Customer, err error) bool {
-				if err == nil && c.Email != "" {
-					c.Email = ectx.opts.rewriter.Rewrite(c.Email)
+				if err == nil {
+					rewriteCustomerEmails(&c, ectx.opts.rewriter)
 				}
 				return yield(c, err)
 			})
@@ -1075,8 +1079,14 @@ func exportSubscriptions(ectx *exportContext) (int, error) {
 	var count int
 
 	if strategy == "continue" {
+		if repaired, err := util.JSONLRepair(filePath); err != nil {
+			return 0, fmt.Errorf("failed to repair subscriptions file: %w", err)
+		} else if repaired {
+			fmt.Fprintf(os.Stderr, "repaired truncated record in subscriptions.jsonl\n")
+		}
+
 		var err error
-		seenIDs, count, err = util.JSONLLoadIDs[stripe.Subscription](filePath, func(s stripe.Subscription) string { return s.ID })
+		seenIDs, count, err = util.JSONLLoadIDs(filePath, func(s stripe.Subscription) string { return s.ID })
 		if err != nil {
 			return 0, fmt.Errorf("failed to load existing subscription IDs: %w", err)
 		}

@@ -217,6 +217,7 @@ func (r *emailRewriter) Rewrite(email string) string {
 	return r.applyTemplate(email)
 }
 
+
 func (r *emailRewriter) applyTemplate(original string) string {
 	result := r.template
 

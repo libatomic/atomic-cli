@@ -1177,8 +1177,10 @@ atomic-cli stripe export [options]
 | `--clean` | | Clear existing export data and start fresh | `false` |
 | `--active-only` | | Only export active products, prices, and promotion codes | `false` |
 | `--terminated-subscriptions` | | Include terminated subscriptions (canceled, unpaid, incomplete_expired) | `false` |
-| `--email-domain-overwrite` | | Rewrite all customer emails to this domain; mutually exclusive with `--email-template` | |
-| `--email-template` | | Generate customer emails from a template (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
+| `--email-domain-overwrite` | | Rewrite all customer email addresses to this domain; mutually exclusive with `--email-template` | |
+| `--email-template` | | Generate customer email addresses from a template (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
+
+When email rewriting is enabled, all email addresses on customer records are rewritten — including the top-level email, billing details on the default payment method, and any nested customer back-references. This ensures no real email addresses leak into test/sandbox environments.
 
 **Supported types:** `products`, `prices`, `customers`, `subscriptions`, `coupons`, `promotion-codes`, `all`
 
@@ -1209,7 +1211,7 @@ Each type follows one of three strategies:
 
 - **Fresh export** — no previous data exists (or `--clean` was used). Full export from the API.
 - **Incremental sync** — previous export completed successfully. Only fetches records created since the last export (`created.gte`), then merges into existing files by object ID (last-write-wins).
-- **Continue** — previous export was interrupted. Picks up where it left off using the oldest record's timestamp (`created.lt`), appending new records and skipping duplicates.
+- **Continue** — previous export was interrupted. Picks up where it left off using the oldest record's timestamp (`created.lt`), appending new records and skipping duplicates. If the JSONL file has a truncated last record (from an interrupted write), it is automatically repaired on resume.
 
 Files are written atomically via temp file + rename for completed types, so interrupted exports never leave corrupt data. On resume, MD5 checksums are verified for completed types — tampered or corrupt files are re-exported from scratch. Use `--clean` to clear existing data and start fresh.
 
@@ -1271,8 +1273,8 @@ atomic-cli stripe import --input <export-directory> [options]
 | `--types`, `-t`                 | Object types to import (repeatable, or "all")                            | `all`         |
 | `--validate`                    | Validate export data before importing (referential integrity, required fields) | `true`   |
 | `--dry-run`                     | Report what would be imported without making any changes                 | `false`       |
-| `--email-domain-overwrite`      | Rewrite customer emails with this domain                                 |               |
-| `--email-template`              | Generate customer emails from a template                                 |               |
+| `--email-domain-overwrite`      | Rewrite all customer email addresses with this domain                    |               |
+| `--email-template`              | Generate customer email addresses from a template                        |               |
 | `--application-fees`            | Retain application fees from exported subscriptions (requires Connect platform) | `true`  |
 | `--application-fee-percent`     | Override application fee % for all subscriptions (requires Connect platform) |            |
 | `--on-behalf-of`                | Connected account ID for subscriptions                                   |               |

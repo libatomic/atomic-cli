@@ -929,13 +929,10 @@ func importCustomers(opts importOptions, couponIDMap map[string]string) (map[str
 
 		bar.Add(1)
 
-		email := c.Email
-		if opts.rewriter != nil && email != "" {
-			email = opts.rewriter.Rewrite(email)
-		}
+		rewriteCustomerEmails(&c, opts.rewriter)
 
 		params := &stripe.CustomerParams{
-			Email:       nilIfEmpty(email),
+			Email:       nilIfEmpty(c.Email),
 			Name:        nilIfEmpty(c.Name),
 			Description: nilIfEmpty(c.Description),
 			Phone:       nilIfEmpty(c.Phone),

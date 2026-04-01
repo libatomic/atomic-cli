@@ -81,3 +81,44 @@ var (
 		},
 	}
 )
+
+// rewriteCustomerEmails rewrites all email addresses found on a Stripe Customer
+// record. This covers the top-level email, billing details on the default payment
+// method, and any nested customer back-references on the payment method and
+// default source. This is critical for test/sandbox imports to prevent emails
+// being sent to real users. No-op if rewriter is nil.
+func rewriteCustomerEmails(c *stripe.Customer, rewriter *emailRewriter) {
+	if rewriter == nil {
+		return
+	}
+
+	if c.Email != "" {
+		c.Email = rewriter.Rewrite(c.Email)
+	}
+
+	// invoice_settings.default_payment_method
+	if c.InvoiceSettings != nil && c.InvoiceSettings.DefaultPaymentMethod != nil {
+		rewritePaymentMethodEmails(c.InvoiceSettings.DefaultPaymentMethod, rewriter)
+	}
+
+	// default_source (card or bank account back-references)
+	if src := c.DefaultSource; src != nil {
+		if src.Card != nil && src.Card.Customer != nil && src.Card.Customer.Email != "" {
+			src.Card.Customer.Email = rewriter.Rewrite(src.Card.Customer.Email)
+		}
+		if src.BankAccount != nil && src.BankAccount.Customer != nil && src.BankAccount.Customer.Email != "" {
+			src.BankAccount.Customer.Email = rewriter.Rewrite(src.BankAccount.Customer.Email)
+		}
+	}
+}
+
+// rewritePaymentMethodEmails rewrites all email addresses on a PaymentMethod,
+// including billing_details.email and the embedded customer back-reference.
+func rewritePaymentMethodEmails(pm *stripe.PaymentMethod, rewriter *emailRewriter) {
+	if pm.BillingDetails != nil && pm.BillingDetails.Email != "" {
+		pm.BillingDetails.Email = rewriter.Rewrite(pm.BillingDetails.Email)
+	}
+	if pm.Customer != nil && pm.Customer.Email != "" {
+		pm.Customer.Email = rewriter.Rewrite(pm.Customer.Email)
+	}
+}

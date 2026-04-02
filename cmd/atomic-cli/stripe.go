@@ -78,6 +78,7 @@ var (
 			stripeExportCmd,
 			stripeImportCmd,
 			stripeConnectCmd,
+			stripeWebhookCmd,
 		},
 	}
 )

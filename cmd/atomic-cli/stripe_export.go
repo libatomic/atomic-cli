@@ -103,6 +103,7 @@ type (
 		mu       sync.Mutex
 		counters map[string]int
 		labels   map[string]string // optional suffix like "[active]"
+		done     map[string]int    // final counts per type, printed after Finish
 		bar      *progressbar.ProgressBar
 	}
 )
@@ -153,10 +154,13 @@ func newConcurrentProgress() *concurrentProgress {
 	return &concurrentProgress{
 		counters: make(map[string]int),
 		labels:   make(map[string]string),
+		done:     make(map[string]int),
 		bar: progressbar.NewOptions(-1,
 			progressbar.OptionSetWriter(os.Stderr),
 			progressbar.OptionSpinnerType(14),
 			progressbar.OptionShowCount(),
+			progressbar.OptionShowIts(),
+			progressbar.OptionSetItsString("rec"),
 			progressbar.OptionClearOnFinish(),
 		),
 	}
@@ -191,8 +195,19 @@ func (p *concurrentProgress) refresh() {
 	p.bar.Describe("Exporting " + strings.Join(parts, " | "))
 }
 
+func (p *concurrentProgress) SetDone(name string, count int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.done[name] = count
+}
+
 func (p *concurrentProgress) Finish() {
 	p.bar.Finish()
+	for _, name := range []string{"customers", "subscriptions"} {
+		if count, ok := p.done[name]; ok {
+			fmt.Fprintf(os.Stderr, "exported %d %s\n", count, name)
+		}
+	}
 }
 
 // newStripeLimiter creates a rate limiter tuned to Stripe's API rate limits.
@@ -318,6 +333,7 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	// print resume status for types with existing data
 	printResumeStatus(manifest, shouldExport)
 
+	exportStart := time.Now()
 	fmt.Fprintf(os.Stderr, "exporting account %s (%s mode) to %s\n", acct.ID, mode, exportDir)
 
 	limiter := newStripeLimiter(isTest)
@@ -456,7 +472,7 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "export complete: %s\n", exportDir)
+	fmt.Fprintf(os.Stderr, "export complete: %s (took %s)\n", exportDir, time.Since(exportStart).Truncate(time.Second))
 
 	return nil
 }
@@ -674,6 +690,8 @@ func newExportSpinner(description string) *progressbar.ProgressBar {
 		progressbar.OptionSetWriter(os.Stderr),
 		progressbar.OptionSpinnerType(14),
 		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetItsString("rec"),
 		progressbar.OptionClearOnFinish(),
 	)
 }
@@ -989,7 +1007,7 @@ func exportCustomers(ectx *exportContext) (int, error) {
 	writeManifestAtomic(ectx.dir, ectx.manifest)
 	ectx.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "exported %d customers\n", count)
+	ectx.progress.SetDone("customers", count)
 	return count, nil
 }
 
@@ -1053,7 +1071,7 @@ func exportCustomersIncremental(ectx *exportContext, createdGTE *int64) (int, er
 	writeManifestAtomic(ectx.dir, ectx.manifest)
 	ectx.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "exported %d customers\n", count)
+	ectx.progress.SetDone("customers", count)
 	return count, nil
 }
 
@@ -1201,7 +1219,7 @@ func exportSubscriptions(ectx *exportContext) (int, error) {
 	writeManifestAtomic(ectx.dir, ectx.manifest)
 	ectx.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "exported %d subscriptions\n", count)
+	ectx.progress.SetDone("subscriptions", count)
 	return count, nil
 }
 
@@ -1288,7 +1306,7 @@ func exportSubscriptionsIncremental(ectx *exportContext, createdGTE *int64) (int
 	writeManifestAtomic(ectx.dir, ectx.manifest)
 	ectx.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "exported %d subscriptions\n", count)
+	ectx.progress.SetDone("subscriptions", count)
 	return count, nil
 }
 

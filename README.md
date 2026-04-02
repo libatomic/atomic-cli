@@ -1464,6 +1464,81 @@ STRIPE_API_KEY=sk_test_xxx STRIPE_CLIENT_ID=ca_xxx \
   atomic-cli stripe connect --ngrok
 ```
 
+#### Webhook
+
+Listen for Stripe webhook events in real time with an interactive terminal UI. Events are logged to a JSONL file and displayed in a live table with navigation, pause, and JSON detail viewing.
+
+```bash
+atomic-cli stripe webhook [options]
+```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|---------------------|-------|----------------------------------------------|---------|
+| `--output` | `-o` | Directory for the events JSONL file | `.` |
+| `--events` | `-e` | Event types to listen for (repeatable) | `atomic.StripeEvents` |
+| `--display-events` | | Number of recent events to display in the table | `20` |
+| `--log-only` | | Log events without the interactive UI | `false` |
+| `--view-only` | | Browse existing events file without starting a listener | `false` |
+| `--connect` | | Receive events from connected accounts (requires a platform key) | `false` |
+| `--ngrok` | | Use ngrok to create a public tunnel | `false` |
+| `--ngrok-authtoken` | | ngrok auth token (overrides config and `$NGROK_AUTHTOKEN`) | |
+| `--ngrok-config` | | Path to ngrok config file | `~/.ngrok2/ngrok.yml` |
+
+**Modes:**
+
+- **Default (TUI + listener)**: Starts a webhook listener and displays events in an interactive side-by-side view — event table on the left, YAML detail on the right.
+- **`--log-only`**: Starts the webhook listener but skips the TUI. Prints connection info (URL, endpoint ID, secret) and logs each received event as a one-liner to stderr. Useful for CI, background processes, or piping output. Press Ctrl+C to stop.
+- **`--view-only`**: Opens the interactive TUI to browse an existing events JSONL file without starting a listener or registering a webhook. Useful for reviewing events after the fact.
+
+**Behavior:**
+
+- **With `--ngrok`**: Creates an ngrok tunnel, registers a Stripe webhook endpoint automatically with the tunnel URL, and starts listening. The webhook endpoint is cleaned up on exit.
+- **With `--connect`**: Sets `connect: true` on the webhook endpoint so it receives events from connected accounts. Requires a **platform account key** (not a connected account key). The endpoint will appear under the platform account's dashboard.
+- **Without `--ngrok`**: Listens on a random local port and prints instructions for how to proxy the local URL and register it in the Stripe Dashboard manually.
+- **Event logging**: All received events are appended to `events-<account_id>.jsonl` (without the `acct_` prefix). Delete the file to start fresh.
+- **Default events**: When `--events` is not specified, listens for the standard `atomic.StripeEvents` set: subscription lifecycle, payment methods, payment intents, invoices, charges, and credit notes.
+
+**Interactive TUI:**
+
+The TUI displays a side-by-side layout: an event table on the left (timestamp, event type, and optionally customer/subscription IDs on wide terminals) and a scrollable YAML detail view on the right showing the full event for the selected row.
+
+| Key | Action |
+|------------|----------------------------------------------|
+| `↑` / `↓` | Navigate up/down in the event table |
+| `Tab` | Switch focus between table and detail panel |
+| `p` | Pause/unpause live updates |
+| `c` | Show/hide connection info popup |
+| `q` | Quit |
+
+When paused, new events are still logged to the JSONL file but the table display freezes so you can inspect events without them scrolling away.
+
+**Examples:**
+
+```bash
+# Listen with ngrok (auto-registers webhook endpoint)
+atomic-cli stripe webhook -k sk_test_xxx --ngrok
+
+# Listen for events from connected accounts (use platform key)
+atomic-cli stripe webhook -k sk_test_PLATFORM_KEY --ngrok --connect
+
+# Log-only mode (no TUI, just print events to stderr)
+atomic-cli stripe webhook -k sk_test_xxx --ngrok --log-only
+
+# Browse existing events file
+atomic-cli stripe webhook -k sk_test_xxx --view-only
+
+# Listen with specific events
+atomic-cli stripe webhook -k sk_test_xxx --ngrok -e customer.subscription.created -e invoice.payment_succeeded
+
+# Show more events in the table
+atomic-cli stripe webhook -k sk_test_xxx --ngrok --display-events 50
+
+# Without ngrok (manual proxy setup)
+atomic-cli stripe webhook -k sk_test_xxx
+```
+
 ## Output Formats
 
 The CLI supports multiple output formats controlled by the `--out-format` option:

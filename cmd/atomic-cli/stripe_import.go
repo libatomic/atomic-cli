@@ -435,6 +435,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	importStart := time.Now()
 	fmt.Fprintf(os.Stderr, "importing from %s (source account: %s)\n", inputDir, manifest.AccountID)
 
 	// bbolt-backed ID map stores per type
@@ -466,7 +467,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 			for _, s := range stores {
 				s.Sync()
 			}
-			return fmt.Errorf("import interrupted")
+			return fmt.Errorf("import interrupted (took %s)", time.Since(importStart).Truncate(time.Second))
 		}
 
 		if !shouldImport(typeName) {
@@ -540,7 +541,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		})
 	}
 
-	fmt.Fprintf(os.Stderr, "import complete\n")
+	fmt.Fprintf(os.Stderr, "import complete (took %s)\n", time.Since(importStart).Truncate(time.Second))
 	return nil
 }
 

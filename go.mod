@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/evertras/bubble-table v0.19.2
+	github.com/expr-lang/expr v1.17.8
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
@@ -25,6 +26,7 @@ require (
 	golang.org/x/sync v0.19.0
 	golang.org/x/time v0.12.0
 	gopkg.in/yaml.v2 v2.4.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -86,7 +88,6 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
-	github.com/expr-lang/expr v1.17.6 // indirect
 	github.com/fanatic/instrumentedsql v0.0.0-20220630161905-0737c8d31b10 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.9 // indirect
 	github.com/go-json-experiment/json v0.0.0-20250813233538-9b1f9ea2e11b // indirect
@@ -192,7 +193,6 @@ require (
 	golang.org/x/tools v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	jaytaylor.com/html2text v0.0.0-20230321000545-74c2419ad056 // indirect
 )
 

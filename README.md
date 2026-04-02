@@ -852,7 +852,7 @@ Currently supported platforms:
 
 Additional tools:
 
-- **convert** - Convert any third-party CSV to Passport user import format using a JSON mapping file
+- **map** - Map and filter any third-party CSV to Passport user import format using a JSON mapping file
 - **verify** - Validate a user import CSV and optionally deduplicate records
 
 #### Common Options
@@ -978,20 +978,30 @@ atomic-cli migrate substack \
 
 The `--email-domain-overwrite` and `--email-template` flags rewrite every email address in the output CSV so the file can be safely imported into a test environment without affecting real users. For example, with `--email-domain-overwrite passport.xyz`, `oli2p@hotmail.com` becomes `oli2p-hotmail.com@passport.xyz`. With `--email-template "sandbox+{{seq}}@inbox.mailtrap.io"`, emails become `sandbox+1@inbox.mailtrap.io`, `sandbox+2@inbox.mailtrap.io`, etc.
 
-#### migrate convert
+#### migrate map
 
-Converts any third-party CSV into the Passport `UserImportRecord` format using a JSON mapping file. This is useful for sources that export subscriber data as a CSV with non-standard column names (e.g., Substack's free subscriber export). Multiple target fields can map to the same source column.
+Maps and filters any third-party CSV into the Passport `UserImportRecord` format using a JSON mapping file. This is useful for sources that export subscriber data as a CSV with non-standard column names (e.g., Substack's free subscriber export). Multiple target fields can map to the same source column. Rows can be filtered using an [expr](https://github.com/expr-lang/expr) expression.
 
 ```bash
-atomic-cli migrate convert [options]
+atomic-cli migrate map [options]
 ```
 
-**Convert-specific options** (in addition to [common options](#common-options)):
+**Map-specific options** (in addition to [common options](#common-options)):
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
 | `--input`, `--in` | Input CSV file path | *required* |
 | `--mapping`, `-m` | JSON mapping file path | *required* |
+| `--filter`, `-f` | Expression to filter rows (only matching rows are included) | |
+
+**Filter expressions:**
+
+The `--filter` flag accepts an [expr](https://github.com/expr-lang/expr) expression. CSV column names are available as variables (using their original header names). The expression must evaluate to a boolean. Only rows where the expression returns `true` are included in the output.
+
+Examples:
+- `'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""'` — only rows with no Stripe data (free users)
+- `'STRIPE_CUSTOMER_ID != ""'` — only rows with a Stripe customer
+- `'IS_GROUP_PARENT == "TRUE"'` — only group parent rows
 
 **Mapping file format:**
 
@@ -1020,41 +1030,42 @@ This maps the source CSV's `email` column to both `login` and `email` in the out
 **Examples:**
 
 ```bash
-# Convert a Substack free subscriber export
-atomic-cli migrate convert \
+# Map a Substack free subscriber export (filter out users with Stripe data)
+atomic-cli migrate map \
   --input ./substack-subscribers.csv \
   --mapping ./substack-mapping.json \
-  --output ./merged-users.csv
+  --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
+  --output ./free-users.csv
+
+# Map without filtering
+atomic-cli migrate map \
+  --input ./substack-subscribers.csv \
+  --mapping ./substack-mapping.json \
+  --output ./all-users.csv
 
 # Append free users to an existing paid subscriber CSV (default: --append=true)
-# Run substack migrate first, then convert appends to the same file.
+# Run substack migrate first, then map appends to the same file.
 # Existing rows (paid subscribers) win on login conflict.
 atomic-cli migrate substack \
   -i inst_abc123 \
   --stripe-key sk_test_xxx \
   --output ./merged-users.csv
 
-atomic-cli migrate convert \
+atomic-cli migrate map \
   --input ./substack-free-subscribers.csv \
   --mapping ./substack-mapping.json \
+  --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./merged-users.csv
 
-# Overwrite instead of appending
-atomic-cli migrate convert \
-  --input ./substack-subscribers.csv \
-  --mapping ./substack-mapping.json \
-  --output ./free-users-only.csv \
-  --append=false
-
-# Convert with email rewriting for test environment
-atomic-cli migrate convert \
+# Map with email rewriting for test environment
+atomic-cli migrate map \
   --input ./substack-subscribers.csv \
   --mapping ./substack-mapping.json \
   --email-domain-overwrite passport.xyz \
   --output ./free-users-test.csv
 ```
 
-Rows without a `login` value after mapping are skipped and the count is reported to stderr.
+Rows without a `login` value after mapping are skipped. Both filtered and skipped counts are reported to stderr.
 
 #### migrate verify
 
@@ -1261,7 +1272,7 @@ STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
 
 Import Stripe data from an export directory into a target Stripe account. Reads the `manifest.json` and JSONL files produced by `stripe export` and recreates objects in dependency order: products, prices, coupons, promotion codes, customers, then subscriptions.
 
-Products are imported with their original IDs preserved. If a product already exists in the target account (e.g. after a `--clean` re-import), the import automatically falls back to updating the existing product instead of failing. All imported objects receive `atomic:import_time` and `atomic:import_id` metadata fields for traceability.
+Products are imported with their original IDs preserved. If a product already exists in the target account (e.g. after a `--clean` re-import), the import automatically falls back to updating the existing product instead of failing. All imported objects receive `atomic:import:time` and an object-specific ID field (e.g. `atomic:import:product_id`, `atomic:import:customer_id`, `atomic:import:subscription_id`) in their Stripe metadata for traceability. When email rewriting is enabled, customers also receive `atomic:import:customer_email` with the original email address.
 
 ```bash
 atomic-cli stripe import --input <export-directory> [options]

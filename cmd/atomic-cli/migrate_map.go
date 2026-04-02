@@ -25,27 +25,31 @@ import (
 	"os"
 	"strings"
 
+	"github.com/expr-lang/expr"
+	"github.com/expr-lang/expr/vm"
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/urfave/cli/v3"
 )
 
-// convertMapping maps UserImportRecord field names to source CSV column names.
-// Multiple target fields can reference the same source column.
-//
-// Example:
-//
-//	{
-//	  "login": "email",
-//	  "email": "email",
-//	  "name": "name",
-//	  "email_verified": true
-//	}
-//
-// Values can be:
-//   - string: the source CSV column name to read from
-//   - bool/number/etc: a static value applied to every row
-type convertMapping map[string]any
+type (
+	// convertMapping maps UserImportRecord field names to source CSV column names.
+	// Multiple target fields can reference the same source column.
+	//
+	// Example:
+	//
+	//	{
+	//	  "login": "email",
+	//	  "email": "email",
+	//	  "name": "name",
+	//	  "email_verified": true
+	//	}
+	//
+	// Values can be:
+	//   - string: the source CSV column name to read from
+	//   - bool/number/etc: a static value applied to every row
+	convertMapping map[string]any
+)
 
 var (
 	migrateConvertFlags = append(
@@ -62,11 +66,16 @@ var (
 			Usage:    "JSON mapping file path",
 			Required: true,
 		},
+		&cli.StringFlag{
+			Name:    "filter",
+			Aliases: []string{"f"},
+			Usage:   "expression to filter rows (columns available as variables, e.g. 'STRIPE_CUSTOMER_ID == \"\" && STRIPE_SUBSCRIPTION_ID == \"\"')",
+		},
 	)
 
 	migrateConvertCmd = &cli.Command{
-		Name:   "convert",
-		Usage:  "convert a third-party CSV to Passport user import format using a mapping file",
+		Name:   "map",
+		Usage:  "map and filter a third-party CSV to Passport user import format using a mapping file",
 		Flags:  migrateConvertFlags,
 		Action: migrateConvertAction,
 	}
@@ -216,11 +225,48 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	// compile filter expression if provided
+	filterExpr := cmd.String("filter")
+	var filterProgram *vm.Program
+	if filterExpr != "" {
+		// build env from headers so expr knows the variable types
+		env := make(map[string]any, len(headers))
+		for _, h := range headers {
+			env[h] = ""
+		}
+		var compileErr error
+		filterProgram, compileErr = expr.Compile(filterExpr, expr.Env(env), expr.AsBool())
+		if compileErr != nil {
+			return fmt.Errorf("invalid filter expression: %w", compileErr)
+		}
+	}
+
 	// convert rows
 	var records []*atomic.UserImportRecord
 	skipped := 0
+	filtered := 0
 
 	for _, row := range allRows[1:] {
+		// apply filter
+		if filterProgram != nil {
+			env := make(map[string]any, len(headers))
+			for i, h := range headers {
+				if i < len(row) {
+					env[h] = row[i]
+				} else {
+					env[h] = ""
+				}
+			}
+			result, err := expr.Run(filterProgram, env)
+			if err != nil {
+				return fmt.Errorf("filter evaluation failed: %w", err)
+			}
+			if match, ok := result.(bool); !ok || !match {
+				filtered++
+				continue
+			}
+		}
+
 		rec := &atomic.UserImportRecord{}
 
 		for targetField, src := range resolved {
@@ -294,9 +340,16 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to write output CSV: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "converted %d records to %s", len(records), outputPath)
-	if skipped > 0 {
-		fmt.Fprintf(os.Stderr, " (%d rows skipped — no login value)", skipped)
+	fmt.Fprintf(os.Stderr, "mapped %d records to %s", len(records), outputPath)
+	if filtered > 0 || skipped > 0 {
+		var parts []string
+		if filtered > 0 {
+			parts = append(parts, fmt.Sprintf("%d filtered out", filtered))
+		}
+		if skipped > 0 {
+			parts = append(parts, fmt.Sprintf("%d skipped — no login", skipped))
+		}
+		fmt.Fprintf(os.Stderr, " (%s)", strings.Join(parts, ", "))
 	}
 	fmt.Fprintln(os.Stderr)
 

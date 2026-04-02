@@ -145,8 +145,8 @@ github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f h1:Y/CXytFA4m6
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f/go.mod h1:vw97MGsxSvLiUE2X8qFplwetxpGLQrlU1Q9AUEIzCaM=
 github.com/evertras/bubble-table v0.19.2 h1:u77oiM6JlRR+CvS5FZc3Hz+J6iEsvEDcR5kO8OFb1Yw=
 github.com/evertras/bubble-table v0.19.2/go.mod h1:ifHujS1YxwnYSOgcR2+m3GnJ84f7CVU/4kUOxUCjEbQ=
-github.com/expr-lang/expr v1.17.6 h1:1h6i8ONk9cexhDmowO/A64VPxHScu7qfSl2k8OlINec=
-github.com/expr-lang/expr v1.17.6/go.mod h1:8/vRC7+7HBzESEqt5kKpYXxrxkr31SaO8r40VO/1IT4=
+github.com/expr-lang/expr v1.17.8 h1:W1loDTT+0PQf5YteHSTpju2qfUfNoBt4yw9+wOEU9VM=
+github.com/expr-lang/expr v1.17.8/go.mod h1:8/vRC7+7HBzESEqt5kKpYXxrxkr31SaO8r40VO/1IT4=
 github.com/fanatic/instrumentedsql v0.0.0-20220630161905-0737c8d31b10 h1:KdkP07OUxkN4RcAe+Xb38peW6GRt/C+eKB/zz/rjf0U=
 github.com/fanatic/instrumentedsql v0.0.0-20220630161905-0737c8d31b10/go.mod h1:XXdaaJ2tuuw14FTQHJwbZsvdXE16T6vNnqWErMoZ10I=
 github.com/fatih/color v1.7.0/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=

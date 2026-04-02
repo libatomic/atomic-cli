@@ -37,3 +37,4 @@ dist/
 stripe-export-*/
 /atomic-cli
 .DS_Store
+*.csv

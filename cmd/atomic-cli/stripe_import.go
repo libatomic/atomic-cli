@@ -193,13 +193,13 @@ func saveTypeState(opts importOptions, name string, ts importTypeState) {
 
 // --- helpers ---
 
-func importMetadata(existing map[string]string, originalID, importTime string) map[string]string {
+func importMetadata(existing map[string]string, idKey, originalID, importTime string) map[string]string {
 	m := make(map[string]string)
 	for k, v := range existing {
 		m[k] = v
 	}
-	m["atomic:import_time"] = importTime
-	m["atomic:import_id"] = originalID
+	m["atomic:import:time"] = importTime
+	m["atomic:import:"+idKey] = originalID
 	return m
 }
 
@@ -866,7 +866,7 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, erro
 
 		params := &stripe.ProductParams{
 			Name: stripe.String(prod.Name),
-			Active: stripe.Bool(prod.Active), Metadata: importMetadata(prod.Metadata, prod.ID, opts.importTime),
+			Active: stripe.Bool(prod.Active), Metadata: importMetadata(prod.Metadata, "product_id", prod.ID, opts.importTime),
 			Shippable: &prod.Shippable, StatementDescriptor: ptr.NilString(prod.StatementDescriptor),
 			UnitLabel: ptr.NilString(prod.UnitLabel), URL: ptr.NilString(prod.URL),
 		}
@@ -945,7 +945,7 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 		if found {
 			_, err := stripeprice.Update(mappedID, &stripe.PriceParams{
 				Active:   stripe.Bool(p.Active),
-				Metadata: importMetadata(p.Metadata, p.ID, opts.importTime),
+				Metadata: importMetadata(p.Metadata, "price_id", p.ID, opts.importTime),
 				Nickname: ptr.NilString(p.Nickname),
 			})
 			if err != nil {
@@ -972,7 +972,7 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 
 		params := &stripe.PriceParams{
 			Currency: stripe.String(string(p.Currency)), Product: stripe.String(productID),
-			Active: stripe.Bool(p.Active), Metadata: importMetadata(p.Metadata, p.ID, opts.importTime),
+			Active: stripe.Bool(p.Active), Metadata: importMetadata(p.Metadata, "price_id", p.ID, opts.importTime),
 			UnitAmount: stripe.Int64(p.UnitAmount), Nickname: ptr.NilString(p.Nickname),
 		}
 		if p.BillingScheme == stripe.PriceBillingSchemeTiered {
@@ -1050,7 +1050,7 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 
 		if found {
 			_, err := stripecoupon.Update(mappedID, &stripe.CouponParams{
-				Metadata: importMetadata(c.Metadata, c.ID, opts.importTime),
+				Metadata: importMetadata(c.Metadata, "coupon_id", c.ID, opts.importTime),
 				Name:     ptr.NilString(c.Name),
 			})
 			if err != nil {
@@ -1067,7 +1067,7 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 
 		params := &stripe.CouponParams{
 			Duration: stripe.String(string(c.Duration)),
-			Metadata: importMetadata(c.Metadata, c.ID, opts.importTime),
+			Metadata: importMetadata(c.Metadata, "coupon_id", c.ID, opts.importTime),
 			Name:     ptr.NilString(c.Name),
 		}
 		if c.AmountOff > 0 {
@@ -1143,7 +1143,7 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 		if found {
 			_, err := stripepromo.Update(mappedID, &stripe.PromotionCodeParams{
 				Active:   stripe.Bool(pc.Active),
-				Metadata: importMetadata(pc.Metadata, pc.ID, opts.importTime),
+				Metadata: importMetadata(pc.Metadata, "promotion_code_id", pc.ID, opts.importTime),
 			})
 			if err != nil {
 				errCount++
@@ -1169,7 +1169,7 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 
 		params := &stripe.PromotionCodeParams{
 			Coupon: stripe.String(couponID), Code: stripe.String(pc.Code),
-			Active: stripe.Bool(pc.Active), Metadata: importMetadata(pc.Metadata, pc.ID, opts.importTime),
+			Active: stripe.Bool(pc.Active), Metadata: importMetadata(pc.Metadata, "promotion_code_id", pc.ID, opts.importTime),
 		}
 		if pc.MaxRedemptions > 0 {
 			params.MaxRedemptions = stripe.Int64(pc.MaxRedemptions)
@@ -1238,6 +1238,7 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 		}
 		mu.Unlock()
 
+		originalEmail := c.Email
 		rewriteCustomerEmails(&c, opts.rewriter)
 
 		if err := opts.limiter.Wait(opts.ctx); err != nil {
@@ -1247,14 +1248,19 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 		wg.Add(1)
 		sem <- struct{}{}
 
-		go func(c stripe.Customer, isUpdate bool, hash string) {
+		go func(c stripe.Customer, isUpdate bool, hash, originalEmail string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			metadata := importMetadata(c.Metadata, "customer_id", c.ID, opts.importTime)
+			if opts.rewriter != nil && originalEmail != "" {
+				metadata["atomic:import:customer_email"] = originalEmail
+			}
 
 			params := &stripe.CustomerParams{
 				Email: ptr.NilString(c.Email), Name: ptr.NilString(c.Name),
 				Description: ptr.NilString(c.Description), Phone: ptr.NilString(c.Phone),
-				Metadata: importMetadata(c.Metadata, c.ID, opts.importTime),
+				Metadata: metadata,
 			}
 			if c.Address != nil {
 				params.Address = &stripe.AddressParams{
@@ -1357,7 +1363,7 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 				opts.stateMu.Unlock()
 			}
 			mu.Unlock()
-		}(c, found, hash)
+		}(c, found, hash, originalEmail)
 	}
 
 	wg.Wait()
@@ -1454,7 +1460,7 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 
 		params := &stripe.SubscriptionParams{
 			Customer: stripe.String(newCustomerID), Items: items,
-			Metadata: importMetadata(sub.Metadata, sub.ID, opts.importTime),
+			Metadata: importMetadata(sub.Metadata, "subscription_id", sub.ID, opts.importTime),
 		}
 
 		isPastDue := sub.Status == stripe.SubscriptionStatusPastDue

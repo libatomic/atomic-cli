@@ -1194,7 +1194,9 @@ When email rewriting is enabled, all email addresses on customer records are rew
 
 Subscriptions are exported across statuses: active, past_due, trialing, and paused. With `--terminated-subscriptions`, canceled, unpaid, incomplete, and incomplete_expired subscriptions are also included.
 
-**Concurrency and rate limiting:** Customers and subscriptions are exported concurrently for performance, while smaller types (products, prices, coupons, promotion codes) are exported sequentially first. API requests are rate-limited to stay within Stripe's limits (80 req/s for live keys, 20 req/s for test keys) using a shared token-bucket limiter across all concurrent goroutines.
+**Concurrency and rate limiting:** Customers and subscriptions are exported concurrently for performance, while smaller types (products, prices, coupons, promotion codes) are exported sequentially first. API requests are rate-limited to stay within Stripe's limits (40 req/s for live keys, 10 req/s for test keys) using a shared token-bucket limiter across all concurrent goroutines.
+
+**Graceful shutdown:** The CLI handles interrupt signals (Ctrl+C, SIGTERM) globally. Exports check for cancellation between types and within the Stripe API iterator, so in-progress work is flushed cleanly before exit.
 
 **Periodic flushing:** For customers and subscriptions, progress is saved to disk every 200 records. Both the JSONL file and manifest are flushed, so if the export is interrupted (Ctrl+C, crash, etc.), re-running the command continues from where it left off rather than re-exporting from scratch.
 
@@ -1259,7 +1261,7 @@ STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
 
 Import Stripe data from an export directory into a target Stripe account. Reads the `manifest.json` and JSONL files produced by `stripe export` and recreates objects in dependency order: products, prices, coupons, promotion codes, customers, then subscriptions.
 
-Products are imported with their original IDs preserved. All imported objects receive `atomic:import_time` and `atomic:import_id` metadata fields for traceability.
+Products are imported with their original IDs preserved. If a product already exists in the target account (e.g. after a `--clean` re-import), the import automatically falls back to updating the existing product instead of failing. All imported objects receive `atomic:import_time` and `atomic:import_id` metadata fields for traceability.
 
 ```bash
 atomic-cli stripe import --input <export-directory> [options]
@@ -1283,7 +1285,7 @@ atomic-cli stripe import --input <export-directory> [options]
 | `--retain-billing-anchor`       | Preserve billing_cycle_anchor from exported subscriptions                | `true`        |
 | `--prorate-subscriptions`       | Prorate subscriptions on creation                                        | `false`       |
 | `--abort-on-error`              | Stop the entire import on the first failure                              | `false`       |
-| `--workers`                     | Number of concurrent workers for customer and subscription imports       | CPU count     |
+| `--workers`                     | Number of concurrent workers for customer and subscription imports       | 2× CPU count  |
 | `--clean`                       | Clear import state and start a fresh import                              | `false`       |
 | `--update-existing`             | Update previously imported objects whose source data has changed (by SHA-256) | `true`   |
 
@@ -1295,18 +1297,22 @@ atomic-cli stripe import --input <export-directory> [options]
 - **Test mode + `--create-test-cards`** (default): Attaches test payment methods based on customer currency, sets as default for invoices, then creates subscriptions with those payment methods.
 - **Test mode + `--create-test-cards=false`**: Skips subscriptions with a warning.
 - **Connect platform accounts**: Detected automatically via the Stripe account's `controller.type` (`application`). Application fees from exported subscriptions are retained by default (`--application-fees`). Use `--application-fees=false` to ignore fees entirely, or `--application-fee-percent` to override all fees with a fixed percentage.
-- **Billing cycle anchor**: Preserved by default (`--retain-billing-anchor`). Set to false to let Stripe assign new billing dates.
 - **Proration**: Disabled by default (`--prorate-subscriptions=false`). Enable to prorate subscription charges on creation.
 - **Errors**: By default, failures on individual records are logged as warnings and the import continues. Use `--abort-on-error` to stop on the first failure.
 - **Error propagation**: Errors in upstream types automatically abort dependent downstream types. Product errors abort price import; price errors abort subscription import; coupon errors abort promotion code import; customer errors abort subscription import. This prevents cascading failures.
-- **Concurrency**: Customer and subscription imports use multiple concurrent workers (default: CPU count, configurable via `--workers`). API requests are rate-limited to stay within Stripe's limits. Imports run sequentially in dependency order (products → prices → coupons → promotion codes → customers → subscriptions), but within each type the individual record creates are parallelized.
+- **ID map fallback**: When a referenced object (product, coupon, customer, price) is not found in the import ID map — e.g. after a `--clean` re-import — the import uses the original source ID as a fallback instead of skipping the record. This allows re-imports to succeed when objects already exist in the target account.
+- **Rate limit retry**: Customer and subscription creates automatically retry on Stripe 429 (rate limit) errors with exponential backoff (1s, 2s, 4s, 8s, 16s) up to 5 attempts. Retries are silent — no warnings are logged unless all attempts are exhausted.
+- **Billing cycle anchor**: Preserved by default (`--retain-billing-anchor`). When the exported anchor timestamp is in the past, it is automatically advanced forward by the subscription's billing interval (day/week/month/year) until it is in the future. Set to false to let Stripe assign new billing dates.
+- **Concurrency**: Customer and subscription imports use multiple concurrent workers (default: 2× CPU count, configurable via `--workers`). API requests are rate-limited to stay within Stripe's limits (10 req/s test, 40 req/s live). Imports run sequentially in dependency order (products → prices → coupons → promotion codes → customers → subscriptions), but within each type the individual record creates are parallelized.
 - **Import state**: Persisted in the export directory alongside `manifest.json`. Consists of two parts:
   - `import-state.json` — lightweight metadata: per-type completion status, source MD5 checksums, record counts, and error counts.
-  - `<type>.map.db` files — [bbolt](https://github.com/etcd-io/bbolt) key-value databases storing old ID → new ID mappings for each type. These are memory-mapped, so lookups are fast without loading entire maps into memory. This keeps import state efficient even for large datasets (tens of thousands of customers/subscriptions).
+  - `<type>.map.db` files — [bbolt](https://github.com/etcd-io/bbolt) key-value databases storing old ID → new ID mappings and SHA-256 hashes for each type. These are memory-mapped, so lookups are fast without loading entire maps into memory. This keeps import state efficient even for large datasets (tens of thousands of customers/subscriptions). On interrupt, all open databases are synced before exit to prevent data loss.
 - **Smart skip**: Types whose source JSONL file hasn't changed (MD5 match) since the last completed import are skipped entirely. This makes re-running import after a successful run nearly instant.
-- **Resume**: If an import is interrupted (Ctrl+C, crash), re-running the command continues from where it left off. Already-created objects are skipped via the persisted bbolt ID maps. For customers and subscriptions, the database is synced every 200 records.
+- **Graceful shutdown**: The CLI handles interrupt signals (Ctrl+C, SIGTERM) globally. On interrupt, the import stops accepting new records, waits for in-flight API calls to complete, syncs all bbolt ID map databases, and exits cleanly. This ensures no data is lost on interruption.
+- **Resume**: If an import is interrupted, re-running the command continues from where it left off. Already-created objects are skipped via the persisted bbolt ID maps. For customers and subscriptions, the database is synced every 200 records.
+- **Progress**: Each import type shows a progress bar with record count and throughput (rec/s).
 - **Change detection**: Each imported record's SHA-256 hash is stored alongside its ID mapping. On re-import, records whose hash hasn't changed are skipped automatically — no unnecessary API calls. With `--update-existing` (default), records that have changed are updated via the Stripe Update API: products and customers are fully updated, prices and coupons update metadata/active status (immutable fields like amount are unchanged), and subscriptions are always skipped (too complex to diff safely). With `--update-existing=false`, changed records are skipped entirely (only new records are created).
-- **`--clean`**: Clears `import-state.json` and all `.map` files, forcing a full re-import. Note: `stripe export --clean` also clears the import state automatically.
+- **`--clean`**: Clears `import-state.json` and all `.map.db` files, forcing a full re-import. Objects that already exist in the target account are handled gracefully — products fall back to update on `resource_already_exists`, and cross-references (prices→products, subscriptions→customers/prices, etc.) fall back to original IDs when not found in the import map. Note: `stripe export --clean` also clears the import state automatically.
 
 **Test card mapping (currency → payment method):**
 

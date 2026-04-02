@@ -196,13 +196,13 @@ func (p *concurrentProgress) Finish() {
 }
 
 // newStripeLimiter creates a rate limiter tuned to Stripe's API rate limits.
-// Test mode: 25 req/s limit → 20 req/s with burst 5.
-// Live mode: 100 req/s limit → 80 req/s with burst 10.
+// Test mode: 25 req/s limit → 10 req/s with burst 3 (writes expand to multiple internal ops).
+// Live mode: 100 req/s limit → 40 req/s with burst 5.
 func newStripeLimiter(isTest bool) *rate.Limiter {
 	if isTest {
-		return rate.NewLimiter(rate.Limit(20), 5)
+		return rate.NewLimiter(rate.Limit(10), 3)
 	}
-	return rate.NewLimiter(rate.Limit(80), 10)
+	return rate.NewLimiter(rate.Limit(40), 5)
 }
 
 func stripeExport(ctx context.Context, cmd *cli.Command) error {

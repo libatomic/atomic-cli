@@ -146,7 +146,7 @@ var (
 			&cli.BoolFlag{Name: "retain-billing-anchor", Usage: "preserve billing_cycle_anchor from exported subscriptions", Value: true},
 			&cli.BoolFlag{Name: "prorate-subscriptions", Usage: "prorate subscriptions on creation"},
 			&cli.BoolFlag{Name: "abort-on-error", Usage: "stop the entire import on the first failure"},
-			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 4 * runtime.NumCPU()},
+			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 2 * runtime.NumCPU()},
 		},
 	}
 )
@@ -238,12 +238,73 @@ func importWarnf(bar *progressbar.ProgressBar, format string, args ...any) {
 	log.Warnf(format, args...)
 }
 
+// advanceBillingAnchor moves the subscription's billing_cycle_anchor forward
+// by its billing interval until it is in the future.
+func advanceBillingAnchor(sub stripe.Subscription) int64 {
+	anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
+	now := time.Now().UTC()
+
+	// determine the interval from the first item's price
+	interval := stripe.PriceRecurringIntervalMonth
+	var intervalCount int64 = 1
+	if len(sub.Items.Data) > 0 && sub.Items.Data[0].Price != nil && sub.Items.Data[0].Price.Recurring != nil {
+		interval = sub.Items.Data[0].Price.Recurring.Interval
+		intervalCount = sub.Items.Data[0].Price.Recurring.IntervalCount
+		if intervalCount < 1 {
+			intervalCount = 1
+		}
+	}
+
+	for !anchor.After(now) {
+		switch interval {
+		case stripe.PriceRecurringIntervalDay:
+			anchor = anchor.AddDate(0, 0, int(intervalCount))
+		case stripe.PriceRecurringIntervalWeek:
+			anchor = anchor.AddDate(0, 0, 7*int(intervalCount))
+		case stripe.PriceRecurringIntervalMonth:
+			anchor = anchor.AddDate(0, int(intervalCount), 0)
+		case stripe.PriceRecurringIntervalYear:
+			anchor = anchor.AddDate(int(intervalCount), 0, 0)
+		default:
+			anchor = anchor.AddDate(0, int(intervalCount), 0)
+		}
+	}
+
+	return anchor.Unix()
+}
+
 func isAlreadyExists(err error) bool {
 	var stripeErr *stripe.Error
 	if errors.As(err, &stripeErr) {
 		return stripeErr.Code == stripe.ErrorCodeResourceAlreadyExists
 	}
 	return false
+}
+
+func isRateLimit(err error) bool {
+	var stripeErr *stripe.Error
+	if errors.As(err, &stripeErr) {
+		return stripeErr.Code == stripe.ErrorCodeRateLimit || stripeErr.HTTPStatusCode == 429
+	}
+	return false
+}
+
+// retryOnRateLimit retries fn up to 5 times with exponential backoff on 429 errors.
+func retryOnRateLimit(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := range 5 {
+		err = fn()
+		if err == nil || !isRateLimit(err) {
+			return err
+		}
+		backoff := time.Duration(1<<uint(attempt)) * time.Second
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 // --- main flow ---
@@ -1245,13 +1306,16 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 			}
 
 			var newCust *stripe.Customer
-			var err error
-			if isUpdate {
-				mappedID, _, _ := store.Get(c.ID)
-				newCust, err = stripecustomer.Update(mappedID, params)
-			} else {
-				newCust, err = stripecustomer.New(params)
-			}
+			err := retryOnRateLimit(opts.ctx, func() error {
+				var e error
+				if isUpdate {
+					mappedID, _, _ := store.Get(c.ID)
+					newCust, e = stripecustomer.Update(mappedID, params)
+				} else {
+					newCust, e = stripecustomer.New(params)
+				}
+				return e
+			})
 			if err != nil {
 				mu.Lock()
 				errCount++
@@ -1410,7 +1474,8 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 		}
 
 		if opts.retainBillingAnchor && sub.BillingCycleAnchor > 0 {
-			params.BillingCycleAnchor = stripe.Int64(sub.BillingCycleAnchor)
+			anchor := advanceBillingAnchor(sub)
+			params.BillingCycleAnchor = stripe.Int64(anchor)
 		}
 		if opts.prorateSubscriptions {
 			params.ProrationBehavior = stripe.String("create_prorations")
@@ -1449,7 +1514,12 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			newSub, err := stripesub.New(params)
+			var newSub *stripe.Subscription
+			err := retryOnRateLimit(opts.ctx, func() error {
+				var e error
+				newSub, e = stripesub.New(params)
+				return e
+			})
 			if err != nil {
 				mu.Lock()
 				errCount++

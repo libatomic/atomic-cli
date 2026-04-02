@@ -1489,7 +1489,7 @@ atomic-cli stripe webhook [options]
 **Modes:**
 
 - **Default (TUI + listener)**: Starts a webhook listener and displays events in an interactive side-by-side view — event table on the left, YAML detail on the right.
-- **`--log-only`**: Starts the webhook listener but skips the TUI. Prints connection info (URL, endpoint ID, secret) and logs each received event as a one-liner to stderr. Useful for CI, background processes, or piping output. Press Ctrl+C to stop.
+- **`--log-only`**: Starts the webhook listener but skips the TUI. Prints only the webhook URL and log file path (one per line), then silently appends events to the JSONL file. Useful for CI, scripts, or background processes. Press Ctrl+C to stop.
 - **`--view-only`**: Opens the interactive TUI to browse an existing events JSONL file without starting a listener or registering a webhook. Useful for reviewing events after the fact.
 
 **Behavior:**

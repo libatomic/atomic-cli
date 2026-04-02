@@ -789,19 +789,13 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 
 	// --- log-only mode: no TUI, just log to file and print status ---
 	if logOnly {
-		fmt.Fprintf(os.Stderr, "webhook url: %s\n", webhookURL)
-		if endpointID != "" {
-			fmt.Fprintf(os.Stderr, "endpoint id: %s\n", endpointID)
-			fmt.Fprintf(os.Stderr, "secret:      %s\n", webhookSecret)
-		}
-		fmt.Fprintf(os.Stderr, "logging to:  %s\n", eventsPath)
-		fmt.Fprintf(os.Stderr, "press ctrl+c to stop\n\n")
+		fmt.Fprintf(os.Stderr, "%s\n", webhookURL)
+		fmt.Fprintf(os.Stderr, "%s\n", eventsPath)
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: failed to read body: %v\n", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
 				return
 			}
@@ -813,13 +807,11 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 					IgnoreAPIVersionMismatch: true,
 				})
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "error: signature validation failed: %v\n", err)
 					http.Error(w, "invalid signature", http.StatusBadRequest)
 					return
 				}
 			} else {
 				if err := json.Unmarshal(body, &evt); err != nil {
-					fmt.Fprintf(os.Stderr, "error: invalid json: %v\n", err)
 					http.Error(w, "invalid json", http.StatusBadRequest)
 					return
 				}
@@ -827,7 +819,6 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 
 			rec := extractEventRecord(evt)
 			evtLog.Append(rec)
-			fmt.Fprintf(os.Stderr, "  %s  %s\n", time.Unix(rec.Created, 0).Format("15:04:05"), rec.Type)
 		})
 
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -836,18 +827,12 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 		})
 
 		server := &http.Server{Handler: mux}
-		go func() {
-			if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-				fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			}
-		}()
+		go server.Serve(listener)
 
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		server.Shutdown(shutdownCtx)
-
-		fmt.Fprintf(os.Stderr, "\nevents saved to %s\n", eventsPath)
 		return nil
 	}
 

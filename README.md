@@ -1312,6 +1312,7 @@ atomic-cli stripe import --input <export-directory> [options]
 | `--prorate-subscriptions`       | Prorate subscriptions on creation                                        | `false`       |
 | `--drop-expired-trials`         | Skip subscriptions with expired trials instead of converting to active   | `true`        |
 | `--abort-on-error`              | Stop the entire import on the first failure                              | `false`       |
+| `--ignore-sandbox-email-warning`| Skip the email rewriting requirement when importing live data into test  | `false`       |
 | `--workers`                     | Number of concurrent workers for customer and subscription imports       | 2× CPU count  |
 | `--clean`                       | Clear import state and start a fresh import                              | `false`       |
 | `--update-existing`             | Update previously imported objects whose source data has changed (by SHA-256) | `true`   |
@@ -1321,6 +1322,7 @@ atomic-cli stripe import --input <export-directory> [options]
 - **Validation** (`--validate`, default on): Checks all JSONL files for structural integrity before importing — verifies required fields, referential integrity (prices reference valid products, promotion codes reference valid coupons, etc.). Also verifies that all requested export types completed successfully (rejects incomplete exports). Aborts if errors are found.
 - **Dry run** (`--dry-run`): Reports target account info, source account, which types would be imported with record counts, and configuration details — without making any API calls.
 - **Live mode**: Prompts the user to type `confirm livemode import` before proceeding. Subscriptions are skipped because customers have no payment methods.
+- **Sandbox email safety**: When importing live-mode export data into a test account, `--email-domain-overwrite` or `--email-template` is required to prevent Stripe from sending emails to real customers. Use `--ignore-sandbox-email-warning` to bypass this check (prompts for confirmation).
 - **Test mode + `--create-test-cards`** (default): Attaches test payment methods based on customer currency, sets as default for invoices, then creates subscriptions with those payment methods.
 - **Test mode + `--create-test-cards=false`**: Skips subscriptions with a warning.
 - **Connect platform accounts**: Detected automatically via the Stripe account's `controller.type` (`application`). Application fees from exported subscriptions are retained by default (`--application-fees`). Use `--application-fees=false` to ignore fees entirely, or `--application-fee-percent` to override all fees with a fixed percentage.

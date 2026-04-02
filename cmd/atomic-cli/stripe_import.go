@@ -81,13 +81,14 @@ type (
 	}
 
 	importState struct {
-		Version       string                     `json:"version"`
-		CreatedAt     string                     `json:"created_at"`
-		UpdatedAt     string                     `json:"updated_at"`
-		SourceAccount string                     `json:"source_account"`
-		TargetAccount string                     `json:"target_account"`
-		ExportUpdated string                     `json:"export_updated"`
-		Types         map[string]importTypeState `json:"types"`
+		Version        string                     `json:"version"`
+		CreatedAt      string                     `json:"created_at"`
+		UpdatedAt      string                     `json:"updated_at"`
+		SourceAccount  string                     `json:"source_account"`
+		TargetAccount  string                     `json:"target_account"`
+		TargetLivemode bool                       `json:"target_livemode"`
+		ExportUpdated  string                     `json:"export_updated"`
+		Types          map[string]importTypeState `json:"types"`
 	}
 
 	importTypeState struct {
@@ -148,6 +149,7 @@ var (
 			&cli.BoolFlag{Name: "prorate-subscriptions", Usage: "prorate subscriptions on creation"},
 			&cli.BoolFlag{Name: "drop-expired-trials", Usage: "skip subscriptions with expired trials instead of converting them to active", Value: true},
 			&cli.BoolFlag{Name: "abort-on-error", Usage: "stop the entire import on the first failure"},
+			&cli.BoolFlag{Name: "ignore-sandbox-email-warning", Usage: "skip the email rewriting requirement when importing live data into a test account"},
 			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 2 * runtime.NumCPU()},
 		},
 	}
@@ -327,7 +329,8 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		state = &importState{
 			Version: "1", CreatedAt: now, UpdatedAt: now,
 			SourceAccount: manifest.AccountID, TargetAccount: acct.ID,
-			ExportUpdated: manifest.UpdatedAt, Types: make(map[string]importTypeState),
+			TargetLivemode: liveMode, ExportUpdated: manifest.UpdatedAt,
+			Types: make(map[string]importTypeState),
 		}
 	}
 
@@ -342,6 +345,26 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		rewriter = &emailRewriter{domain: emailDomain}
 	} else if emailTemplate != "" {
 		rewriter = &emailRewriter{template: emailTemplate}
+	}
+
+	// require email rewriting when importing live data into a test account,
+	// unless the export itself already rewrote emails
+	exportAlreadyRewrote := manifest.Options != nil &&
+		(manifest.Options.EmailDomainRewrite != "" || manifest.Options.EmailTemplate != "")
+	if manifest.Livemode && !liveMode && rewriter == nil && !exportAlreadyRewrote {
+		if cmd.Bool("ignore-sandbox-email-warning") {
+			fmt.Fprintf(os.Stderr, "WARNING: you are importing live customer data into a test account without email rewriting.\n")
+			fmt.Fprintf(os.Stderr, "Real customer email addresses will be used, which may cause Stripe to send emails to real users.\n")
+			fmt.Fprintf(os.Stderr, "Use --email-domain-overwrite or --email-template to rewrite emails.\n\n")
+			fmt.Fprintf(os.Stderr, "Continue anyway? [y/N]: ")
+			reader := bufio.NewReader(os.Stdin)
+			answer, _ := reader.ReadString('\n')
+			if a := strings.TrimSpace(strings.ToLower(answer)); a != "y" && a != "yes" {
+				return fmt.Errorf("import aborted")
+			}
+		} else {
+			return fmt.Errorf("importing live customer data into a test account requires email rewriting to prevent Stripe from sending emails to real users; use --email-domain-overwrite or --email-template, or --ignore-sandbox-email-warning to override")
+		}
 	}
 
 	applicationFees := cmd.Bool("application-fees")

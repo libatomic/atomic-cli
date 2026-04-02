@@ -1272,7 +1272,22 @@ STRIPE_API_KEY=sk_live_xxx atomic-cli stripe export
 
 Import Stripe data from an export directory into a target Stripe account. Reads the `manifest.json` and JSONL files produced by `stripe export` and recreates objects in dependency order: products, prices, coupons, promotion codes, customers, then subscriptions.
 
-Products are imported with their original IDs preserved. If a product already exists in the target account (e.g. after a `--clean` re-import), the import automatically falls back to updating the existing product instead of failing. All imported objects receive `atomic:import:time` and an object-specific ID field (e.g. `atomic:import:product_id`, `atomic:import:customer_id`, `atomic:import:subscription_id`) in their Stripe metadata for traceability. When email rewriting is enabled, customers also receive `atomic:import:customer_email` with the original email address.
+Products are imported with their original IDs preserved. If a product already exists in the target account (e.g. after a `--clean` re-import), the import automatically falls back to updating the existing product instead of failing.
+
+**Import metadata:**
+
+All imported objects receive Stripe metadata fields for traceability back to the source account:
+
+| Object | Metadata Key | Value |
+|-----------------|--------------------------------------|----------------------------------------------|
+| All | `atomic:import:time` | RFC 3339 timestamp of the import run |
+| Products | `atomic:import:product_id` | Original product ID from the source account |
+| Prices | `atomic:import:price_id` | Original price ID |
+| Coupons | `atomic:import:coupon_id` | Original coupon ID |
+| Promotion Codes | `atomic:import:promotion_code_id` | Original promotion code ID |
+| Customers | `atomic:import:customer_id` | Original customer ID |
+| Customers | `atomic:import:customer_email` | Original email (only when `--email-domain-overwrite` or `--email-template` is set) |
+| Subscriptions | `atomic:import:subscription_id` | Original subscription ID |
 
 ```bash
 atomic-cli stripe import --input <export-directory> [options]

@@ -66,6 +66,7 @@ type (
 		dryRun                 bool
 		retainBillingAnchor    bool
 		prorateSubscriptions   bool
+		dropExpiredTrials      bool
 		limiter                *rate.Limiter
 		workers                int
 		updateExisting         bool
@@ -145,6 +146,7 @@ var (
 			&cli.StringFlag{Name: "default-test-card", Usage: "override the auto-detected test card for all customers", Value: "pm_card_us"},
 			&cli.BoolFlag{Name: "retain-billing-anchor", Usage: "preserve billing_cycle_anchor from exported subscriptions", Value: true},
 			&cli.BoolFlag{Name: "prorate-subscriptions", Usage: "prorate subscriptions on creation"},
+			&cli.BoolFlag{Name: "drop-expired-trials", Usage: "skip subscriptions with expired trials instead of converting them to active", Value: true},
 			&cli.BoolFlag{Name: "abort-on-error", Usage: "stop the entire import on the first failure"},
 			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 2 * runtime.NumCPU()},
 		},
@@ -238,40 +240,8 @@ func importWarnf(bar *progressbar.ProgressBar, format string, args ...any) {
 	log.Warnf(format, args...)
 }
 
-// advanceBillingAnchor moves the subscription's billing_cycle_anchor forward
-// by its billing interval until it is in the future.
-func advanceBillingAnchor(sub stripe.Subscription) int64 {
-	anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
-	now := time.Now().UTC()
 
-	// determine the interval from the first item's price
-	interval := stripe.PriceRecurringIntervalMonth
-	var intervalCount int64 = 1
-	if len(sub.Items.Data) > 0 && sub.Items.Data[0].Price != nil && sub.Items.Data[0].Price.Recurring != nil {
-		interval = sub.Items.Data[0].Price.Recurring.Interval
-		intervalCount = sub.Items.Data[0].Price.Recurring.IntervalCount
-		if intervalCount < 1 {
-			intervalCount = 1
-		}
-	}
 
-	for !anchor.After(now) {
-		switch interval {
-		case stripe.PriceRecurringIntervalDay:
-			anchor = anchor.AddDate(0, 0, int(intervalCount))
-		case stripe.PriceRecurringIntervalWeek:
-			anchor = anchor.AddDate(0, 0, 7*int(intervalCount))
-		case stripe.PriceRecurringIntervalMonth:
-			anchor = anchor.AddDate(0, int(intervalCount), 0)
-		case stripe.PriceRecurringIntervalYear:
-			anchor = anchor.AddDate(int(intervalCount), 0, 0)
-		default:
-			anchor = anchor.AddDate(0, int(intervalCount), 0)
-		}
-	}
-
-	return anchor.Unix()
-}
 
 func isAlreadyExists(err error) bool {
 	var stripeErr *stripe.Error
@@ -410,6 +380,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		importTime: time.Now().UTC().Format(time.RFC3339), dryRun: dryRun,
 		retainBillingAnchor: cmd.Bool("retain-billing-anchor"),
 		prorateSubscriptions: cmd.Bool("prorate-subscriptions"),
+		dropExpiredTrials: cmd.Bool("drop-expired-trials"),
 		limiter: newStripeLimiter(isTest), workers: workers,
 		updateExisting: cmd.Bool("update-existing"),
 		state: state, stateMu: &sync.Mutex{},
@@ -563,7 +534,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		store.Sync()
 
 		saveTypeState(opts, typeName, importTypeState{
-			Complete: true, SourceMD5: exportInfo.MD5,
+			Complete: errCount == 0, SourceMD5: exportInfo.MD5,
 			Count: store.Count(), Errors: errCount,
 			ImportedAt: time.Now().UTC().Format(time.RFC3339),
 		})
@@ -1410,12 +1381,14 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 	defer reader.Close()
 
 	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		sem      = make(chan struct{}, opts.workers)
-		abort    error
-		errCount int
-		imported int
+		mu            sync.Mutex
+		wg            sync.WaitGroup
+		sem           = make(chan struct{}, opts.workers)
+		abort         error
+		errCount      int
+		imported      int
+		skippedStatus    = make(map[string]int)
+		convertedTrials  int
 	)
 
 	for sub, err := range reader.All() {
@@ -1427,7 +1400,17 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 		}
 		bar.Add(1)
 
-		if sub.Status != stripe.SubscriptionStatusActive && sub.Status != stripe.SubscriptionStatusTrialing {
+		switch sub.Status {
+		case stripe.SubscriptionStatusActive, stripe.SubscriptionStatusTrialing,
+			stripe.SubscriptionStatusPastDue:
+			// importable
+		case stripe.SubscriptionStatusPaused, stripe.SubscriptionStatusCanceled,
+			stripe.SubscriptionStatusUnpaid, stripe.SubscriptionStatusIncomplete,
+			stripe.SubscriptionStatusIncompleteExpired:
+			skippedStatus[string(sub.Status)]++
+			continue
+		default:
+			skippedStatus[string(sub.Status)]++
 			continue
 		}
 
@@ -1473,17 +1456,56 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 			Metadata: importMetadata(sub.Metadata, sub.ID, opts.importTime),
 		}
 
-		if opts.retainBillingAnchor && sub.BillingCycleAnchor > 0 {
-			anchor := advanceBillingAnchor(sub)
-			params.BillingCycleAnchor = stripe.Int64(anchor)
+		isPastDue := sub.Status == stripe.SubscriptionStatusPastDue
+		hadTrial := sub.TrialEnd > 0
+		isExpiredTrial := sub.Status == stripe.SubscriptionStatusTrialing && sub.TrialEnd > 0 && sub.TrialEnd <= time.Now().Unix()
+		isActiveTrial := sub.Status == stripe.SubscriptionStatusTrialing && sub.TrialEnd > 0 && sub.TrialEnd > time.Now().Unix()
+
+		// handle expired trials
+		if isExpiredTrial {
+			if opts.dropExpiredTrials {
+				skippedStatus["expired_trial"]++
+				continue
+			}
+			// --drop-expired-trials=false: convert to active subscription
+			convertedTrials++
 		}
-		if opts.prorateSubscriptions {
-			params.ProrationBehavior = stripe.String("create_prorations")
-		} else {
+
+		if isPastDue {
+			// past_due: create with allow_incomplete and backdate so the invoice
+			// is immediately due. Without a valid payment method the payment fails
+			// and Stripe transitions the subscription to past_due.
+			params.PaymentBehavior = stripe.String("allow_incomplete")
+			params.BackdateStartDate = stripe.Int64(time.Now().Add(-24 * time.Hour).Unix())
 			params.ProrationBehavior = stripe.String("none")
+		} else {
+			if isActiveTrial {
+				params.TrialEnd = stripe.Int64(sub.TrialEnd)
+			}
+
+			if opts.retainBillingAnchor && sub.BillingCycleAnchor > 0 && !hadTrial {
+				// only backdate/anchor when there's no trial history —
+				// Stripe requires proration when billing_cycle_anchor follows a trial
+				anchor := sub.BillingCycleAnchor
+				now := time.Now().Unix()
+				if anchor > now {
+					params.BillingCycleAnchor = stripe.Int64(anchor)
+				} else if !opts.prorateSubscriptions {
+					params.BackdateStartDate = stripe.Int64(anchor)
+				}
+			}
+			if opts.prorateSubscriptions {
+				params.ProrationBehavior = stripe.String("create_prorations")
+			} else {
+				params.ProrationBehavior = stripe.String("none")
+			}
 		}
-		if pmID, ok := custStore.GetCard(newCustomerID); ok {
-			params.DefaultPaymentMethod = stripe.String(pmID)
+
+		// attach payment method — skip for past_due so the invoice payment fails
+		if !isPastDue {
+			if pmID, ok := custStore.GetCard(newCustomerID); ok {
+				params.DefaultPaymentMethod = stripe.String(pmID)
+			}
 		}
 		if opts.applicationFees && opts.isConnectPlatform {
 			if opts.applicationFeeOverride != nil {
@@ -1501,6 +1523,17 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 				newCouponID = sub.Discount.Coupon.ID
 			}
 			params.Coupon = stripe.String(newCouponID)
+		}
+
+		// preserve cancellation state
+		if sub.CancelAtPeriodEnd {
+			params.CancelAtPeriodEnd = stripe.Bool(true)
+		} else if sub.CancelAt > 0 {
+			if sub.CancelAt <= time.Now().Unix() {
+				skippedStatus["canceled"]++
+				continue
+			}
+			params.CancelAt = stripe.Int64(sub.CancelAt)
 		}
 
 		if err := opts.limiter.Wait(opts.ctx); err != nil {
@@ -1560,5 +1593,13 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 	}
 
 	fmt.Fprintf(os.Stderr, "imported %d subscriptions\n", store.Count())
+	if convertedTrials > 0 {
+		fmt.Fprintf(os.Stderr, "  converted %d expired trials to active subscriptions\n", convertedTrials)
+	}
+	if len(skippedStatus) > 0 {
+		for status, count := range skippedStatus {
+			fmt.Fprintf(os.Stderr, "  skipped %d %s subscriptions\n", count, status)
+		}
+	}
 	return errCount, nil
 }

@@ -344,6 +344,9 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	for _, et := range smallTypes {
+		if ctx.Err() != nil {
+			return fmt.Errorf("export interrupted")
+		}
 		if !shouldExport(et.name) {
 			continue
 		}

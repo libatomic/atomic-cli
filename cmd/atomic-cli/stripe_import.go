@@ -146,7 +146,7 @@ var (
 			&cli.BoolFlag{Name: "retain-billing-anchor", Usage: "preserve billing_cycle_anchor from exported subscriptions", Value: true},
 			&cli.BoolFlag{Name: "prorate-subscriptions", Usage: "prorate subscriptions on creation"},
 			&cli.BoolFlag{Name: "abort-on-error", Usage: "stop the entire import on the first failure"},
-			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: runtime.NumCPU()},
+			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 4 * runtime.NumCPU()},
 		},
 	}
 )
@@ -226,6 +226,8 @@ func newImportProgressBar(total int, description string) *progressbar.ProgressBa
 		progressbar.OptionSetDescription(description),
 		progressbar.OptionSetWriter(os.Stderr),
 		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetItsString("rec"),
 		progressbar.OptionClearOnFinish(),
 	)
 }
@@ -427,6 +429,14 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 	}()
 
 	for _, typeName := range importTypeOrder {
+		if ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "import interrupted, syncing state...\n")
+			for _, s := range stores {
+				s.Sync()
+			}
+			return fmt.Errorf("import interrupted")
+		}
+
 		if !shouldImport(typeName) {
 			continue
 		}
@@ -794,7 +804,7 @@ func validateImportData(opts importOptions, manifest *exportManifest, shouldImpo
 
 func importProducts(opts importOptions, store *idMapStore, total int) (int, error) {
 	bar := newImportProgressBar(total, "Importing products")
-	bar.Set(store.Count())
+
 
 	reader, err := util.NewJSONLFileReader[stripe.Product](filepath.Join(opts.inputDir, "products.jsonl"))
 	if err != nil {
@@ -806,6 +816,9 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, erro
 	for prod, err := range reader.All() {
 		if err != nil {
 			return errCount, err
+		}
+		if opts.ctx.Err() != nil {
+			break
 		}
 		bar.Add(1)
 
@@ -868,7 +881,7 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, erro
 
 func importPrices(opts importOptions, productStore, store *idMapStore, total int) (int, error) {
 	bar := newImportProgressBar(total, "Importing prices")
-	bar.Set(store.Count())
+
 
 	reader, err := util.NewJSONLFileReader[stripe.Price](filepath.Join(opts.inputDir, "prices.jsonl"))
 	if err != nil {
@@ -880,6 +893,9 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 	for p, err := range reader.All() {
 		if err != nil {
 			return errCount, err
+		}
+		if opts.ctx.Err() != nil {
+			break
 		}
 		bar.Add(1)
 
@@ -972,7 +988,7 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 
 func importCoupons(opts importOptions, store *idMapStore, total int) (int, error) {
 	bar := newImportProgressBar(total, "Importing coupons")
-	bar.Set(store.Count())
+
 
 	reader, err := util.NewJSONLFileReader[stripe.Coupon](filepath.Join(opts.inputDir, "coupons.jsonl"))
 	if err != nil {
@@ -984,6 +1000,9 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 	for c, err := range reader.All() {
 		if err != nil {
 			return errCount, err
+		}
+		if opts.ctx.Err() != nil {
+			break
 		}
 		bar.Add(1)
 
@@ -1061,7 +1080,7 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 
 func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, total int) (int, error) {
 	bar := newImportProgressBar(total, "Importing promotion codes")
-	bar.Set(store.Count())
+
 
 	reader, err := util.NewJSONLFileReader[stripe.PromotionCode](filepath.Join(opts.inputDir, "promotion_codes.jsonl"))
 	if err != nil {
@@ -1073,6 +1092,9 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 	for pc, err := range reader.All() {
 		if err != nil {
 			return errCount, err
+		}
+		if opts.ctx.Err() != nil {
+			break
 		}
 		bar.Add(1)
 
@@ -1141,7 +1163,7 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 
 func importCustomers(opts importOptions, couponStore, store *idMapStore, total int) (int, error) {
 	bar := newImportProgressBar(total, "Importing customers")
-	bar.Set(store.Count())
+
 
 	reader, err := util.NewJSONLFileReader[stripe.Customer](filepath.Join(opts.inputDir, "customers.jsonl"))
 	if err != nil {
@@ -1161,6 +1183,9 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 	for c, err := range reader.All() {
 		if err != nil {
 			return errCount, err
+		}
+		if opts.ctx.Err() != nil {
+			break
 		}
 		bar.Add(1)
 
@@ -1205,9 +1230,11 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 					PostalCode: ptr.NilString(c.Address.PostalCode), State: ptr.NilString(c.Address.State),
 				}
 			}
-			if c.Shipping != nil && c.Shipping.Address != nil {
+			if c.Shipping != nil && c.Shipping.Name != "" && c.Shipping.Address != nil &&
+				(c.Shipping.Address.Line1 != "" || c.Shipping.Address.City != "" || c.Shipping.Address.Country != "" ||
+					c.Shipping.Address.PostalCode != "" || c.Shipping.Address.State != "") {
 				params.Shipping = &stripe.CustomerShippingParams{
-					Name:  ptr.NilString(c.Shipping.Name),
+					Name:  stripe.String(c.Shipping.Name),
 					Phone: ptr.NilString(c.Shipping.Phone),
 					Address: &stripe.AddressParams{
 						City: ptr.NilString(c.Shipping.Address.City), Country: ptr.NilString(c.Shipping.Address.Country),
@@ -1310,7 +1337,7 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 
 func importSubscriptions(opts importOptions, custStore, priceStore, couponStore, store *idMapStore, total int) (int, error) {
 	bar := newImportProgressBar(total, "Importing subscriptions")
-	bar.Set(store.Count())
+
 
 	reader, err := util.NewJSONLFileReader[stripe.Subscription](filepath.Join(opts.inputDir, "subscriptions.jsonl"))
 	if err != nil {
@@ -1330,6 +1357,9 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 	for sub, err := range reader.All() {
 		if err != nil {
 			return errCount, err
+		}
+		if opts.ctx.Err() != nil {
+			break
 		}
 		bar.Add(1)
 

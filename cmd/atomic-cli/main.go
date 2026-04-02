@@ -22,9 +22,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"os/user"
 	"reflect"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/apex/log"
@@ -246,7 +248,10 @@ func main() {
 		return ctx, nil
 	}
 
-	if err := mainCmd.Run(context.Background(), os.Args); err != nil {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := mainCmd.Run(ctx, os.Args); err != nil {
 		log.Error(err.Error())
 		os.Exit(-1)
 	}

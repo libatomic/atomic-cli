@@ -96,6 +96,7 @@ type (
 		SourceMD5  string `json:"source_md5"`
 		Count      int    `json:"count"`
 		Errors     int    `json:"errors"`
+		Skipped    int    `json:"skipped,omitempty"`
 		ImportedAt string `json:"imported_at,omitempty"`
 	}
 )
@@ -526,28 +527,28 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		saveTypeState(opts, typeName, importTypeState{SourceMD5: exportInfo.MD5, Count: store.Count()})
 
 		total := exportInfo.Count
-		var errCount int
+		var errCount, skipCount int
 		var importErr error
 
 		switch typeName {
 		case "products":
-			errCount, importErr = importProducts(opts, store, total)
+			errCount, skipCount, importErr = importProducts(opts, store, total)
 		case "prices":
 			ps, _ := openStore("products")
-			errCount, importErr = importPrices(opts, ps, store, total)
+			errCount, skipCount, importErr = importPrices(opts, ps, store, total)
 		case "coupons":
-			errCount, importErr = importCoupons(opts, store, total)
+			errCount, skipCount, importErr = importCoupons(opts, store, total)
 		case "promotion-codes":
 			cs, _ := openStore("coupons")
-			errCount, importErr = importPromotionCodes(opts, cs, store, total)
+			errCount, skipCount, importErr = importPromotionCodes(opts, cs, store, total)
 		case "customers":
 			cs, _ := openStore("coupons")
-			errCount, importErr = importCustomers(opts, cs, store, total)
+			errCount, skipCount, importErr = importCustomers(opts, cs, store, total)
 		case "subscriptions":
 			custS, _ := openStore("customers")
 			priceS, _ := openStore("prices")
 			couponS, _ := openStore("coupons")
-			errCount, importErr = importSubscriptions(opts, custS, priceS, couponS, store, total)
+			errCount, skipCount, importErr = importSubscriptions(opts, custS, priceS, couponS, store, total)
 		}
 
 		if importErr != nil {
@@ -559,7 +560,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 
 		saveTypeState(opts, typeName, importTypeState{
 			Complete: errCount == 0, SourceMD5: exportInfo.MD5,
-			Count: store.Count(), Errors: errCount,
+			Count: store.Count(), Errors: errCount, Skipped: skipCount,
 			ImportedAt: time.Now().UTC().Format(time.RFC3339),
 		})
 	}
@@ -858,20 +859,20 @@ func validateImportData(opts importOptions, manifest *exportManifest, shouldImpo
 // in the store with a matching hash are skipped. Records with a different hash
 // are updated via the Stripe Update API. New records are created.
 
-func importProducts(opts importOptions, store *idMapStore, total int) (int, error) {
+func importProducts(opts importOptions, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing products")
 
 
 	reader, err := util.NewJSONLFileReader[stripe.Product](filepath.Join(opts.inputDir, "products.jsonl"))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer reader.Close()
 
 	errCount := 0
 	for prod, err := range reader.All() {
 		if err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 		if opts.ctx.Err() != nil {
 			break
@@ -917,7 +918,7 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, erro
 			errCount++
 			if opts.abortOnError {
 				bar.Finish()
-				return errCount, fmt.Errorf("product %s: %w", prod.ID, err)
+				return errCount, 0, fmt.Errorf("product %s: %w", prod.ID, err)
 			}
 			op := "create"
 			if found {
@@ -932,23 +933,23 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, erro
 
 	bar.Finish()
 	fmt.Fprintf(os.Stderr, "imported %d products\n", store.Count())
-	return errCount, nil
+	return errCount, 0, nil
 }
 
-func importPrices(opts importOptions, productStore, store *idMapStore, total int) (int, error) {
+func importPrices(opts importOptions, productStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing prices")
 
 
 	reader, err := util.NewJSONLFileReader[stripe.Price](filepath.Join(opts.inputDir, "prices.jsonl"))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer reader.Close()
 
 	errCount := 0
 	for p, err := range reader.All() {
 		if err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 		if opts.ctx.Err() != nil {
 			break
@@ -975,7 +976,7 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 				errCount++
 				if opts.abortOnError {
 					bar.Finish()
-					return errCount, fmt.Errorf("price %s: %w", p.ID, err)
+					return errCount, 0, fmt.Errorf("price %s: %w", p.ID, err)
 				}
 				importWarnf(bar, "failed to update price %s: %v", p.ID, err)
 			}
@@ -1028,7 +1029,7 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 			errCount++
 			if opts.abortOnError {
 				bar.Finish()
-				return errCount, fmt.Errorf("price %s: %w", p.ID, err)
+				return errCount, 0, fmt.Errorf("price %s: %w", p.ID, err)
 			}
 			importWarnf(bar, "failed to create price %s: %v", p.ID, err)
 			continue
@@ -1039,23 +1040,23 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 
 	bar.Finish()
 	fmt.Fprintf(os.Stderr, "imported %d prices\n", store.Count())
-	return errCount, nil
+	return errCount, 0, nil
 }
 
-func importCoupons(opts importOptions, store *idMapStore, total int) (int, error) {
+func importCoupons(opts importOptions, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing coupons")
 
 
 	reader, err := util.NewJSONLFileReader[stripe.Coupon](filepath.Join(opts.inputDir, "coupons.jsonl"))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer reader.Close()
 
 	errCount := 0
 	for c, err := range reader.All() {
 		if err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 		if opts.ctx.Err() != nil {
 			break
@@ -1080,7 +1081,7 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 				errCount++
 				if opts.abortOnError {
 					bar.Finish()
-					return errCount, fmt.Errorf("coupon %s: %w", c.ID, err)
+					return errCount, 0, fmt.Errorf("coupon %s: %w", c.ID, err)
 				}
 				importWarnf(bar, "failed to update coupon %s: %v", c.ID, err)
 			}
@@ -1120,7 +1121,7 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 			errCount++
 			if opts.abortOnError {
 				bar.Finish()
-				return errCount, fmt.Errorf("coupon %s: %w", c.ID, err)
+				return errCount, 0, fmt.Errorf("coupon %s: %w", c.ID, err)
 			}
 			importWarnf(bar, "failed to create coupon %s: %v", c.ID, err)
 			continue
@@ -1131,23 +1132,23 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, error
 
 	bar.Finish()
 	fmt.Fprintf(os.Stderr, "imported %d coupons\n", store.Count())
-	return errCount, nil
+	return errCount, 0, nil
 }
 
-func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, total int) (int, error) {
+func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing promotion codes")
 
 
 	reader, err := util.NewJSONLFileReader[stripe.PromotionCode](filepath.Join(opts.inputDir, "promotion_codes.jsonl"))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer reader.Close()
 
 	errCount := 0
 	for pc, err := range reader.All() {
 		if err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 		if opts.ctx.Err() != nil {
 			break
@@ -1172,7 +1173,7 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 				errCount++
 				if opts.abortOnError {
 					bar.Finish()
-					return errCount, fmt.Errorf("promotion code %s: %w", pc.ID, err)
+					return errCount, 0, fmt.Errorf("promotion code %s: %w", pc.ID, err)
 				}
 				importWarnf(bar, "failed to update promotion code %s: %v", pc.ID, err)
 			}
@@ -1203,7 +1204,7 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 			errCount++
 			if opts.abortOnError {
 				bar.Finish()
-				return errCount, fmt.Errorf("promotion code %s: %w", pc.ID, err)
+				return errCount, 0, fmt.Errorf("promotion code %s: %w", pc.ID, err)
 			}
 			importWarnf(bar, "failed to create promotion code %s: %v", pc.ID, err)
 			continue
@@ -1214,16 +1215,16 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 
 	bar.Finish()
 	fmt.Fprintf(os.Stderr, "imported %d promotion codes\n", store.Count())
-	return errCount, nil
+	return errCount, 0, nil
 }
 
-func importCustomers(opts importOptions, couponStore, store *idMapStore, total int) (int, error) {
+func importCustomers(opts importOptions, couponStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing customers")
 
 
 	reader, err := util.NewJSONLFileReader[stripe.Customer](filepath.Join(opts.inputDir, "customers.jsonl"))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer reader.Close()
 
@@ -1238,7 +1239,7 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 
 	for c, err := range reader.All() {
 		if err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 		if opts.ctx.Err() != nil {
 			break
@@ -1265,7 +1266,7 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 		rewriteCustomerEmails(&c, opts.rewriter)
 
 		if err := opts.limiter.Wait(opts.ctx); err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 
 		wg.Add(1)
@@ -1393,20 +1394,20 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 	bar.Finish()
 
 	if abort != nil {
-		return errCount, abort
+		return errCount, 0, abort
 	}
 
 	fmt.Fprintf(os.Stderr, "imported %d customers\n", store.Count())
-	return errCount, nil
+	return errCount, 0, nil
 }
 
-func importSubscriptions(opts importOptions, custStore, priceStore, couponStore, store *idMapStore, total int) (int, error) {
+func importSubscriptions(opts importOptions, custStore, priceStore, couponStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing subscriptions")
 
 
 	reader, err := util.NewJSONLFileReader[stripe.Subscription](filepath.Join(opts.inputDir, "subscriptions.jsonl"))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer reader.Close()
 
@@ -1423,7 +1424,7 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 
 	for sub, err := range reader.All() {
 		if err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 		if opts.ctx.Err() != nil {
 			break
@@ -1567,7 +1568,7 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 		}
 
 		if err := opts.limiter.Wait(opts.ctx); err != nil {
-			return errCount, err
+			return errCount, 0, err
 		}
 
 		wg.Add(1)
@@ -1618,8 +1619,13 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 	wg.Wait()
 	bar.Finish()
 
+	totalSkipped := 0
+	for _, count := range skippedStatus {
+		totalSkipped += count
+	}
+
 	if abort != nil {
-		return errCount, abort
+		return errCount, totalSkipped, abort
 	}
 
 	fmt.Fprintf(os.Stderr, "imported %d subscriptions\n", store.Count())
@@ -1631,5 +1637,5 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 			fmt.Fprintf(os.Stderr, "  skipped %d %s subscriptions\n", count, status)
 		}
 	}
-	return errCount, nil
+	return errCount, totalSkipped, nil
 }

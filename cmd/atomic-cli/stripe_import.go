@@ -64,9 +64,9 @@ type (
 		isConnectPlatform      bool
 		importTime             string
 		dryRun                 bool
-		retainBillingAnchor    bool
 		prorateSubscriptions   bool
 		dropExpiredTrials      bool
+		pastDueSubscriptions   bool
 		limiter                *rate.Limiter
 		workers                int
 		updateExisting         bool
@@ -146,9 +146,9 @@ var (
 			&cli.StringFlag{Name: "on-behalf-of", Usage: "connected account ID for on_behalf_of on subscriptions"},
 			&cli.BoolFlag{Name: "create-test-cards", Usage: "attach test payment methods to customers (test mode only)", Value: true},
 			&cli.StringFlag{Name: "default-test-card", Usage: "override the auto-detected test card for all customers", Value: "pm_card_us"},
-			&cli.BoolFlag{Name: "retain-billing-anchor", Usage: "preserve billing_cycle_anchor from exported subscriptions", Value: true},
 			&cli.BoolFlag{Name: "prorate-subscriptions", Usage: "prorate subscriptions on creation"},
-			&cli.BoolFlag{Name: "drop-expired-trials", Usage: "skip subscriptions with expired trials instead of converting them to active", Value: true},
+			&cli.BoolFlag{Name: "drop-expired-trials", Usage: "shift expired trials forward with the same duration", Value: true},
+			&cli.BoolFlag{Name: "past-due-subscriptions", Usage: "import past_due subscriptions (creates with a declining test card to trigger past_due status)"},
 			&cli.BoolFlag{Name: "abort-on-error", Usage: "stop the entire import on the first failure"},
 			&cli.BoolFlag{Name: "ignore-sandbox-email-warning", Usage: "skip the email rewriting requirement when importing live data into a test account"},
 			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 2 * runtime.NumCPU()},
@@ -243,9 +243,6 @@ func importWarnf(bar *progressbar.ProgressBar, format string, args ...any) {
 	log.Warnf(format, args...)
 }
 
-
-
-
 func isAlreadyExists(err error) bool {
 	var stripeErr *stripe.Error
 	if errors.As(err, &stripeErr) {
@@ -312,6 +309,14 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 
 	// clean import state + map files
 	if clean {
+		fmt.Fprintf(os.Stderr, "WARNING: this will clear all import state and ID mappings, starting a fresh import.\n")
+		fmt.Fprintf(os.Stderr, "Previously imported objects will NOT be deleted from Stripe.\n")
+		fmt.Fprintf(os.Stderr, "type 'yes' to proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			return fmt.Errorf("import aborted")
+		}
 		os.Remove(filepath.Join(inputDir, importStateFilename))
 		for _, info := range manifest.Files {
 			os.Remove(filepath.Join(inputDir, strings.TrimSuffix(info.Filename, ".jsonl")+".map.db"))
@@ -402,12 +407,12 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		onBehalfOf: cmd.String("on-behalf-of"), importSubscriptions: canImportSubs,
 		liveMode: liveMode, isConnectPlatform: isConnectPlatform,
 		importTime: time.Now().UTC().Format(time.RFC3339), dryRun: dryRun,
-		retainBillingAnchor: cmd.Bool("retain-billing-anchor"),
 		prorateSubscriptions: cmd.Bool("prorate-subscriptions"),
-		dropExpiredTrials: cmd.Bool("drop-expired-trials"),
-		limiter: newStripeLimiter(isTest), workers: workers,
+		dropExpiredTrials:    cmd.Bool("drop-expired-trials"),
+		pastDueSubscriptions: cmd.Bool("past-due-subscriptions"),
+		limiter:              newStripeLimiter(isTest), workers: workers,
 		updateExisting: cmd.Bool("update-existing"),
-		state: state, stateMu: &sync.Mutex{},
+		state:          state, stateMu: &sync.Mutex{},
 	}
 
 	// type selection
@@ -705,7 +710,6 @@ func validateImportData(opts importOptions, manifest *exportManifest, shouldImpo
 		}
 	}
 
-
 	productIDs := make(map[string]bool)
 	couponIDs := make(map[string]bool)
 
@@ -862,7 +866,6 @@ func validateImportData(opts importOptions, manifest *exportManifest, shouldImpo
 func importProducts(opts importOptions, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing products")
 
-
 	reader, err := util.NewJSONLFileReader[stripe.Product](filepath.Join(opts.inputDir, "products.jsonl"))
 	if err != nil {
 		return 0, 0, err
@@ -889,7 +892,7 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, int,
 		}
 
 		params := &stripe.ProductParams{
-			Name: stripe.String(prod.Name),
+			Name:   stripe.String(prod.Name),
 			Active: stripe.Bool(prod.Active), Metadata: importMetadata(prod.Metadata, "product_id", prod.ID, opts.importTime),
 			Shippable: &prod.Shippable, StatementDescriptor: ptr.NilString(prod.StatementDescriptor),
 			UnitLabel: ptr.NilString(prod.UnitLabel), URL: ptr.NilString(prod.URL),
@@ -938,7 +941,6 @@ func importProducts(opts importOptions, store *idMapStore, total int) (int, int,
 
 func importPrices(opts importOptions, productStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing prices")
-
 
 	reader, err := util.NewJSONLFileReader[stripe.Price](filepath.Join(opts.inputDir, "prices.jsonl"))
 	if err != nil {
@@ -1046,7 +1048,6 @@ func importPrices(opts importOptions, productStore, store *idMapStore, total int
 func importCoupons(opts importOptions, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing coupons")
 
-
 	reader, err := util.NewJSONLFileReader[stripe.Coupon](filepath.Join(opts.inputDir, "coupons.jsonl"))
 	if err != nil {
 		return 0, 0, err
@@ -1138,7 +1139,6 @@ func importCoupons(opts importOptions, store *idMapStore, total int) (int, int, 
 func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing promotion codes")
 
-
 	reader, err := util.NewJSONLFileReader[stripe.PromotionCode](filepath.Join(opts.inputDir, "promotion_codes.jsonl"))
 	if err != nil {
 		return 0, 0, err
@@ -1220,7 +1220,6 @@ func importPromotionCodes(opts importOptions, couponStore, store *idMapStore, to
 
 func importCustomers(opts importOptions, couponStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing customers")
-
 
 	reader, err := util.NewJSONLFileReader[stripe.Customer](filepath.Join(opts.inputDir, "customers.jsonl"))
 	if err != nil {
@@ -1338,6 +1337,9 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 				return
 			}
 
+			// Attach test card, set it as default payment method, and apply
+			// discount in as few API calls as possible.
+			var attachedPM string
 			if opts.createTestCards && !isUpdate {
 				cardID := resolveTestCard(opts, string(c.Currency))
 				if err := opts.limiter.Wait(opts.ctx); err != nil {
@@ -1347,30 +1349,31 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 				if err != nil {
 					importWarnf(bar, "failed to attach test card to customer %s: %v", newCust.ID, err)
 				} else {
-					if err := opts.limiter.Wait(opts.ctx); err != nil {
-						return
-					}
-					_, err = stripecustomer.Update(newCust.ID, &stripe.CustomerParams{
-						InvoiceSettings: &stripe.CustomerInvoiceSettingsParams{DefaultPaymentMethod: stripe.String(pm.ID)},
-					})
-					if err != nil {
-						importWarnf(bar, "failed to set default payment method for customer %s: %v", newCust.ID, err)
-					}
+					attachedPM = pm.ID
 					store.PutCard(newCust.ID, pm.ID)
 				}
 			}
 
-			if c.Discount != nil && c.Discount.Coupon != nil && c.Discount.Coupon.ID != "" {
-				newCouponID, _, ok := couponStore.Get(c.Discount.Coupon.ID)
-				if !ok {
-					newCouponID = c.Discount.Coupon.ID
+			// Single update for default payment method + coupon
+			needsUpdate := attachedPM != "" || (c.Discount != nil && c.Discount.Coupon != nil && c.Discount.Coupon.ID != "")
+			if needsUpdate {
+				updateParams := &stripe.CustomerParams{}
+				if attachedPM != "" {
+					updateParams.InvoiceSettings = &stripe.CustomerInvoiceSettingsParams{DefaultPaymentMethod: stripe.String(attachedPM)}
+				}
+				if c.Discount != nil && c.Discount.Coupon != nil && c.Discount.Coupon.ID != "" {
+					newCouponID, _, ok := couponStore.Get(c.Discount.Coupon.ID)
+					if !ok {
+						newCouponID = c.Discount.Coupon.ID
+					}
+					updateParams.Coupon = stripe.String(newCouponID)
 				}
 				if err := opts.limiter.Wait(opts.ctx); err != nil {
 					return
 				}
-				_, err := stripecustomer.Update(newCust.ID, &stripe.CustomerParams{Coupon: stripe.String(newCouponID)})
+				_, err := stripecustomer.Update(newCust.ID, updateParams)
 				if err != nil {
-					importWarnf(bar, "failed to apply discount to customer %s: %v", newCust.ID, err)
+					importWarnf(bar, "failed to update customer %s (payment method / discount): %v", newCust.ID, err)
 				}
 			}
 
@@ -1404,7 +1407,6 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 func importSubscriptions(opts importOptions, custStore, priceStore, couponStore, store *idMapStore, total int) (int, int, error) {
 	bar := newImportProgressBar(total, "Importing subscriptions")
 
-
 	reader, err := util.NewJSONLFileReader[stripe.Subscription](filepath.Join(opts.inputDir, "subscriptions.jsonl"))
 	if err != nil {
 		return 0, 0, err
@@ -1412,14 +1414,15 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 	defer reader.Close()
 
 	var (
-		mu            sync.Mutex
-		wg            sync.WaitGroup
-		sem           = make(chan struct{}, opts.workers)
-		abort         error
-		errCount      int
-		imported      int
-		skippedStatus    = make(map[string]int)
-		convertedTrials  int
+		mu              sync.Mutex
+		wg              sync.WaitGroup
+		sem             = make(chan struct{}, opts.workers)
+		abort           error
+		errCount        int
+		imported        int
+		skippedStatus   = make(map[string]int)
+		convertedTrials int
+		shiftedTrials   int
 	)
 
 	for sub, err := range reader.All() {
@@ -1432,9 +1435,13 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 		bar.Add(1)
 
 		switch sub.Status {
-		case stripe.SubscriptionStatusActive, stripe.SubscriptionStatusTrialing,
-			stripe.SubscriptionStatusPastDue:
+		case stripe.SubscriptionStatusActive, stripe.SubscriptionStatusTrialing:
 			// importable
+		case stripe.SubscriptionStatusPastDue:
+			if !opts.pastDueSubscriptions {
+				skippedStatus[string(sub.Status)]++
+				continue
+			}
 		case stripe.SubscriptionStatusPaused, stripe.SubscriptionStatusCanceled,
 			stripe.SubscriptionStatusUnpaid, stripe.SubscriptionStatusIncomplete,
 			stripe.SubscriptionStatusIncompleteExpired:
@@ -1488,52 +1495,69 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 		}
 
 		isPastDue := sub.Status == stripe.SubscriptionStatusPastDue
-		hadTrial := sub.TrialEnd > 0
 		isExpiredTrial := sub.Status == stripe.SubscriptionStatusTrialing && sub.TrialEnd > 0 && sub.TrialEnd <= time.Now().Unix()
 		isActiveTrial := sub.Status == stripe.SubscriptionStatusTrialing && sub.TrialEnd > 0 && sub.TrialEnd > time.Now().Unix()
 
 		// handle expired trials
 		if isExpiredTrial {
 			if opts.dropExpiredTrials {
-				skippedStatus["expired_trial"]++
-				continue
+				// shift the trial forward preserving its original duration
+				trialDuration := sub.TrialEnd - sub.TrialStart
+				if trialDuration <= 0 {
+					trialDuration = 7 * 24 * 3600 // fallback: 7 days
+				}
+				params.TrialEnd = stripe.Int64(time.Now().Unix() + trialDuration)
+				shiftedTrials++
+			} else {
+				// --drop-expired-trials=false: convert to active subscription
+				convertedTrials++
 			}
-			// --drop-expired-trials=false: convert to active subscription
-			convertedTrials++
 		}
 
-		if isPastDue {
-			// past_due: create with allow_incomplete and backdate so the invoice
-			// is immediately due. Without a valid payment method the payment fails
-			// and Stripe transitions the subscription to past_due.
-			params.PaymentBehavior = stripe.String("allow_incomplete")
-			params.BackdateStartDate = stripe.Int64(time.Now().Add(-24 * time.Hour).Unix())
-			params.ProrationBehavior = stripe.String("none")
-		} else {
-			if isActiveTrial {
-				params.TrialEnd = stripe.Int64(sub.TrialEnd)
-			}
+		if isActiveTrial {
+			params.TrialEnd = stripe.Int64(sub.TrialEnd)
+		}
 
-			if opts.retainBillingAnchor && sub.BillingCycleAnchor > 0 && !hadTrial {
-				// only backdate/anchor when there's no trial history —
-				// Stripe requires proration when billing_cycle_anchor follows a trial
-				anchor := sub.BillingCycleAnchor
+		// Backdate to original creation date and set billing_cycle_anchor to the
+		// source's current_period_end so that period dates and next invoice match
+		// the export exactly.  Skip for shifted expired trials (new trial replaces
+		// the original dates) and active trials (trial_end governs billing, but we
+		// still backdate the start).
+		if !(isExpiredTrial && opts.dropExpiredTrials) {
+			params.BackdateStartDate = stripe.Int64(sub.Created)
+
+			if !isActiveTrial && sub.CurrentPeriodEnd > 0 {
+				anchor := sub.CurrentPeriodEnd
 				now := time.Now().Unix()
 				if anchor > now {
 					params.BillingCycleAnchor = stripe.Int64(anchor)
-				} else if !opts.prorateSubscriptions {
-					params.BackdateStartDate = stripe.Int64(anchor)
+				} else {
+					// period end in the past — advance by one interval at a time
+					interval := sub.CurrentPeriodEnd - sub.CurrentPeriodStart
+					if interval <= 0 {
+						interval = 30 * 24 * 3600 // fallback: 30 days
+					}
+					for anchor <= now {
+						anchor += interval
+					}
+					params.BillingCycleAnchor = stripe.Int64(anchor)
 				}
-			}
-			if opts.prorateSubscriptions {
-				params.ProrationBehavior = stripe.String("create_prorations")
-			} else {
-				params.ProrationBehavior = stripe.String("none")
 			}
 		}
 
-		// attach payment method — skip for past_due so the invoice payment fails
-		if !isPastDue {
+		if opts.prorateSubscriptions {
+			params.ProrationBehavior = stripe.String("create_prorations")
+		} else {
+			params.ProrationBehavior = stripe.String("none")
+		}
+
+		// For past_due: use allow_incomplete so the subscription is created even
+		// when the invoice payment fails.  The declining test card is attached
+		// inside the worker goroutine before creating the subscription.
+		if isPastDue {
+			params.PaymentBehavior = stripe.String("allow_incomplete")
+			params.Metadata["atomic:import:original_status"] = "past_due"
+		} else {
 			if pmID, ok := custStore.GetCard(newCustomerID); ok {
 				params.DefaultPaymentMethod = stripe.String(pmID)
 			}
@@ -1574,9 +1598,25 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 		wg.Add(1)
 		sem <- struct{}{}
 
-		go func(sub stripe.Subscription, params *stripe.SubscriptionParams, hash string) {
+		go func(sub stripe.Subscription, params *stripe.SubscriptionParams, hash string, isPastDue bool) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
+			// For past_due subs, attach a declining test card so the first
+			// invoice payment fails and Stripe transitions the sub to past_due.
+			if isPastDue {
+				if err := opts.limiter.Wait(opts.ctx); err != nil {
+					return
+				}
+				pm, err := paymentmethod.Attach("pm_card_visa_chargeDeclined", &stripe.PaymentMethodAttachParams{
+					Customer: params.Customer,
+				})
+				if err != nil {
+					importWarnf(bar, "failed to attach declining card for past_due sub %s: %v", sub.ID, err)
+					return
+				}
+				params.DefaultPaymentMethod = stripe.String(pm.ID)
+			}
 
 			var newSub *stripe.Subscription
 			err := retryOnRateLimit(opts.ctx, func() error {
@@ -1613,7 +1653,7 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 				opts.stateMu.Unlock()
 			}
 			mu.Unlock()
-		}(sub, params, hash)
+		}(sub, params, hash, isPastDue)
 	}
 
 	wg.Wait()
@@ -1629,6 +1669,9 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 	}
 
 	fmt.Fprintf(os.Stderr, "imported %d subscriptions\n", store.Count())
+	if shiftedTrials > 0 {
+		fmt.Fprintf(os.Stderr, "  shifted %d expired trials forward with original duration\n", shiftedTrials)
+	}
 	if convertedTrials > 0 {
 		fmt.Fprintf(os.Stderr, "  converted %d expired trials to active subscriptions\n", convertedTrials)
 	}

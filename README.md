@@ -1188,6 +1188,7 @@ atomic-cli stripe export [options]
 | `--clean` | | Clear existing export data and start fresh | `false` |
 | `--active-only` | | Only export active products, prices, and promotion codes | `false` |
 | `--terminated-subscriptions` | | Include terminated subscriptions (canceled, unpaid, incomplete_expired) | `false` |
+| `--past-due-subscriptions` | | Include past_due subscriptions in the export | `false` |
 | `--email-domain-overwrite` | | Rewrite all customer email addresses to this domain; mutually exclusive with `--email-template` | |
 | `--email-template` | | Generate customer email addresses from a template (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
 
@@ -1203,7 +1204,9 @@ When email rewriting is enabled, all email addresses on customer records are rew
 | Customers | `default_source`, `discount`, `invoice_settings.default_payment_method`, `tax` |
 | Subscriptions | `default_payment_method`, `default_source`, `discount`, `discounts`, `items.data.price`, `items.data.discounts` |
 
-Subscriptions are exported across statuses: active, past_due, trialing, and paused. With `--terminated-subscriptions`, canceled, unpaid, incomplete, and incomplete_expired subscriptions are also included.
+Subscriptions are exported across statuses: active, trialing, and paused. With `--past-due-subscriptions`, past_due subscriptions are also included. With `--terminated-subscriptions`, canceled, unpaid, incomplete, and incomplete_expired subscriptions are also included.
+
+**`--clean` confirmation:** Using `--clean` prompts for confirmation before deleting existing export data.
 
 **Concurrency and rate limiting:** Customers and subscriptions are exported concurrently for performance, while smaller types (products, prices, coupons, promotion codes) are exported sequentially first. API requests are rate-limited to stay within Stripe's limits (40 req/s for live keys, 10 req/s for test keys) using a shared token-bucket limiter across all concurrent goroutines.
 
@@ -1308,9 +1311,9 @@ atomic-cli stripe import --input <export-directory> [options]
 | `--on-behalf-of`                | Connected account ID for subscriptions                                   |               |
 | `--create-test-cards`           | Attach test payment methods to customers (test mode only)                | `true`        |
 | `--default-test-card`           | Override the auto-detected test card for all customers                   | `pm_card_us`  |
-| `--retain-billing-anchor`       | Preserve billing_cycle_anchor from exported subscriptions                | `true`        |
 | `--prorate-subscriptions`       | Prorate subscriptions on creation                                        | `false`       |
-| `--drop-expired-trials`         | Skip subscriptions with expired trials instead of converting to active   | `true`        |
+| `--drop-expired-trials`         | Shift expired trials forward with the same duration instead of converting to active | `true` |
+| `--past-due-subscriptions`      | Import past_due subscriptions (attaches a declining test card to trigger past_due status) | `false` |
 | `--abort-on-error`              | Stop the entire import on the first failure                              | `false`       |
 | `--ignore-sandbox-email-warning`| Skip the email rewriting requirement when importing live data into test  | `false`       |
 | `--workers`                     | Number of concurrent workers for customer and subscription imports       | 2× CPU count  |
@@ -1331,9 +1334,9 @@ atomic-cli stripe import --input <export-directory> [options]
 - **Error propagation**: Errors in upstream types automatically abort dependent downstream types. Product errors abort price import; price errors abort subscription import; coupon errors abort promotion code import; customer errors abort subscription import. This prevents cascading failures.
 - **ID map fallback**: When a referenced object (product, coupon, customer, price) is not found in the import ID map — e.g. after a `--clean` re-import — the import uses the original source ID as a fallback instead of skipping the record. This allows re-imports to succeed when objects already exist in the target account.
 - **Rate limit retry**: Customer and subscription creates automatically retry on Stripe 429 (rate limit) errors with exponential backoff (1s, 2s, 4s, 8s, 16s) up to 5 attempts. Retries are silent — no warnings are logged unless all attempts are exhausted.
-- **Billing cycle anchor**: Preserved by default (`--retain-billing-anchor`). When the anchor is in the past and proration is disabled (default), `backdate_start_date` is used to preserve the original billing cycle. Subscriptions with trial history skip backdating entirely (Stripe requires proration after trials). Set to false to let Stripe assign new billing dates.
-- **Subscription statuses**: Only `active` and `trialing` subscriptions are imported. `past_due` subscriptions are recreated using `payment_behavior: allow_incomplete` with a backdated start and no payment method, causing Stripe to transition them to `past_due`. Other statuses (`canceled`, `unpaid`, `paused`, `incomplete`, `incomplete_expired`) are skipped with counts logged at the end.
-- **Trials**: Active trials with a future `trial_end` are preserved. Expired trials (status is `trialing` but `trial_end` is in the past) are dropped by default (`--drop-expired-trials`). Set `--drop-expired-trials=false` to convert them to active subscriptions instead. Both dropped and converted trial counts are logged.
+- **Billing dates**: All subscriptions are backdated to their original creation date (`backdate_start_date` = `sub.created`) and `billing_cycle_anchor` is set to the source's `current_period_end` so that period dates and next invoice match the export exactly. With `proration_behavior: none` (default), no charges are generated for the backdated period.
+- **Subscription statuses**: Only `active` and `trialing` subscriptions are imported by default. With `--past-due-subscriptions`, past_due subscriptions are also imported — a declining test card (`pm_card_visa_chargeDeclined`) is attached to the customer and used as the subscription's payment method with `payment_behavior: allow_incomplete`, causing the first invoice to fail and Stripe to transition the subscription to `past_due`. Other statuses (`canceled`, `unpaid`, `paused`, `incomplete`, `incomplete_expired`) are skipped with counts logged at the end.
+- **Trials**: Active trials with a future `trial_end` are preserved. Expired trials (status is `trialing` but `trial_end` is in the past) are shifted forward by default (`--drop-expired-trials`): a new trial is created with the same duration as the original, starting from now. Set `--drop-expired-trials=false` to convert them to active subscriptions instead. Both shifted and converted trial counts are logged.
 - **Cancellation**: Subscriptions with `cancel_at_period_end` preserve that flag. Subscriptions with a future `cancel_at` preserve the cancellation date. Subscriptions with `cancel_at` in the past are skipped.
 - **Concurrency**: Customer and subscription imports use multiple concurrent workers (default: 2× CPU count, configurable via `--workers`). API requests are rate-limited to stay within Stripe's limits (10 req/s test, 40 req/s live). Imports run sequentially in dependency order (products → prices → coupons → promotion codes → customers → subscriptions), but within each type the individual record creates are parallelized.
 - **Import state**: Persisted in the export directory alongside `manifest.json`. Consists of two parts:
@@ -1344,7 +1347,7 @@ atomic-cli stripe import --input <export-directory> [options]
 - **Resume**: If an import is interrupted, re-running the command continues from where it left off. Already-created objects are skipped via the persisted bbolt ID maps. For customers and subscriptions, the database is synced every 200 records.
 - **Progress**: Each import type shows a progress bar with record count and throughput (rec/s).
 - **Change detection**: Each imported record's SHA-256 hash is stored alongside its ID mapping. On re-import, records whose hash hasn't changed are skipped automatically — no unnecessary API calls. With `--update-existing` (default), records that have changed are updated via the Stripe Update API: products and customers are fully updated, prices and coupons update metadata/active status (immutable fields like amount are unchanged), and subscriptions are always skipped (too complex to diff safely). With `--update-existing=false`, changed records are skipped entirely (only new records are created).
-- **`--clean`**: Clears `import-state.json` and all `.map.db` files, forcing a full re-import. Objects that already exist in the target account are handled gracefully — products fall back to update on `resource_already_exists`, and cross-references (prices→products, subscriptions→customers/prices, etc.) fall back to original IDs when not found in the import map. Note: `stripe export --clean` also clears the import state automatically.
+- **`--clean`**: Prompts for confirmation, then clears `import-state.json` and all `.map.db` files, forcing a full re-import. Objects that already exist in the target account are handled gracefully — products fall back to update on `resource_already_exists`, and cross-references (prices→products, subscriptions→customers/prices, etc.) fall back to original IDs when not found in the import map. Note: `stripe export --clean` also clears the import state automatically.
 
 **Test card mapping (currency → payment method):**
 
@@ -1399,9 +1402,13 @@ atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
 atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
   --create-test-cards=false
 
-# Import without preserving billing anchors, with proration
+# Import with proration enabled
 atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
-  --retain-billing-anchor=false --prorate-subscriptions
+  --prorate-subscriptions
+
+# Import including past_due subscriptions
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
+  --past-due-subscriptions
 
 # Skip validation (if you know the data is clean)
 atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 --validate=false

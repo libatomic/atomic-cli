@@ -18,6 +18,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,7 @@ type (
 	exportManifestOptions struct {
 		ActiveOnly              bool   `json:"active_only,omitempty"`
 		TerminatedSubscriptions bool   `json:"terminated_subscriptions,omitempty"`
+		PastDueSubscriptions    bool   `json:"past_due_subscriptions,omitempty"`
 		EmailDomainRewrite      string `json:"email_domain_rewrite,omitempty"`
 		EmailTemplate           string `json:"email_template,omitempty"`
 	}
@@ -84,6 +86,7 @@ type (
 	exportOptions struct {
 		activeOnly              bool
 		terminatedSubscriptions bool
+		pastDueSubscriptions    bool
 		rewriter                *emailRewriter
 	}
 
@@ -137,6 +140,10 @@ var (
 			&cli.BoolFlag{
 				Name:  "terminated-subscriptions",
 				Usage: "include terminated subscriptions (canceled, unpaid, incomplete_expired) in the export",
+			},
+			&cli.BoolFlag{
+				Name:  "past-due-subscriptions",
+				Usage: "include past_due subscriptions in the export",
 			},
 			&cli.StringFlag{
 				Name:  "email-domain-overwrite",
@@ -271,6 +278,7 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	currentOpts := &exportManifestOptions{
 		ActiveOnly:              activeOnly,
 		TerminatedSubscriptions: cmd.Bool("terminated-subscriptions"),
+		PastDueSubscriptions:    cmd.Bool("past-due-subscriptions"),
 		EmailDomainRewrite:      emailDomain,
 		EmailTemplate:           emailTemplate,
 	}
@@ -278,11 +286,19 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	opts := exportOptions{
 		activeOnly:              activeOnly,
 		terminatedSubscriptions: cmd.Bool("terminated-subscriptions"),
+		pastDueSubscriptions:    cmd.Bool("past-due-subscriptions"),
 		rewriter:                rewriter,
 	}
 
 	if clean || manifest == nil {
 		if clean && manifest != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: this will delete all existing export data in %s and start a fresh export.\n", exportDir)
+			fmt.Fprintf(os.Stderr, "type 'yes' to proceed: ")
+			reader := bufio.NewReader(os.Stdin)
+			answer, _ := reader.ReadString('\n')
+			if strings.TrimSpace(answer) != "yes" {
+				return fmt.Errorf("export aborted")
+			}
 			fmt.Fprintf(os.Stderr, "clearing existing export data\n")
 			cleanExportDir(exportDir)
 		}
@@ -608,6 +624,10 @@ func verifyExportOptions(previous, current *exportManifestOptions) error {
 
 	if previous.TerminatedSubscriptions != current.TerminatedSubscriptions {
 		mismatches = append(mismatches, fmt.Sprintf("terminated-subscriptions changed: %v → %v", previous.TerminatedSubscriptions, current.TerminatedSubscriptions))
+	}
+
+	if previous.PastDueSubscriptions != current.PastDueSubscriptions {
+		mismatches = append(mismatches, fmt.Sprintf("past-due-subscriptions changed: %v → %v", previous.PastDueSubscriptions, current.PastDueSubscriptions))
 	}
 
 	if len(mismatches) > 0 {
@@ -1112,7 +1132,10 @@ func exportSubscriptions(ectx *exportContext) (int, error) {
 	}
 	defer writer.Close()
 
-	statuses := []string{"active", "past_due", "trialing", "paused"}
+	statuses := []string{"active", "trialing", "paused"}
+	if ectx.opts.pastDueSubscriptions {
+		statuses = append(statuses, "past_due")
+	}
 	if ectx.opts.terminatedSubscriptions {
 		statuses = append(statuses, "canceled", "unpaid", "incomplete", "incomplete_expired")
 	}
@@ -1224,7 +1247,10 @@ func exportSubscriptions(ectx *exportContext) (int, error) {
 }
 
 func exportSubscriptionsIncremental(ectx *exportContext, createdGTE *int64) (int, error) {
-	statuses := []string{"active", "past_due", "trialing", "paused"}
+	statuses := []string{"active", "trialing", "paused"}
+	if ectx.opts.pastDueSubscriptions {
+		statuses = append(statuses, "past_due")
+	}
 	if ectx.opts.terminatedSubscriptions {
 		statuses = append(statuses, "canceled", "unpaid", "incomplete", "incomplete_expired")
 	}

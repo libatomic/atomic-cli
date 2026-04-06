@@ -918,7 +918,7 @@ atomic-cli migrate substack [options]
 2. **Price report** - Displays a table of all discovered prices showing type, amount, currency, active status, and currency options. Shows how prices map to Passport plans.
 
 3. **Plan resolution** - Resolves plans in one of three ways:
-   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. Records are split into separate CSV files by plan type (subscribers and founders), with `is_subscriber=true` and no `subscription_plan_id`. The import-level `subscriber_plan_id` parameter is used at import time to resolve the actual plan.
+   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. Records are split into separate CSV files by plan type (subscribers and founders) without `subscription_plan_id`. Use the import-level `auto_subscribe_plans` parameter at import time to auto-subscribe users to the correct plans.
    - With `--create-plans`: creates a hidden "Subscriber" plan with monthly/annual prices and a hidden "Founder" plan with an annual price, matching amounts and currency options from the active Stripe prices. Prompts for confirmation before creating (skipped with `--dry-run`).
    - With `--subscriber-plan` / `--founder-plan`: fetches the existing Passport plans and reads their active price amounts for discount calculation.
 
@@ -930,7 +930,7 @@ atomic-cli migrate substack [options]
 
 5. **Discount calculation** - When `--apply-discounts` is enabled, compares each subscriber's price (in their subscription currency) against the corresponding Passport plan price at the same interval and currency. If the subscriber's rate is lower, a forever percentage discount is calculated so they keep their grandfathered price. If their rate is equal to or higher than the current price, no discount is applied.
 
-6. **CSV output** - In default mode (no plans), writes two CSVs: `migrate_users-<id>-subscribers.csv` and `migrate_users-<id>-founders.csv` (if founders exist), with `is_subscriber=true` and no `subscription_plan_id`. In plan mode, writes a single CSV (suffixed with `-<stripe_account_id>`) with `subscription_plan_id` set. All CSVs include `migrate_stripe_price` and `migrate_stripe_subscription` audit columns.
+6. **CSV output** - In default mode (no plans), writes two CSVs: `migrate_users-<id>-subscribers.csv` and `migrate_users-<id>-founders.csv` (if founders exist), without `subscription_plan_id`. In plan mode, writes a single CSV (suffixed with `-<stripe_account_id>`) with `subscription_plan_id` set. All CSVs include `migrate_stripe_price` and `migrate_stripe_subscription` audit columns.
 
 **Examples:**
 
@@ -1314,6 +1314,7 @@ atomic-cli stripe import --input <export-directory> [options]
 | `--prorate-subscriptions`       | Prorate subscriptions on creation                                        | `false`       |
 | `--drop-expired-trials`         | Shift expired trials forward with the same duration instead of converting to active | `true` |
 | `--past-due-subscriptions`      | Import past_due subscriptions (attaches a declining test card to trigger past_due status) | `false` |
+| `--limit`                       | Limit the number of new customers imported; subscriptions are limited to imported customers; 0 = no limit | `0` |
 | `--abort-on-error`              | Stop the entire import on the first failure                              | `false`       |
 | `--ignore-sandbox-email-warning`| Skip the email rewriting requirement when importing live data into test  | `false`       |
 | `--workers`                     | Number of concurrent workers for customer and subscription imports       | 2× CPU count  |
@@ -1330,6 +1331,7 @@ atomic-cli stripe import --input <export-directory> [options]
 - **Test mode + `--create-test-cards=false`**: Skips subscriptions with a warning.
 - **Connect platform accounts**: Detected automatically via the Stripe account's `controller.type` (`application`). Application fees from exported subscriptions are retained by default (`--application-fees`). Use `--application-fees=false` to ignore fees entirely, or `--application-fee-percent` to override all fees with a fixed percentage.
 - **Proration**: Disabled by default (`--prorate-subscriptions=false`). Enable to prorate subscription charges on creation.
+- **Limit** (`--limit`): Import only N new customers and their subscriptions. Already-imported customers (from prior runs) are skipped and don't count against the limit. Subscriptions are only imported for customers present in the ID map, so subs for non-imported customers are skipped. Run again with `--limit` to import the next batch, or without `--limit` to import everything remaining.
 - **Errors**: By default, failures on individual records are logged as warnings and the import continues. Use `--abort-on-error` to stop on the first failure.
 - **Error propagation**: Errors in upstream types automatically abort dependent downstream types. Product errors abort price import; price errors abort subscription import; coupon errors abort promotion code import; customer errors abort subscription import. This prevents cascading failures.
 - **ID map fallback**: When a referenced object (product, coupon, customer, price) is not found in the import ID map — e.g. after a `--clean` re-import — the import uses the original source ID as a fallback instead of skipping the record. This allows re-imports to succeed when objects already exist in the target account.
@@ -1409,6 +1411,9 @@ atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
 # Import including past_due subscriptions
 atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 \
   --past-due-subscriptions
+
+# Import just 10 customers and their subscriptions for testing
+atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 --limit 10
 
 # Skip validation (if you know the data is clean)
 atomic-cli stripe import -k sk_test_xxx --input stripe-export-1234 --validate=false

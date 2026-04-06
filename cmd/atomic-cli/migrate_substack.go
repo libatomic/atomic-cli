@@ -259,7 +259,6 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		var subscriberRecords, founderRecords []*migrationRecord
 
 		for _, rec := range records {
-			rec.IsSubscriber = true
 			if rec.PlanID == "PENDING_FOUNDER_PLAN" {
 				rec.PlanID = ""
 				founderRecords = append(founderRecords, rec)

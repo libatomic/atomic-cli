@@ -45,7 +45,6 @@ type (
 		BillingEmail  string
 		Name          string
 		PlanID        string
-		IsSubscriber  bool
 		IsTeamOwner   bool
 		TeamKey       string
 		Interval      atomicpkg.SubscriptionInterval
@@ -317,10 +316,6 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			},
 			MigrateStripePrice:        rec.StripePriceID,
 			MigrateStripeSubscription: rec.StripeSubID,
-		}
-
-		if rec.IsSubscriber {
-			ir.IsSubscriber = ptr.Bool(true)
 		}
 
 		if rec.IsTeamOwner {

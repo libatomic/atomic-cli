@@ -67,6 +67,7 @@ type (
 		prorateSubscriptions   bool
 		dropExpiredTrials      bool
 		pastDueSubscriptions   bool
+		limit                  int
 		limiter                *rate.Limiter
 		workers                int
 		updateExisting         bool
@@ -151,6 +152,7 @@ var (
 			&cli.BoolFlag{Name: "past-due-subscriptions", Usage: "import past_due subscriptions (creates with a declining test card to trigger past_due status)"},
 			&cli.BoolFlag{Name: "abort-on-error", Usage: "stop the entire import on the first failure"},
 			&cli.BoolFlag{Name: "ignore-sandbox-email-warning", Usage: "skip the email rewriting requirement when importing live data into a test account"},
+			&cli.IntFlag{Name: "limit", Usage: "limit the number of new customers imported (subscriptions are limited to imported customers); 0 = no limit", Value: 0},
 			&cli.IntFlag{Name: "workers", Usage: "number of concurrent workers for customer and subscription imports", Value: 2 * runtime.NumCPU()},
 		},
 	}
@@ -235,6 +237,27 @@ func newImportProgressBar(total int, description string) *progressbar.ProgressBa
 		progressbar.OptionSetItsString("rec"),
 		progressbar.OptionClearOnFinish(),
 	)
+}
+
+// subscriptionInterval returns the recurring interval and count from the first
+// subscription item's price.  Falls back to "month" / 1 if the data is missing.
+func subscriptionInterval(sub stripe.Subscription) (string, int64) {
+	if sub.Items != nil {
+		for _, item := range sub.Items.Data {
+			if item.Price != nil && item.Price.Recurring != nil {
+				interval := string(item.Price.Recurring.Interval)
+				count := item.Price.Recurring.IntervalCount
+				if interval == "" {
+					interval = "month"
+				}
+				if count <= 0 {
+					count = 1
+				}
+				return interval, count
+			}
+		}
+	}
+	return "month", 1
 }
 
 func importWarnf(bar *progressbar.ProgressBar, format string, args ...any) {
@@ -410,6 +433,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 		prorateSubscriptions: cmd.Bool("prorate-subscriptions"),
 		dropExpiredTrials:    cmd.Bool("drop-expired-trials"),
 		pastDueSubscriptions: cmd.Bool("past-due-subscriptions"),
+		limit:               int(cmd.Int("limit")),
 		limiter:              newStripeLimiter(isTest), workers: workers,
 		updateExisting: cmd.Bool("update-existing"),
 		state:          state, stateMu: &sync.Mutex{},
@@ -435,7 +459,7 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	printImportResumeStatus(state, manifest, shouldImport)
-	printImportReport(acct, manifest, shouldImport, canImportSubs, rewriter, isConnectPlatform, applicationFees, appFeeOverride, liveMode, dryRun, workers)
+	printImportReport(acct, manifest, shouldImport, canImportSubs, rewriter, isConnectPlatform, applicationFees, appFeeOverride, liveMode, dryRun, workers, opts.limit)
 
 	if cmd.Bool("validate") {
 		bar := newImportSpinner("Validating export data")
@@ -612,7 +636,7 @@ func printImportResumeStatus(state *importState, manifest *exportManifest, shoul
 func printImportReport(
 	acct *stripe.Account, manifest *exportManifest, shouldImport func(string) bool,
 	canImportSubs bool, rewriter *emailRewriter, isConnectPlatform bool,
-	applicationFees bool, appFeeOverride *float64, liveMode, dryRun bool, workers int,
+	applicationFees bool, appFeeOverride *float64, liveMode, dryRun bool, workers int, limit int,
 ) {
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "\n--- DRY RUN ---\n")
@@ -647,6 +671,9 @@ func printImportReport(
 	fmt.Fprintf(os.Stderr, "target livemode: %v\n", liveMode)
 	fmt.Fprintf(os.Stderr, "connect platform: %v\n", isConnectPlatform)
 	fmt.Fprintf(os.Stderr, "workers: %d\n", workers)
+	if limit > 0 {
+		fmt.Fprintf(os.Stderr, "limit: %d new customers (subscriptions limited to imported customers)\n", limit)
+	}
 
 	if manifest.Options != nil {
 		o := manifest.Options
@@ -1236,6 +1263,8 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 		imported int
 	)
 
+	var dispatched int
+
 	for c, err := range reader.All() {
 		if err != nil {
 			return errCount, 0, err
@@ -1260,6 +1289,12 @@ func importCustomers(opts importOptions, couponStore, store *idMapStore, total i
 			break
 		}
 		mu.Unlock()
+
+		// --limit: stop dispatching new customers once the limit is reached
+		if opts.limit > 0 && dispatched >= opts.limit {
+			break
+		}
+		dispatched++
 
 		originalEmail := c.Email
 		rewriteCustomerEmails(&c, opts.rewriter)
@@ -1471,6 +1506,11 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 
 		newCustomerID, _, ok := custStore.Get(sub.Customer.ID)
 		if !ok {
+			if opts.limit > 0 {
+				// --limit: only import subscriptions for customers in the ID map
+				skippedStatus["customer_not_imported"]++
+				continue
+			}
 			newCustomerID = sub.Customer.ID
 		}
 
@@ -1532,15 +1572,25 @@ func importSubscriptions(opts importOptions, custStore, priceStore, couponStore,
 				if anchor > now {
 					params.BillingCycleAnchor = stripe.Int64(anchor)
 				} else {
-					// period end in the past — advance by one interval at a time
-					interval := sub.CurrentPeriodEnd - sub.CurrentPeriodStart
-					if interval <= 0 {
-						interval = 30 * 24 * 3600 // fallback: 30 days
+					// period end in the past (stale export) — advance by calendar
+					// intervals so month/year boundaries are respected.  Using fixed
+					// seconds would overshoot (e.g. +31 days in April gives May 5
+					// instead of May 4, exceeding Stripe's natural billing date).
+					recurInterval, recurCount := subscriptionInterval(sub)
+					t := time.Unix(anchor, 0).UTC()
+					for t.Unix() <= now {
+						switch recurInterval {
+						case "month":
+							t = t.AddDate(0, int(recurCount), 0)
+						case "year":
+							t = t.AddDate(int(recurCount), 0, 0)
+						case "week":
+							t = t.AddDate(0, 0, 7*int(recurCount))
+						default:
+							t = t.AddDate(0, 0, int(recurCount))
+						}
 					}
-					for anchor <= now {
-						anchor += interval
-					}
-					params.BillingCycleAnchor = stripe.Int64(anchor)
+					params.BillingCycleAnchor = stripe.Int64(t.Unix())
 				}
 			}
 		}

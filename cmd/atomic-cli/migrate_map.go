@@ -167,6 +167,14 @@ var (
 			}
 			rec.CategoryOptOut = parts
 		},
+		"import_comment": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			rec.ImportComment = &v
+		},
+		"import_source": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			rec.ImportSource = &v
+		},
 	}
 )
 
@@ -176,7 +184,7 @@ func parseBool(val string) bool {
 }
 
 func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
-	_, outputPath, _, rewriter, appendMode, err := validateMigrateFlags(cmd, false)
+	_, outputPath, _, rewriter, appendMode, source, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
 	}
@@ -341,7 +349,22 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		func(a, b []string) []string { return nil },
 	)
 
-	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn}
+	sprintfFn := expr.Function(
+		"sprintf",
+		func(params ...any) (any, error) {
+			if len(params) < 1 {
+				return nil, fmt.Errorf("sprintf requires at least 1 argument")
+			}
+			format, ok := params[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("sprintf: first argument must be a string")
+			}
+			return fmt.Sprintf(format, params[1:]...), nil
+		},
+		func(format string, args ...any) string { return "" },
+	)
+
+	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn}
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
 	for name, value := range fileConsts {
@@ -493,6 +516,11 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 			rec.Email = &login
 		}
 
+		// default import_source from --source flag if not set by columns
+		if (rec.ImportSource == nil || *rec.ImportSource == "") && source != "" {
+			rec.ImportSource = &source
+		}
+
 		records = append(records, rec)
 	}
 
@@ -552,6 +580,7 @@ func validateMapping(mapping convertMapping) error {
 		"phone_number": true, "phone_number_verified": true, "phone_number_opt_in": true,
 		"billing_email": true, "billing_phone_number": true, "name": true, "roles": true,
 		"stripe_customer_id": true, "channel_opt_in": true, "category_opt_out": true,
+		"import_comment": true, "import_source": true,
 	}
 
 	for field := range mapping {

@@ -65,7 +65,7 @@ type verifyIssue struct {
 }
 
 func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
-	_, outputPath, _, _, _, err := validateMigrateFlags(cmd, false)
+	_, outputPath, _, _, _, _, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
 	}

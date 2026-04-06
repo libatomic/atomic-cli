@@ -122,6 +122,10 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 			Usage: "append to the output CSV instead of overwriting; deduplicates on login (existing rows win)",
 			Value: true,
 		},
+		&cli.StringFlag{
+			Name:  "source",
+			Usage: "import source identifier set on each record's import_source field",
+		},
 	}
 
 	migrateCmd = &cli.Command{
@@ -162,11 +166,12 @@ func initStripeClient(apiKey string) (*stripeclient.API, error) {
 	return stripeclient.New(apiKey, nil), nil
 }
 
-func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun bool, output string, prorate bool, rewriter *emailRewriter, appendMode bool, err error) {
+func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun bool, output string, prorate bool, rewriter *emailRewriter, appendMode bool, source string, err error) {
 	dryRun = cmd.Bool("dry-run")
 	output = cmd.String("output")
 	prorate = cmd.Bool("subscription-prorate")
 	appendMode = cmd.Bool("append")
+	source = cmd.String("source")
 
 	emailDomain := cmd.String("email-domain-overwrite")
 	emailTemplate := cmd.String("email-template")
@@ -295,7 +300,7 @@ func shortHash(s string) string {
 	return hex.EncodeToString(h[:])[:8]
 }
 
-func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, rewriter *emailRewriter, appendMode bool) error {
+func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, rewriter *emailRewriter, appendMode bool, source string) error {
 	importRecords := make([]*importRecord, 0, len(records))
 
 	for _, rec := range records {
@@ -316,6 +321,10 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			},
 			MigrateStripePrice:        rec.StripePriceID,
 			MigrateStripeSubscription: rec.StripeSubID,
+		}
+
+		if source != "" {
+			ir.ImportSource = &source
 		}
 
 		if rec.IsTeamOwner {

@@ -868,6 +868,7 @@ These options apply to all migrate subcommands:
 | `--email-domain-overwrite` | Rewrite all emails to use this domain (e.g. `passport.xyz`); mutually exclusive with `--email-template` | |
 | `--email-template` | Generate emails from a template with function placeholders (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
 | `--append` | Append to existing output CSV instead of overwriting; deduplicates on `login` (existing rows win) | `true` |
+| `--source` | Import source identifier set on each record's `import_source` field | |
 
 #### Email Template Functions
 
@@ -1021,6 +1022,7 @@ In addition to [expr built-in functions](https://expr-lang.org/docs/language-def
 |---|---|---|
 | `splitTrim(s [, sep])` | Splits a string by `sep` (default: `,`), trims whitespace from each element, and removes empty entries. Returns an array. | `join(splitTrim(Sections), "\|")` → `"News\|Sports\|Opinion"` |
 | `without(a, b)` | Returns elements in array `a` that are not in array `b` (set difference). | `without(splitTrim(ALL, ","), splitTrim(Sections))` → categories not in user's sections |
+| `sprintf(format, args...)` | Formats a string using Go `fmt.Sprintf` syntax. | `sprintf("Substack subscriber type, %s", Type)` |
 
 **Constants (`--const` / `-c`):**
 
@@ -1057,7 +1059,7 @@ Column values can be:
 - **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and constants are available as variables
 - **bool/number** — a static value applied to every row
 
-Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`.
+Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
 
 **Example config file (`substack-mapping.json`):**
 

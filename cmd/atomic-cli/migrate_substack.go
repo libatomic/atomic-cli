@@ -140,7 +140,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	// instance is only required when creating plans or using existing plans
 	requireInstance := createPlans || subscriberPlan != ""
 
-	dryRun, output, prorate, rewriter, appendMode, err := validateMigrateFlags(cmd, requireInstance)
+	dryRun, output, prorate, rewriter, appendMode, _, err := validateMigrateFlags(cmd, requireInstance)
 	if err != nil {
 		return err
 	}
@@ -273,19 +273,19 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		subscriberOutput := fmt.Sprintf("%s-subscribers%s", base, ext)
 		founderOutput := fmt.Sprintf("%s-founders%s", base, ext)
 
-		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode); err != nil {
+		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe"); err != nil {
 			return fmt.Errorf("failed to write subscriber CSV: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d subscriber records to %s\n", len(subscriberRecords), subscriberOutput)
 
 		if len(founderRecords) > 0 {
-			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode); err != nil {
+			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe"); err != nil {
 				return fmt.Errorf("failed to write founder CSV: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "wrote %d founder records to %s\n", len(founderRecords), founderOutput)
 		}
 	} else {
-		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode); err != nil {
+		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode, "substack-stripe"); err != nil {
 			return fmt.Errorf("failed to write CSV: %w", err)
 		}
 

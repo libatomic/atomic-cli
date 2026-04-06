@@ -29,25 +29,38 @@ import (
 	"github.com/expr-lang/expr/vm"
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/util"
 	"github.com/urfave/cli/v3"
 )
 
 type (
-	// convertMapping maps UserImportRecord field names to source CSV column names.
-	// Multiple target fields can reference the same source column.
+	// convertMappingFile is the JSON config file format for the map command.
 	//
 	// Example:
 	//
 	//	{
-	//	  "login": "email",
-	//	  "email": "email",
-	//	  "name": "name",
-	//	  "email_verified": true
+	//	  "consts": {
+	//	    "ALL_SECTIONS": "News,Sports,Opinion,Tech"
+	//	  },
+	//	  "filter": "Type != \"Comp\"",
+	//	  "columns": {
+	//	    "login": "trim(lower(Email))",
+	//	    "email": "Email",
+	//	    "name": "Name",
+	//	    "category_opt_out": "join(without(splitTrim(ALL_SECTIONS, \",\"), splitTrim(Sections, \",\")), \"|\")",
+	//	    "email_verified": true
+	//	  }
 	//	}
-	//
-	// Values can be:
-	//   - string: the source CSV column name to read from
-	//   - bool/number/etc: a static value applied to every row
+	convertMappingFile struct {
+		// Consts defines string constants available in all expressions
+		Consts map[string]string `json:"consts,omitempty"`
+		// Filter is an expr expression that must evaluate to bool; only matching rows are included
+		Filter string `json:"filter,omitempty"`
+		// Columns maps UserImportRecord field names to expr expressions or static values
+		Columns map[string]any `json:"columns"`
+	}
+
+	// convertMapping is the resolved column mapping (used by both inline and file modes)
 	convertMapping map[string]any
 )
 
@@ -66,13 +79,17 @@ var (
 			Usage:   "JSON mapping file path",
 		},
 		&cli.StringSliceFlag{
-			Name:    "mapping",
-			Aliases: []string{"m"},
-			Usage:   "inline field mappings as target=SourceColumn pairs (e.g. -m login=Email -m name=Name); can also use semicolons: -m 'login=Email; name=Name'",
+			Name:    "columns",
+			Aliases: []string{"c"},
+			Usage:   "inline column mappings as target=expression pairs (e.g. -c login=Email -c 'name=trim(Name)'); can also use semicolons: -c 'login=Email; name=Name'",
 		},
 		&cli.StringFlag{
 			Name:  "filter",
 			Usage: "expression to filter rows (columns available as variables, e.g. 'STRIPE_CUSTOMER_ID == \"\" && STRIPE_SUBSCRIPTION_ID == \"\"')",
+		},
+		&cli.StringSliceFlag{
+			Name:  "const",
+			Usage: "define constants for use in expressions as NAME=value (e.g. --const 'ALL_CATS=News,Sports,Opinion')",
 		},
 	)
 
@@ -166,30 +183,42 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 
 	inputPath := cmd.String("input")
 	mappingFilePath := cmd.String("file")
-	inlineMappings := cmd.StringSlice("mapping")
+	inlineColumns := cmd.StringSlice("columns")
 
-	if mappingFilePath == "" && len(inlineMappings) == 0 {
-		return fmt.Errorf("either --file or --mapping is required")
+	if mappingFilePath == "" && len(inlineColumns) == 0 {
+		return fmt.Errorf("either --file or --columns is required")
 	}
-	if mappingFilePath != "" && len(inlineMappings) > 0 {
-		return fmt.Errorf("--file and --mapping are mutually exclusive")
+	if mappingFilePath != "" && len(inlineColumns) > 0 {
+		return fmt.Errorf("--file and --columns are mutually exclusive")
 	}
 
-	var mapping convertMapping
+	var (
+		mapping    convertMapping
+		fileConsts map[string]string
+		fileFilter string
+	)
 
 	if mappingFilePath != "" {
-		// load from JSON file
+		// load from JSON config file
 		mappingData, err := os.ReadFile(mappingFilePath)
 		if err != nil {
 			return fmt.Errorf("failed to read mapping file: %w", err)
 		}
-		if err := json.Unmarshal(mappingData, &mapping); err != nil {
+
+		var mf convertMappingFile
+		if err := json.Unmarshal(mappingData, &mf); err != nil {
 			return fmt.Errorf("failed to parse mapping file: %w", err)
 		}
+		if mf.Columns == nil || len(mf.Columns) == 0 {
+			return fmt.Errorf("mapping file must have a \"columns\" object")
+		}
+		mapping = mf.Columns
+		fileConsts = mf.Consts
+		fileFilter = mf.Filter
 	} else {
-		// parse inline mappings: each entry can be "target=Source" or "target=Source; target2=Source2"
+		// parse inline columns: each entry can be "target=expr" or "target=expr; target2=expr2"
 		mapping = make(convertMapping)
-		for _, entry := range inlineMappings {
+		for _, entry := range inlineColumns {
 			parts := strings.Split(entry, ";")
 			for _, part := range parts {
 				part = strings.TrimSpace(part)
@@ -245,54 +274,84 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		headerIndex[strings.TrimSpace(strings.ToLower(h))] = i
 	}
 
-	// validate that all column references in the mapping exist in the source CSV
-	for targetField, sourceVal := range mapping {
-		sourceCol, ok := sourceVal.(string)
-		if !ok {
-			continue // static value, not a column reference
-		}
-		if _, exists := headerIndex[strings.ToLower(sourceCol)]; !exists {
-			return fmt.Errorf("mapping field %q references source column %q which does not exist in the input CSV; available columns: %s",
-				targetField, sourceCol, strings.Join(headers, ", "))
-		}
+	// build expr environment from CSV headers so expressions can reference columns
+	exprEnv := make(map[string]any, len(headers))
+	for _, h := range headers {
+		exprEnv[h] = ""
 	}
 
-	// build the resolved mapping: target field -> (column index or static value)
+	// splitTrim splits a string by a delimiter and trims whitespace from each element
+	exprEnv["splitTrim"] = func(s, sep string) []string {
+		parts := strings.Split(s, sep)
+		var result []string
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				result = append(result, p)
+			}
+		}
+		return result
+	}
+
+	// without returns elements in a that are not in b (set difference)
+	exprEnv["without"] = func(a, b []string) []string {
+		return util.Slice[string](a).Without(b...)
+	}
+
+	// add consts from file first, then CLI flags (CLI wins on conflict)
+	for name, value := range fileConsts {
+		exprEnv[name] = value
+	}
+	for _, c := range cmd.StringSlice("const") {
+		kv := strings.SplitN(c, "=", 2)
+		if len(kv) != 2 {
+			return fmt.Errorf("invalid --const %q: expected NAME=value", c)
+		}
+		name := strings.TrimSpace(kv[0])
+		value := strings.TrimSpace(kv[1])
+		if name == "" {
+			return fmt.Errorf("invalid --const %q: name must not be empty", c)
+		}
+		exprEnv[name] = value
+	}
+
+	// build the resolved mapping: target field -> compiled expr program or static value
 	type fieldSource struct {
-		colIndex int    // >= 0 means read from this column
-		static   string // used when colIndex < 0
+		program *vm.Program // non-nil for expr-based mappings
+		static  string      // used when program is nil
 	}
 
 	resolved := make(map[string]fieldSource)
 	for targetField, sourceVal := range mapping {
 		switch v := sourceVal.(type) {
 		case string:
-			idx := headerIndex[strings.ToLower(v)]
-			resolved[targetField] = fieldSource{colIndex: idx}
+			program, err := expr.Compile(v, expr.Env(exprEnv))
+			if err != nil {
+				return fmt.Errorf("mapping field %q: invalid expression %q: %w", targetField, v, err)
+			}
+			resolved[targetField] = fieldSource{program: program}
 		case bool:
 			if v {
-				resolved[targetField] = fieldSource{colIndex: -1, static: "true"}
+				resolved[targetField] = fieldSource{static: "true"}
 			} else {
-				resolved[targetField] = fieldSource{colIndex: -1, static: "false"}
+				resolved[targetField] = fieldSource{static: "false"}
 			}
 		case float64:
-			resolved[targetField] = fieldSource{colIndex: -1, static: fmt.Sprintf("%g", v)}
+			resolved[targetField] = fieldSource{static: fmt.Sprintf("%g", v)}
 		default:
-			resolved[targetField] = fieldSource{colIndex: -1, static: fmt.Sprintf("%v", v)}
+			resolved[targetField] = fieldSource{static: fmt.Sprintf("%v", v)}
 		}
 	}
 
-	// compile filter expression if provided
+	// compile filter expression: CLI --filter takes precedence over file filter
 	filterExpr := cmd.String("filter")
+	if filterExpr == "" {
+		filterExpr = fileFilter
+	}
 	var filterProgram *vm.Program
 	if filterExpr != "" {
-		// build env from headers so expr knows the variable types
-		env := make(map[string]any, len(headers))
-		for _, h := range headers {
-			env[h] = ""
-		}
 		var compileErr error
-		filterProgram, compileErr = expr.Compile(filterExpr, expr.Env(env), expr.AsBool())
+		filterProgram, compileErr = expr.Compile(filterExpr, expr.Env(exprEnv), expr.AsBool())
 		if compileErr != nil {
 			return fmt.Errorf("invalid filter expression: %w", compileErr)
 		}
@@ -304,17 +363,19 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	filtered := 0
 
 	for _, row := range allRows[1:] {
+		// build row environment for expr evaluation (shared by filter and mappings)
+		rowEnv := make(map[string]any, len(headers))
+		for i, h := range headers {
+			if i < len(row) {
+				rowEnv[h] = row[i]
+			} else {
+				rowEnv[h] = ""
+			}
+		}
+
 		// apply filter
 		if filterProgram != nil {
-			env := make(map[string]any, len(headers))
-			for i, h := range headers {
-				if i < len(row) {
-					env[h] = row[i]
-				} else {
-					env[h] = ""
-				}
-			}
-			result, err := expr.Run(filterProgram, env)
+			result, err := expr.Run(filterProgram, rowEnv)
 			if err != nil {
 				return fmt.Errorf("filter evaluation failed: %w", err)
 			}
@@ -328,9 +389,13 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 
 		for targetField, src := range resolved {
 			var val string
-			if src.colIndex >= 0 && src.colIndex < len(row) {
-				val = row[src.colIndex]
-			} else if src.colIndex < 0 {
+			if src.program != nil {
+				result, err := expr.Run(src.program, rowEnv)
+				if err != nil {
+					return fmt.Errorf("mapping field %q: expression evaluation failed on row %d: %w", targetField, len(records)+skipped+filtered+1, err)
+				}
+				val = fmt.Sprintf("%v", result)
+			} else {
 				val = src.static
 			}
 

@@ -991,23 +991,47 @@ atomic-cli migrate map [options]
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
 | `--input`, `--in` | Input CSV file path | *required* |
-| `--mapping`, `-m` | Inline field mappings as `target=SourceColumn` pairs (repeatable, or semicolon-separated) | |
-| `--file`, `-f` | JSON mapping file path (mutually exclusive with `--mapping`) | |
+| `--columns`, `-c` | Inline column mappings as `target=expression` pairs (repeatable, or semicolon-separated) | |
+| `--file`, `-f` | JSON mapping file path (mutually exclusive with `--columns`) | |
 | `--filter` | Expression to filter rows (only matching rows are included) | |
+| `--const` | Define constants for use in expressions as `NAME=value` (repeatable) | |
 
-Either `--mapping` or `--file` is required.
+Either `--columns` or `--file` is required.
 
-**Inline mappings (`--mapping` / `-m`):**
+**Inline columns (`--columns` / `-c`):**
 
-Map fields directly on the command line. Each mapping is `target=SourceColumn` where `target` is a `UserImportRecord` field name and `SourceColumn` is the column header in the input CSV. Use `true`/`false` for static boolean values.
+Map fields directly on the command line. Each mapping is `target=expression` where `target` is a `UserImportRecord` field name and `expression` is an [expr](https://github.com/expr-lang/expr) expression. CSV column names are available as variables. A bare column name (e.g. `Email`) returns the column value directly. Use `true`/`false` for static boolean values.
 
 ```bash
-# Repeatable flag
--m login=Email -m name=Name -m email_verified=true
+# Simple column mapping
+-c login=Email -c name=Name -c email_verified=true
+
+# With expressions
+-c 'login=trim(lower(Email))' -c 'name=trim(First_Name) + " " + trim(Last_Name)'
 
 # Semicolon-separated
--m 'login=Email; name=Name; email_verified=true'
+-c 'login=trim(lower(Email)); name=Name; email_verified=true'
 ```
+
+**Custom functions:**
+
+In addition to [expr built-in functions](https://expr-lang.org/docs/language-definition#built-in-functions), the following custom functions are available in both mapping expressions and filter expressions:
+
+| Function | Description | Example |
+|---|---|---|
+| `splitTrim(s, sep)` | Splits a string by `sep`, trims whitespace from each element, and removes empty entries. Returns an array. | `join(splitTrim(Sections, ","), "\|")` → `"News\|Sports\|Opinion"` |
+| `without(a, b)` | Returns elements in array `a` that are not in array `b` (set difference). | `without(splitTrim(ALL, ","), splitTrim(Sections, ","))` → categories not in user's sections |
+
+**Constants (`--const` / `-c`):**
+
+Define string constants for use in expressions. Useful for defining a master list to compare against per-row values.
+
+```bash
+--const 'ALL_SECTIONS=News,Sports,Opinion,Tech' \
+-c 'category_opt_out=join(without(splitTrim(ALL_SECTIONS, ","), splitTrim(Sections, ",")), "|")'
+```
+
+This computes the categories the user does NOT have by subtracting their `Sections` from the full list, and joins the result with pipes for `category_opt_out`.
 
 **Filter expressions:**
 
@@ -1020,12 +1044,18 @@ Examples:
 
 **JSON mapping file format (`--file`):**
 
-The mapping file is a JSON object where keys are `UserImportRecord` field names (using their `csv` tag names) and values are either:
+The mapping file is a JSON object with three optional top-level keys:
 
-- **string** — the source CSV column name to read from
+| Key | Type | Description |
+|---|---|---|
+| `consts` | object | String constants available in all expressions (same as `--const`) |
+| `filter` | string | Expr filter expression (same as `--filter`; CLI flag takes precedence) |
+| `columns` | object | **(required)** Column mappings — keys are target field names, values are expr expressions or static values |
+
+Column values can be:
+
+- **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and constants are available as variables
 - **bool/number** — a static value applied to every row
-
-Multiple target fields can reference the same source column. For example, `login` and `email` can both map to the source `email` column.
 
 Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`.
 
@@ -1033,14 +1063,21 @@ Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `ph
 
 ```json
 {
-  "login": "email",
-  "email": "email",
-  "name": "name",
-  "email_verified": false
+  "consts": {
+    "ALL_SECTIONS": "The Ankler,Entertainment Strategy Guy,The Wakeup,Sports"
+  },
+  "filter": "Type != \"Comp\"",
+  "columns": {
+    "login": "trim(lower(Email))",
+    "email": "Email",
+    "name": "Name",
+    "category_opt_out": "join(without(splitTrim(ALL_SECTIONS, \",\"), splitTrim(Sections, \",\")), \"|\")",
+    "email_verified": false
+  }
 }
 ```
 
-This maps the source CSV's `email` column to both `login` and `email` in the output, the `name` column to `name`, and sets `email_verified` to `false` for every row.
+
 
 **Examples:**
 
@@ -1048,7 +1085,7 @@ This maps the source CSV's `email` column to both `login` and `email` in the out
 # Inline mapping with filter
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  -m 'login=email; email=email; name=name; email_verified=false' \
+  -c 'login=email; email=email; name=name; email_verified=false' \
   --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./free-users.csv
 
@@ -1068,7 +1105,7 @@ atomic-cli migrate substack \
 
 atomic-cli migrate map \
   --input ./substack-free-subscribers.csv \
-  -m 'login=email; email=email; name=name' \
+  -c 'login=email; email=email; name=name' \
   --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./merged-users.csv
 

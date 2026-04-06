@@ -47,13 +47,13 @@ type (
 	//	    "login": "trim(lower(Email))",
 	//	    "email": "Email",
 	//	    "name": "Name",
-	//	    "category_opt_out": "join(without(splitTrim(ALL_SECTIONS, \",\"), splitTrim(Sections, \",\")), \"|\")",
+	//	    "category_opt_out": "join(without(splitTrim(ALL_SECTIONS), splitTrim(Sections)), \"|\")",
 	//	    "email_verified": true
 	//	  }
 	//	}
 	convertMappingFile struct {
-		// Consts defines string constants available in all expressions
-		Consts map[string]string `json:"consts,omitempty"`
+		// Consts defines constants available in all expressions (string or []string)
+		Consts map[string]any `json:"const,omitempty"`
 		// Filter is an expr expression that must evaluate to bool; only matching rows are included
 		Filter string `json:"filter,omitempty"`
 		// Columns maps UserImportRecord field names to expr expressions or static values
@@ -74,14 +74,14 @@ var (
 			Required: true,
 		},
 		&cli.StringFlag{
-			Name:    "file",
-			Aliases: []string{"f"},
+			Name:    "config",
+			Aliases: []string{"c"},
 			Usage:   "JSON mapping file path",
 		},
 		&cli.StringSliceFlag{
 			Name:    "columns",
-			Aliases: []string{"c"},
-			Usage:   "inline column mappings as target=expression pairs (e.g. -c login=Email -c 'name=trim(Name)'); can also use semicolons: -c 'login=Email; name=Name'",
+			Aliases: []string{"col"},
+			Usage:   "inline column mappings as target=expression pairs (e.g. -col login=Email -col 'name=trim(Name)'); can also use semicolons: -col 'login=Email; name=Name'",
 		},
 		&cli.StringFlag{
 			Name:  "filter",
@@ -182,19 +182,19 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	inputPath := cmd.String("input")
-	mappingFilePath := cmd.String("file")
+	mappingFilePath := cmd.String("config")
 	inlineColumns := cmd.StringSlice("columns")
 
 	if mappingFilePath == "" && len(inlineColumns) == 0 {
-		return fmt.Errorf("either --file or --columns is required")
+		return fmt.Errorf("either --config or --columns is required")
 	}
 	if mappingFilePath != "" && len(inlineColumns) > 0 {
-		return fmt.Errorf("--file and --columns are mutually exclusive")
+		return fmt.Errorf("--config and --columns are mutually exclusive")
 	}
 
 	var (
 		mapping    convertMapping
-		fileConsts map[string]string
+		fileConsts map[string]any
 		fileFilter string
 	)
 
@@ -280,8 +280,22 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		exprEnv[h] = ""
 	}
 
-	// splitTrim splits a string by a delimiter and trims whitespace from each element
-	exprEnv["splitTrim"] = func(s, sep string) []string {
+	// splitTrim splits a string by a delimiter (default: comma) and trims whitespace from each element
+	exprEnv["splitTrim"] = func(args ...any) ([]string, error) {
+		if len(args) < 1 || len(args) > 2 {
+			return nil, fmt.Errorf("splitTrim expects 1 or 2 arguments, got %d", len(args))
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("splitTrim: first argument must be a string")
+		}
+		sep := ","
+		if len(args) == 2 {
+			sep, ok = args[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("splitTrim: second argument must be a string")
+			}
+		}
 		parts := strings.Split(s, sep)
 		var result []string
 		for _, p := range parts {
@@ -290,7 +304,7 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 				result = append(result, p)
 			}
 		}
-		return result
+		return result, nil
 	}
 
 	// without returns elements in a that are not in b (set difference)
@@ -300,7 +314,16 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
 	for name, value := range fileConsts {
-		exprEnv[name] = value
+		// JSON arrays decode as []any — convert to []string for expr compatibility
+		if arr, ok := value.([]any); ok {
+			strs := make([]string, 0, len(arr))
+			for _, v := range arr {
+				strs = append(strs, fmt.Sprintf("%v", v))
+			}
+			exprEnv[name] = strs
+		} else {
+			exprEnv[name] = value
+		}
 	}
 	for _, c := range cmd.StringSlice("const") {
 		kv := strings.SplitN(c, "=", 2)
@@ -508,4 +531,3 @@ func validateMapping(mapping convertMapping) error {
 
 	return nil
 }
-

@@ -991,26 +991,26 @@ atomic-cli migrate map [options]
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
 | `--input`, `--in` | Input CSV file path | *required* |
-| `--columns`, `-c` | Inline column mappings as `target=expression` pairs (repeatable, or semicolon-separated) | |
-| `--file`, `-f` | JSON mapping file path (mutually exclusive with `--columns`) | |
+| `--config`, `-c` | JSON mapping config file path (mutually exclusive with `--columns`) | |
+| `--columns`, `--col` | Inline column mappings as `target=expression` pairs (repeatable, or semicolon-separated) | |
 | `--filter` | Expression to filter rows (only matching rows are included) | |
 | `--const` | Define constants for use in expressions as `NAME=value` (repeatable) | |
 
-Either `--columns` or `--file` is required.
+Either `--config` or `--columns` is required.
 
-**Inline columns (`--columns` / `-c`):**
+**Inline columns (`--columns` / `--col`):**
 
 Map fields directly on the command line. Each mapping is `target=expression` where `target` is a `UserImportRecord` field name and `expression` is an [expr](https://github.com/expr-lang/expr) expression. CSV column names are available as variables. A bare column name (e.g. `Email`) returns the column value directly. Use `true`/`false` for static boolean values.
 
 ```bash
 # Simple column mapping
--c login=Email -c name=Name -c email_verified=true
+--col login=Email --col name=Name --col email_verified=true
 
 # With expressions
--c 'login=trim(lower(Email))' -c 'name=trim(First_Name) + " " + trim(Last_Name)'
+--col 'login=trim(lower(Email))' --col 'name=trim(First_Name) + " " + trim(Last_Name)'
 
 # Semicolon-separated
--c 'login=trim(lower(Email)); name=Name; email_verified=true'
+--col 'login=trim(lower(Email)); name=Name; email_verified=true'
 ```
 
 **Custom functions:**
@@ -1019,8 +1019,8 @@ In addition to [expr built-in functions](https://expr-lang.org/docs/language-def
 
 | Function | Description | Example |
 |---|---|---|
-| `splitTrim(s, sep)` | Splits a string by `sep`, trims whitespace from each element, and removes empty entries. Returns an array. | `join(splitTrim(Sections, ","), "\|")` → `"News\|Sports\|Opinion"` |
-| `without(a, b)` | Returns elements in array `a` that are not in array `b` (set difference). | `without(splitTrim(ALL, ","), splitTrim(Sections, ","))` → categories not in user's sections |
+| `splitTrim(s [, sep])` | Splits a string by `sep` (default: `,`), trims whitespace from each element, and removes empty entries. Returns an array. | `join(splitTrim(Sections), "\|")` → `"News\|Sports\|Opinion"` |
+| `without(a, b)` | Returns elements in array `a` that are not in array `b` (set difference). | `without(splitTrim(ALL, ","), splitTrim(Sections))` → categories not in user's sections |
 
 **Constants (`--const` / `-c`):**
 
@@ -1028,7 +1028,7 @@ Define string constants for use in expressions. Useful for defining a master lis
 
 ```bash
 --const 'ALL_SECTIONS=News,Sports,Opinion,Tech' \
--c 'category_opt_out=join(without(splitTrim(ALL_SECTIONS, ","), splitTrim(Sections, ",")), "|")'
+--col 'category_opt_out=join(without(splitTrim(ALL_SECTIONS), splitTrim(Sections)), "|")'
 ```
 
 This computes the categories the user does NOT have by subtracting their `Sections` from the full list, and joins the result with pipes for `category_opt_out`.
@@ -1042,13 +1042,13 @@ Examples:
 - `'STRIPE_CUSTOMER_ID != ""'` — only rows with a Stripe customer
 - `'IS_GROUP_PARENT == "TRUE"'` — only group parent rows
 
-**JSON mapping file format (`--file`):**
+**Config file format (`--config`):**
 
-The mapping file is a JSON object with three optional top-level keys:
+The config file is a JSON object with three top-level keys:
 
 | Key | Type | Description |
 |---|---|---|
-| `consts` | object | String constants available in all expressions (same as `--const`) |
+| `const` | object | Constants available in all expressions — values can be strings or string arrays (same as `--const` for strings) |
 | `filter` | string | Expr filter expression (same as `--filter`; CLI flag takes precedence) |
 | `columns` | object | **(required)** Column mappings — keys are target field names, values are expr expressions or static values |
 
@@ -1059,19 +1059,19 @@ Column values can be:
 
 Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`.
 
-**Example mapping file (`substack-mapping.json`):**
+**Example config file (`substack-mapping.json`):**
 
 ```json
 {
-  "consts": {
-    "ALL_SECTIONS": "The Ankler,Entertainment Strategy Guy,The Wakeup,Sports"
+  "const": {
+    "ALL_SECTIONS": ["The Ankler", "Entertainment Strategy Guy", "The Wakeup", "Sports"]
   },
   "filter": "Type != \"Comp\"",
   "columns": {
     "login": "trim(lower(Email))",
     "email": "Email",
     "name": "Name",
-    "category_opt_out": "join(without(splitTrim(ALL_SECTIONS, \",\"), splitTrim(Sections, \",\")), \"|\")",
+    "category_opt_out": "join(without(ALL_SECTIONS, splitTrim(Sections, \",\")), \"|\")",
     "email_verified": false
   }
 }
@@ -1085,14 +1085,14 @@ Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `ph
 # Inline mapping with filter
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  -c 'login=email; email=email; name=name; email_verified=false' \
+  --col 'login=email; email=email; name=name; email_verified=false' \
   --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./free-users.csv
 
-# Using a JSON mapping file
+# Using a config file
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  -f ./substack-mapping.json \
+  -c ./substack-mapping.json \
   --output ./all-users.csv
 
 # Append free users to an existing paid subscriber CSV (default: --append=true)
@@ -1105,14 +1105,14 @@ atomic-cli migrate substack \
 
 atomic-cli migrate map \
   --input ./substack-free-subscribers.csv \
-  -c 'login=email; email=email; name=name' \
+  --col 'login=email; email=email; name=name' \
   --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./merged-users.csv
 
 # Map with email rewriting for test environment
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  -f ./substack-mapping.json \
+  -c ./substack-mapping.json \
   --email-domain-overwrite passport.xyz \
   --output ./free-users-test.csv
 ```

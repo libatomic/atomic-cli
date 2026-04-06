@@ -69,7 +69,7 @@ var (
 		migrateCommonFlags,
 		&cli.StringFlag{
 			Name:     "input",
-			Aliases:  []string{"in"},
+			Aliases:  []string{"in", "f"},
 			Usage:    "input CSV file path",
 			Required: true,
 		},
@@ -235,12 +235,12 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 					return fmt.Errorf("invalid mapping %q: target and source must not be empty", part)
 				}
 				// check for static boolean/number values
-				lower := strings.ToLower(source)
-				if lower == "true" {
+				switch strings.ToLower(source) {
+				case "true":
 					mapping[target] = true
-				} else if lower == "false" {
+				case "false":
 					mapping[target] = false
-				} else {
+				default:
 					mapping[target] = source
 				}
 			}
@@ -280,37 +280,68 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		exprEnv[h] = ""
 	}
 
-	// splitTrim splits a string by a delimiter (default: comma) and trims whitespace from each element
-	exprEnv["splitTrim"] = func(args ...any) ([]string, error) {
-		if len(args) < 1 || len(args) > 2 {
-			return nil, fmt.Errorf("splitTrim expects 1 or 2 arguments, got %d", len(args))
-		}
-		s, ok := args[0].(string)
-		if !ok {
-			return nil, fmt.Errorf("splitTrim: first argument must be a string")
-		}
-		sep := ","
-		if len(args) == 2 {
-			sep, ok = args[1].(string)
+	// custom expr functions registered via expr.Function for proper variadic support
+	splitTrimFn := expr.Function(
+		"splitTrim",
+		func(params ...any) (any, error) {
+			s, ok := params[0].(string)
 			if !ok {
-				return nil, fmt.Errorf("splitTrim: second argument must be a string")
+				return nil, fmt.Errorf("splitTrim: first argument must be a string")
 			}
-		}
-		parts := strings.Split(s, sep)
-		var result []string
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				result = append(result, p)
+			sep := ","
+			if len(params) > 1 {
+				sep, ok = params[1].(string)
+				if !ok {
+					return nil, fmt.Errorf("splitTrim: second argument must be a string")
+				}
 			}
-		}
-		return result, nil
-	}
+			parts := strings.Split(s, sep)
+			var result []string
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					result = append(result, p)
+				}
+			}
+			return result, nil
+		},
+		// type signatures: splitTrim(string) and splitTrim(string, string)
+		func(s string) []string { return nil },
+		func(s, sep string) []string { return nil },
+	)
 
-	// without returns elements in a that are not in b (set difference)
-	exprEnv["without"] = func(a, b []string) []string {
-		return util.Slice[string](a).Without(b...)
-	}
+	withoutFn := expr.Function(
+		"without",
+		func(params ...any) (any, error) {
+			a, ok := params[0].([]string)
+			if !ok {
+				// expr may pass []any from array constants
+				if arr, ok2 := params[0].([]any); ok2 {
+					a = make([]string, len(arr))
+					for i, v := range arr {
+						a[i] = fmt.Sprintf("%v", v)
+					}
+				} else {
+					return nil, fmt.Errorf("without: first argument must be a string array")
+				}
+			}
+			b, ok := params[1].([]string)
+			if !ok {
+				if arr, ok2 := params[1].([]any); ok2 {
+					b = make([]string, len(arr))
+					for i, v := range arr {
+						b[i] = fmt.Sprintf("%v", v)
+					}
+				} else {
+					return nil, fmt.Errorf("without: second argument must be a string array")
+				}
+			}
+			return util.Slice[string](a).Without(b...), nil
+		},
+		func(a, b []string) []string { return nil },
+	)
+
+	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn}
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
 	for name, value := range fileConsts {
@@ -348,7 +379,7 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	for targetField, sourceVal := range mapping {
 		switch v := sourceVal.(type) {
 		case string:
-			program, err := expr.Compile(v, expr.Env(exprEnv))
+			program, err := expr.Compile(v, exprOpts...)
 			if err != nil {
 				return fmt.Errorf("mapping field %q: invalid expression %q: %w", targetField, v, err)
 			}
@@ -374,7 +405,7 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	var filterProgram *vm.Program
 	if filterExpr != "" {
 		var compileErr error
-		filterProgram, compileErr = expr.Compile(filterExpr, expr.Env(exprEnv), expr.AsBool())
+		filterProgram, compileErr = expr.Compile(filterExpr, append(exprOpts, expr.AsBool())...)
 		if compileErr != nil {
 			return fmt.Errorf("invalid filter expression: %w", compileErr)
 		}
@@ -386,8 +417,12 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	filtered := 0
 
 	for _, row := range allRows[1:] {
-		// build row environment for expr evaluation (shared by filter and mappings)
-		rowEnv := make(map[string]any, len(headers))
+		// build row environment for expr evaluation (shared by filter and mappings);
+		// start from the compile-time env (functions, constants) and overlay row values
+		rowEnv := make(map[string]any, len(exprEnv)+len(headers))
+		for k, v := range exprEnv {
+			rowEnv[k] = v
+		}
 		for i, h := range headers {
 			if i < len(row) {
 				rowEnv[h] = row[i]

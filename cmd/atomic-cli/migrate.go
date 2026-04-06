@@ -93,7 +93,7 @@ var (
 		},
 		&cli.StringFlag{
 			Name:    "output",
-			Aliases: []string{"out"},
+			Aliases: []string{"out", "o"},
 			Usage:   "output CSV file path",
 			Value:   "migrate_users.csv",
 		},

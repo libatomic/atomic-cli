@@ -61,15 +61,18 @@ var (
 			Required: true,
 		},
 		&cli.StringFlag{
-			Name:     "mapping",
-			Aliases:  []string{"m"},
-			Usage:    "JSON mapping file path",
-			Required: true,
+			Name:    "file",
+			Aliases: []string{"f"},
+			Usage:   "JSON mapping file path",
+		},
+		&cli.StringSliceFlag{
+			Name:    "mapping",
+			Aliases: []string{"m"},
+			Usage:   "inline field mappings as target=SourceColumn pairs (e.g. -m login=Email -m name=Name); can also use semicolons: -m 'login=Email; name=Name'",
 		},
 		&cli.StringFlag{
-			Name:    "filter",
-			Aliases: []string{"f"},
-			Usage:   "expression to filter rows (columns available as variables, e.g. 'STRIPE_CUSTOMER_ID == \"\" && STRIPE_SUBSCRIPTION_ID == \"\"')",
+			Name:  "filter",
+			Usage: "expression to filter rows (columns available as variables, e.g. 'STRIPE_CUSTOMER_ID == \"\" && STRIPE_SUBSCRIPTION_ID == \"\"')",
 		},
 	)
 
@@ -133,6 +136,20 @@ var (
 			v := strings.TrimSpace(val)
 			rec.StripeCustomerID = &v
 		},
+		"channel_opt_in": func(rec *atomic.UserImportRecord, val string) {
+			parts := strings.Split(val, "|")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			rec.ChannelOptIn = parts
+		},
+		"category_opt_out": func(rec *atomic.UserImportRecord, val string) {
+			parts := strings.Split(val, "|")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			rec.CategoryOptOut = parts
+		},
 	}
 )
 
@@ -148,17 +165,57 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	inputPath := cmd.String("input")
-	mappingPath := cmd.String("mapping")
+	mappingFilePath := cmd.String("file")
+	inlineMappings := cmd.StringSlice("mapping")
 
-	// load the mapping file
-	mappingData, err := os.ReadFile(mappingPath)
-	if err != nil {
-		return fmt.Errorf("failed to read mapping file: %w", err)
+	if mappingFilePath == "" && len(inlineMappings) == 0 {
+		return fmt.Errorf("either --file or --mapping is required")
+	}
+	if mappingFilePath != "" && len(inlineMappings) > 0 {
+		return fmt.Errorf("--file and --mapping are mutually exclusive")
 	}
 
 	var mapping convertMapping
-	if err := json.Unmarshal(mappingData, &mapping); err != nil {
-		return fmt.Errorf("failed to parse mapping file: %w", err)
+
+	if mappingFilePath != "" {
+		// load from JSON file
+		mappingData, err := os.ReadFile(mappingFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read mapping file: %w", err)
+		}
+		if err := json.Unmarshal(mappingData, &mapping); err != nil {
+			return fmt.Errorf("failed to parse mapping file: %w", err)
+		}
+	} else {
+		// parse inline mappings: each entry can be "target=Source" or "target=Source; target2=Source2"
+		mapping = make(convertMapping)
+		for _, entry := range inlineMappings {
+			parts := strings.Split(entry, ";")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				kv := strings.SplitN(part, "=", 2)
+				if len(kv) != 2 {
+					return fmt.Errorf("invalid mapping %q: expected target=SourceColumn", part)
+				}
+				target := strings.TrimSpace(kv[0])
+				source := strings.TrimSpace(kv[1])
+				if target == "" || source == "" {
+					return fmt.Errorf("invalid mapping %q: target and source must not be empty", part)
+				}
+				// check for static boolean/number values
+				lower := strings.ToLower(source)
+				if lower == "true" {
+					mapping[target] = true
+				} else if lower == "false" {
+					mapping[target] = false
+				} else {
+					mapping[target] = source
+				}
+			}
+		}
 	}
 
 	if err := validateMapping(mapping); err != nil {
@@ -371,7 +428,7 @@ func validateMapping(mapping convertMapping) error {
 		"login": true, "email": true, "email_verified": true, "email_opt_in": true,
 		"phone_number": true, "phone_number_verified": true, "phone_number_opt_in": true,
 		"billing_email": true, "billing_phone_number": true, "name": true, "roles": true,
-		"stripe_customer_id": true,
+		"stripe_customer_id": true, "channel_opt_in": true, "category_opt_out": true,
 	}
 
 	for field := range mapping {

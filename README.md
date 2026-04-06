@@ -980,7 +980,7 @@ The `--email-domain-overwrite` and `--email-template` flags rewrite every email 
 
 #### migrate map
 
-Maps and filters any third-party CSV into the Passport `UserImportRecord` format using a JSON mapping file. This is useful for sources that export subscriber data as a CSV with non-standard column names (e.g., Substack's free subscriber export). Multiple target fields can map to the same source column. Rows can be filtered using an [expr](https://github.com/expr-lang/expr) expression.
+Maps and filters any third-party CSV into the Passport `UserImportRecord` format using inline mappings or a JSON mapping file. This is useful for sources that export subscriber data as a CSV with non-standard column names (e.g., Substack's free subscriber export). Multiple target fields can map to the same source column. Rows can be filtered using an [expr](https://github.com/expr-lang/expr) expression.
 
 ```bash
 atomic-cli migrate map [options]
@@ -991,8 +991,23 @@ atomic-cli migrate map [options]
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
 | `--input`, `--in` | Input CSV file path | *required* |
-| `--mapping`, `-m` | JSON mapping file path | *required* |
-| `--filter`, `-f` | Expression to filter rows (only matching rows are included) | |
+| `--mapping`, `-m` | Inline field mappings as `target=SourceColumn` pairs (repeatable, or semicolon-separated) | |
+| `--file`, `-f` | JSON mapping file path (mutually exclusive with `--mapping`) | |
+| `--filter` | Expression to filter rows (only matching rows are included) | |
+
+Either `--mapping` or `--file` is required.
+
+**Inline mappings (`--mapping` / `-m`):**
+
+Map fields directly on the command line. Each mapping is `target=SourceColumn` where `target` is a `UserImportRecord` field name and `SourceColumn` is the column header in the input CSV. Use `true`/`false` for static boolean values.
+
+```bash
+# Repeatable flag
+-m login=Email -m name=Name -m email_verified=true
+
+# Semicolon-separated
+-m 'login=Email; name=Name; email_verified=true'
+```
 
 **Filter expressions:**
 
@@ -1003,7 +1018,7 @@ Examples:
 - `'STRIPE_CUSTOMER_ID != ""'` — only rows with a Stripe customer
 - `'IS_GROUP_PARENT == "TRUE"'` — only group parent rows
 
-**Mapping file format:**
+**JSON mapping file format (`--file`):**
 
 The mapping file is a JSON object where keys are `UserImportRecord` field names (using their `csv` tag names) and values are either:
 
@@ -1012,7 +1027,7 @@ The mapping file is a JSON object where keys are `UserImportRecord` field names 
 
 Multiple target fields can reference the same source column. For example, `login` and `email` can both map to the source `email` column.
 
-Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`.
+Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`.
 
 **Example mapping file (`substack-mapping.json`):**
 
@@ -1030,17 +1045,17 @@ This maps the source CSV's `email` column to both `login` and `email` in the out
 **Examples:**
 
 ```bash
-# Map a Substack free subscriber export (filter out users with Stripe data)
+# Inline mapping with filter
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  --mapping ./substack-mapping.json \
+  -m 'login=email; email=email; name=name; email_verified=false' \
   --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./free-users.csv
 
-# Map without filtering
+# Using a JSON mapping file
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  --mapping ./substack-mapping.json \
+  -f ./substack-mapping.json \
   --output ./all-users.csv
 
 # Append free users to an existing paid subscriber CSV (default: --append=true)
@@ -1053,14 +1068,14 @@ atomic-cli migrate substack \
 
 atomic-cli migrate map \
   --input ./substack-free-subscribers.csv \
-  --mapping ./substack-mapping.json \
+  -m 'login=email; email=email; name=name' \
   --filter 'STRIPE_CUSTOMER_ID == "" && STRIPE_SUBSCRIPTION_ID == ""' \
   --output ./merged-users.csv
 
 # Map with email rewriting for test environment
 atomic-cli migrate map \
   --input ./substack-subscribers.csv \
-  --mapping ./substack-mapping.json \
+  -f ./substack-mapping.json \
   --email-domain-overwrite passport.xyz \
   --output ./free-users-test.csv
 ```

@@ -852,8 +852,47 @@ Currently supported platforms:
 
 Additional tools:
 
-- **map** - Map and filter any third-party CSV to Passport user import format using a JSON mapping file
+- **map** - Map and filter any third-party CSV to Passport user import format using a config file or inline column mappings
 - **verify** - Validate a user import CSV and optionally deduplicate records
+
+#### User Import Record CSV Format
+
+All migrate subcommands output a CSV file with the following columns. This is the format expected by the Passport `user import` API.
+
+| Column | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `login` | string | Yes | — | The user's login identifier. Must be a valid email address. |
+| `email` | string | No | same as `login` | The user's distribution email address. |
+| `email_verified` | boolean | No | `false` | Whether the email address should be marked as verified. |
+| `email_opt_in` | boolean | No | `true` | Whether the user has opted in to email communications. |
+| `phone_number` | string | No | — | The user's phone number in E.164 format (e.g., `+15551234567`). |
+| `phone_number_verified` | boolean | No | `false` | Whether the phone number should be marked as verified. |
+| `phone_number_opt_in` | boolean | No | `false` | Whether the user has opted in to phone/SMS communications. |
+| `billing_email` | string | No | same as `email` | Billing email address. |
+| `billing_phone_number` | string | No | same as `phone_number` | Billing phone number in E.164 format. |
+| `name` | string | No | — | The user's display name. |
+| `roles` | string | No | `member` | Pipe-delimited roles (e.g., `member\|admin`). |
+| `stripe_customer_id` | string | No | — | An existing Stripe customer ID to link to the user's account. |
+| `subscription_plan_id` | string | No | — | The plan ID to subscribe the user to. |
+| `subscription_currency` | string | No | `usd` | The currency for the subscription. |
+| `subscription_quantity` | integer | No | `1` | The quantity for the subscription. |
+| `subscription_interval` | string | No | — | Billing interval: `month`, `year`, `once`. |
+| `subscription_anchor_date` | date | No | today | Billing cycle anchor. Format: `YYYYMMDD`. |
+| `subscription_end_at` | date-time | No | — | Subscription end date. Format: RFC 3339. |
+| `subscription_prorate` | boolean | No | `false` | If true, prorate the period between creation and anchor date. |
+| `discount_percentage` | float | No | — | Discount percentage to apply to the subscription. |
+| `discount_term` | string | No | — | Discount term: `once`, `repeating`, `forever`. |
+| `discount_duration_days` | integer | No | — | Discount duration in days. |
+| `is_team_owner` | boolean | No | `false` | Marks the user as a team owner. Requires `subscription_quantity > 1`. |
+| `team_key` | string | No | — | Groups users into teams. |
+| `channel_opt_in` | string | No | — | Channels the user opts in to, pipe-delimited (e.g., `email\|sms`). Channels not listed are opted out. Overrides `email_opt_in` and `phone_number_opt_in`. Values: `email`, `sms`, `web`, `rss`, `podcast`. |
+| `category_opt_out` | string | No | — | Categories the user opts out of, pipe-delimited (by name, slug, or ID). Listed categories are opted out across all channels. |
+| `import_comment` | string | No | — | A comment stored in the user's metadata as `import:comment`. |
+| `import_source` | string | No | — | Import source identifier stored in the user's metadata as `import:source`. |
+
+Boolean columns accept: `true`, `false`, `1`, `0`. Multi-value columns use the pipe (`|`) delimiter.
+
+All imported users automatically receive `import:date` in their metadata, set to the current UTC timestamp at the time the record is processed.
 
 #### Common Options
 

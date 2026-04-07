@@ -419,68 +419,93 @@ atomic-cli user delete user_1234567890abcdef
 
 #### Import Users
 
-Bulk-import users from a CSV file. The import is processed as a background job and supports subscriptions, Stripe customer linking, discounts, and more.
+Bulk-import users from a CSV file. The import is processed as a background job and supports subscriptions, Stripe customer linking, discounts, auto-subscribe plans, trials, teams, and notification preferences.
 
 ```bash
 atomic-cli user import <file> [options]
 ```
 
-**Options:**
-- `--mime_type` - MIME type of the import file (default: `text/csv`)
-- `--source` - Import source format: `atomic`, `ghost`, `substack`, etc. (default: `atomic`)
-- `--trial_plan_id` - Plan ID for trial subscriptions
-- `--trial_price_id` - Price ID for trial subscriptions
-- `--trial_end_at` - Trial end date
-- `--trial_existing_users` - Apply trial to existing users
-- `--user_email_verified` - Mark imported user emails as verified
-- `--source_params` - Path to a JSON file with source-specific parameters
-- `--import_audience_id` - Audience ID to add imported users to
-- `--import_audience_behavior` - Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users`
-- `--suppress_parent_triggers` - Suppress parent instance triggers during import
+All options can be provided via CLI flags, a JSON config file (`--config`), or both (CLI flags override config values).
 
-**Example:**
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `--config`, `-c` | JSON config file with import parameters | |
+| `--mime_type` | MIME type of the import file | `text/csv` |
+| `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
+| `--dry_run` | Preview import without creating or updating users | `false` |
+| `--update_existing_users` | Update existing users with CSV data | `false` |
+| `--validate_user_email` | Validate user email addresses | `true` |
+| `--user_email_verified` | Mark all imported user emails as verified | `false` |
+| `--suppress_events` | Suppress user events during import | `false` |
+| `--suppress_triggers` | Suppress parent triggers during import | `true` |
+| `--rebuild_audiences` | Rebuild audiences after import | `true` |
+| `--import_audience_id` | Audience ID to add imported users to | |
+| `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |
+| `--stripe_account_behavior` | Stripe account behavior: `existing`, `create`, `none` | `existing` |
+| `--subscribe_default_plans` | Subscribe new users to instance default plans | `true` |
+| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` | `non_subscribers` |
+| `--auto_subscribe_plans` | Plan IDs to auto-subscribe users to (repeatable) | |
+| `--auto_subscribe_behavior` | Auto subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
+| `--trial_plan_id` | Trial plan ID | |
+| `--trial_price_id` | Trial price ID | |
+| `--trial_end_at` | Trial end date/time | |
+| `--trial_existing_users` | Apply trial to existing users without a subscription | `false` |
+| `--trial_behavior` | Trial behavior: `all`, `non_subscribers`, `none` | `non_subscribers` |
+| `--default_discount_percentage` | Default discount percentage for subscriptions | |
+| `--default_discount_term` | Default discount term: `once`, `repeating`, `forever` | `forever` |
+| `--default_discount_duration_days` | Default discount duration in days | |
+| `--default_subscription_prorate` | Prorate subscriptions by default | `false` |
+| `--default_subscription_anchor_date` | Default subscription anchor date (YYYYMMDD) | |
+| `--create_teams` | Enable team import processing | `true` |
+| `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
+
+**Examples:**
+
 ```bash
+# Import with CLI flags
 atomic-cli user import migrate_users.csv \
   -i inst_abc123 \
-  --source atomic \
-  --user_email_verified
+  --user_email_verified \
+  --auto_subscribe_plans plan_abc123 \
+  --auto_subscribe_behavior all_users
+
+# Import with a JSON config file
+atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json
+
+# Config file overridden by CLI flag
+atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --dry_run
 ```
+
+**Example config file (`import-config.json`):**
+
+```json
+{
+  "dry_run": false,
+  "user_email_verified": true,
+  "subscribe_default_plans": true,
+  "auto_subscribe_plans": ["plan_abc123", "plan_def456"],
+  "auto_subscribe_behavior": "all_users",
+  "create_teams": true,
+  "team_limit_behavior": "drop_admin"
+}
+```
+
+##### CSV Validation
+
+Before calling the API, the CLI validates the input CSV locally — checking per-record structural validity and uniqueness on `login`, `email`, `phone_number`, and `stripe_customer_id`. If validation fails, the import is aborted with a summary. Run `migrate verify --verbose` for detailed per-row error reporting.
 
 ##### CSV Format
 
-The import CSV uses the `UserImportRecord` format. All fields except `login` are optional:
-
-| Column | Description | Default |
-|------------------------|----------------------------------------------|---------|
-| `login` | User login (must be a valid email address) | *required* |
-| `email` | Distribution email address | login |
-| `email_verified` | Mark email as verified | `false` |
-| `email_opt_in` | Mark email as opted in | `true` |
-| `name` | Display name | |
-| `roles` | Pipe-delimited roles (e.g. `member\|admin`) | `member` |
-| `phone_number` | Phone number (E.164 format) | |
-| `phone_number_verified` | Mark phone as verified | `false` |
-| `billing_email` | Billing email address | email |
-| `billing_phone_number` | Billing phone number | phone_number |
-| `stripe_customer_id` | Stripe customer ID to link | |
-| `subscription_plan_id` | Passport plan ID to subscribe to | |
-| `subscription_currency` | Subscription currency (ISO 4217) | `usd` |
-| `subscription_quantity` | Subscription seat quantity | `1` |
-| `subscription_interval` | Billing interval: `month` or `year` | |
-| `subscription_anchor_date` | Billing anchor date (`YYYYMMDD`) | today |
-| `subscription_end_at` | Subscription cancellation date (RFC 3339) | |
-| `subscription_prorate` | Prorate the subscription | `false` |
-| `discount_percentage` | Coupon discount percentage (0-100) | |
-| `discount_term` | Discount duration: `forever`, `once`, `repeating` | |
-| `is_team_owner` | Mark user as team owner; requires subscription with quantity > 1 | `false` |
-| `team_key` | Arbitrary key to group users into teams (e.g. `team-1`) | |
+See [User Import Record CSV Format](#user-import-record-csv-format) for the full column reference.
 
 **Team imports:** When `create_teams` is enabled on the import job (default `true`), records with a `team_key` are grouped. The team owner (`is_team_owner=true`) must have a subscription with `subscription_quantity > 1`. Team members (same `team_key`, `is_team_owner` not set) do not get their own subscription — instead they receive an entitlement to the team owner's subscription, consuming one seat. Records are automatically sorted so team owners are processed before their members. The owner occupies 1 seat; each team member consumes 1 additional seat. For the `migrate substack` command, subscriptions with `metadata["is_group"]="true"` are automatically marked as team owners with the Stripe subscription ID as the `team_key`.
 
-**Team limit behavior** (`team_limit_behavior` API parameter, default `drop_admin`): controls what happens when the number of team members exceeds the subscription quantity. Set on the import job, not per CSV row.
+**Team limit behavior** (`team_limit_behavior`, default `drop_admin`): controls what happens when the number of team members exceeds the subscription quantity.
 
-| Behavior                          | Description                                                              |
-|-----------------------------------|--------------------------------------------------------------------------|
+| Behavior | Description |
+|---|---|
 | `drop_admin` | The first user over the limit causes the admin/owner's own entitlement to be dropped, freeing one seat for the member. Subsequent users over the limit are dropped (same as `drop_user`). |
 | `drop_user` | Users over the seat limit are skipped entirely — no entitlement is created. |
 | `expand_subscription` | The subscription quantity is automatically increased to accommodate all team members. |
@@ -1034,7 +1059,7 @@ atomic-cli migrate map [options]
 | `--config`, `-c` | JSON mapping config file path (mutually exclusive with `--columns`) | |
 | `--columns`, `--col` | Inline column mappings as `target=expression` pairs (repeatable, or semicolon-separated) | |
 | `--filter` | Expression to filter rows (only matching rows are included) | |
-| `--const` | Define constants for use in expressions as `NAME=value` (repeatable) | |
+| `--vars` | Define variables for use in expressions as `NAME=value` (repeatable) | |
 
 Either `--config` or `--columns` is required.
 
@@ -1063,12 +1088,12 @@ In addition to [expr built-in functions](https://expr-lang.org/docs/language-def
 | `without(a, b)` | Returns elements in array `a` that are not in array `b` (set difference). | `without(splitTrim(ALL, ","), splitTrim(Sections))` → categories not in user's sections |
 | `sprintf(format, args...)` | Formats a string using Go `fmt.Sprintf` syntax. | `sprintf("Substack subscriber type, %s", Type)` |
 
-**Constants (`--const` / `-c`):**
+**Variables (`--vars`):**
 
-Define string constants for use in expressions. Useful for defining a master list to compare against per-row values.
+Define string variables for use in expressions. Useful for defining a master list to compare against per-row values.
 
 ```bash
---const 'ALL_SECTIONS=News,Sports,Opinion,Tech' \
+--vars 'ALL_SECTIONS=News,Sports,Opinion,Tech' \
 --col 'category_opt_out=join(without(splitTrim(ALL_SECTIONS), splitTrim(Sections)), "|")'
 ```
 
@@ -1085,35 +1110,77 @@ Examples:
 
 **Config file format (`--config`):**
 
-The config file is a JSON object with three top-level keys:
+The config file is a JSON object with the following top-level keys:
 
 | Key | Type | Description |
 |---|---|---|
-| `const` | object | Constants available in all expressions — values can be strings or string arrays (same as `--const` for strings) |
-| `filter` | string | Expr filter expression (same as `--filter`; CLI flag takes precedence) |
+| `vars` | object | Variables available in all expressions — values can be strings or string arrays |
+| `filter` | string | Global expr filter expression applied to all rows before output routing |
+| `options` | object | Shared settings (see below) |
+| `outputs` | array | Multiple output files with per-output filters (mutually exclusive with `--output`) |
 | `columns` | object | **(required)** Column mappings — keys are target field names, values are expr expressions or static values |
+
+**Options object:**
+
+| Key | Type | Description |
+|---|---|---|
+| `append` | boolean | Append to existing output CSVs (same as `--append`) |
+| `email_domain_overwrite` | string | Rewrite emails to this domain (same as `--email-domain-overwrite`) |
+| `email_template` | string | Generate emails from template (same as `--email-template`) |
+| `source` | string | Import source identifier (same as `--source`) |
+
+CLI flags override config file options when explicitly set.
+
+**Outputs array:**
+
+Each entry has `path` (required) and an optional `filter` expression. Rows are evaluated against each output's filter independently — a single row can match multiple outputs. When `outputs` is present, the `--output` CLI flag cannot be used.
 
 Column values can be:
 
-- **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and constants are available as variables
+- **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and variables are available
 - **bool/number** — a static value applied to every row
 
 Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
 
-**Example config file (`substack-mapping.json`):**
+**Example config file with multiple outputs:**
 
 ```json
 {
-  "const": {
+  "vars": {
     "ALL_SECTIONS": ["The Ankler", "Entertainment Strategy Guy", "The Wakeup", "Sports"]
+  },
+  "options": {
+    "append": true,
+    "email_template": "sandbox+{{sanitize}}@inbox.mailtrap.io"
+  },
+  "outputs": [
+    { "path": "free-users.csv", "filter": "Type == \"Free\"" },
+    { "path": "comp-users.csv", "filter": "Type == \"Comp\"" },
+    { "path": "admin-users.csv", "filter": "Type == \"Author\"" }
+  ],
+  "columns": {
+    "login": "trim(lower(Email))",
+    "name": "Name",
+    "category_opt_out": "join(without(ALL_SECTIONS, splitTrim(Sections)), \"|\")",
+    "email_verified": true,
+    "import_comment": "sprintf(\"Substack subscriber type %s\", Type)"
+  }
+}
+```
+
+**Example config file with single output:**
+
+```json
+{
+  "vars": {
+    "ALL_SECTIONS": ["The Ankler", "Sports"]
   },
   "filter": "Type != \"Comp\"",
   "columns": {
     "login": "trim(lower(Email))",
-    "email": "Email",
     "name": "Name",
-    "category_opt_out": "join(without(ALL_SECTIONS, splitTrim(Sections, \",\")), \"|\")",
-    "email_verified": false
+    "category_opt_out": "join(without(ALL_SECTIONS, splitTrim(Sections)), \"|\")",
+    "email_verified": true
   }
 }
 ```

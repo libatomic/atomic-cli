@@ -35,29 +35,30 @@ import (
 
 type (
 	// convertMappingFile is the JSON config file format for the map command.
-	//
-	// Example:
-	//
-	//	{
-	//	  "consts": {
-	//	    "ALL_SECTIONS": "News,Sports,Opinion,Tech"
-	//	  },
-	//	  "filter": "Type != \"Comp\"",
-	//	  "columns": {
-	//	    "login": "trim(lower(Email))",
-	//	    "email": "Email",
-	//	    "name": "Name",
-	//	    "category_opt_out": "join(without(splitTrim(ALL_SECTIONS), splitTrim(Sections)), \"|\")",
-	//	    "email_verified": true
-	//	  }
-	//	}
 	convertMappingFile struct {
-		// Consts defines constants available in all expressions (string or []string)
-		Consts map[string]any `json:"const,omitempty"`
-		// Filter is an expr expression that must evaluate to bool; only matching rows are included
+		// Vars defines variables available in all expressions (string, []string, etc.)
+		Vars map[string]any `json:"vars,omitempty"`
+		// Filter is an optional global expr filter; only matching rows are processed
 		Filter string `json:"filter,omitempty"`
+		// Options contains shared settings (email rewriting, append, source)
+		Options *convertMappingOptions `json:"options,omitempty"`
+		// Outputs defines multiple output files with per-output filters;
+		// mutually exclusive with the --output CLI flag
+		Outputs []convertMappingOutput `json:"outputs,omitempty"`
 		// Columns maps UserImportRecord field names to expr expressions or static values
 		Columns map[string]any `json:"columns"`
+	}
+
+	convertMappingOptions struct {
+		Append               *bool  `json:"append,omitempty"`
+		EmailDomainOverwrite string `json:"email_domain_overwrite,omitempty"`
+		EmailTemplate        string `json:"email_template,omitempty"`
+		Source               string `json:"source,omitempty"`
+	}
+
+	convertMappingOutput struct {
+		Path   string `json:"path"`
+		Filter string `json:"filter,omitempty"`
 	}
 
 	// convertMapping is the resolved column mapping (used by both inline and file modes)
@@ -88,8 +89,8 @@ var (
 			Usage: "expression to filter rows (columns available as variables, e.g. 'STRIPE_CUSTOMER_ID == \"\" && STRIPE_SUBSCRIPTION_ID == \"\"')",
 		},
 		&cli.StringSliceFlag{
-			Name:  "const",
-			Usage: "define constants for use in expressions as NAME=value (e.g. --const 'ALL_CATS=News,Sports,Opinion')",
+			Name:  "vars",
+			Usage: "define vars for use in expressions as NAME=value (e.g. --vars 'ALL_CATS=News,Sports,Opinion')",
 		},
 	)
 
@@ -97,7 +98,7 @@ var (
 		Name:   "map",
 		Usage:  "map and filter a third-party CSV to Passport user import format using a mapping file",
 		Flags:  migrateConvertFlags,
-		Action: migrateConvertAction,
+		Action: migrateMapAction,
 	}
 
 	// importFieldSetters maps CSV tag names to functions that set the corresponding
@@ -183,7 +184,7 @@ func parseBool(val string) bool {
 	return val == "true" || val == "1" || val == "yes"
 }
 
-func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
+func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	_, outputPath, _, rewriter, appendMode, source, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
@@ -202,8 +203,9 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 
 	var (
 		mapping    convertMapping
-		fileConsts map[string]any
+		fileVars   map[string]any
 		fileFilter string
+		outputs    []convertMappingOutput
 	)
 
 	if mappingFilePath != "" {
@@ -217,12 +219,34 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		if err := json.Unmarshal(mappingData, &mf); err != nil {
 			return fmt.Errorf("failed to parse mapping file: %w", err)
 		}
-		if mf.Columns == nil || len(mf.Columns) == 0 {
+		if len(mf.Columns) == 0 {
 			return fmt.Errorf("mapping file must have a \"columns\" object")
 		}
 		mapping = mf.Columns
-		fileConsts = mf.Consts
+		fileVars = mf.Vars
 		fileFilter = mf.Filter
+		outputs = mf.Outputs
+
+		// config file options override CLI defaults (CLI flags still win if explicitly set)
+		if mf.Options != nil {
+			if mf.Options.EmailDomainOverwrite != "" && rewriter == nil {
+				rewriter = &emailRewriter{domain: mf.Options.EmailDomainOverwrite}
+			}
+			if mf.Options.EmailTemplate != "" && rewriter == nil {
+				rewriter = &emailRewriter{template: mf.Options.EmailTemplate}
+			}
+			if mf.Options.Append != nil && !cmd.IsSet("append") {
+				appendMode = *mf.Options.Append
+			}
+			if mf.Options.Source != "" && source == "" {
+				source = mf.Options.Source
+			}
+		}
+
+		// validate outputs vs --output mutual exclusivity
+		if len(outputs) > 0 && cmd.IsSet("output") {
+			return fmt.Errorf("config file \"outputs\" and --output are mutually exclusive")
+		}
 	} else {
 		// parse inline columns: each entry can be "target=expr" or "target=expr; target2=expr2"
 		mapping = make(convertMapping)
@@ -367,7 +391,7 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn}
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
-	for name, value := range fileConsts {
+	for name, value := range fileVars {
 		// JSON arrays decode as []any — convert to []string for expr compatibility
 		if arr, ok := value.([]any); ok {
 			strs := make([]string, 0, len(arr))
@@ -379,15 +403,15 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 			exprEnv[name] = value
 		}
 	}
-	for _, c := range cmd.StringSlice("const") {
+	for _, c := range cmd.StringSlice("vars") {
 		kv := strings.SplitN(c, "=", 2)
 		if len(kv) != 2 {
-			return fmt.Errorf("invalid --const %q: expected NAME=value", c)
+			return fmt.Errorf("invalid --vars %q: expected NAME=value", c)
 		}
 		name := strings.TrimSpace(kv[0])
 		value := strings.TrimSpace(kv[1])
 		if name == "" {
-			return fmt.Errorf("invalid --const %q: name must not be empty", c)
+			return fmt.Errorf("invalid --vars %q: name must not be empty", c)
 		}
 		exprEnv[name] = value
 	}
@@ -524,31 +548,188 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		records = append(records, rec)
 	}
 
-	// wrap as importRecords for shared append logic
-	importRecords := make([]*importRecord, 0, len(records))
-	for _, rec := range records {
-		importRecords = append(importRecords, &importRecord{UserImportRecord: *rec})
+	// determine output targets
+	type outputTarget struct {
+		path    string
+		filter  *vm.Program
+		records []*importRecord
 	}
 
-	if appendMode {
-		var appendErr error
-		importRecords, appendErr = appendExistingCSV(outputPath, importRecords)
-		if appendErr != nil {
-			return appendErr
+	var targets []outputTarget
+
+	if len(outputs) > 0 {
+		// multi-output mode from config file
+		for _, out := range outputs {
+			t := outputTarget{path: out.Path}
+			if out.Filter != "" {
+				prog, err := expr.Compile(out.Filter, append(exprOpts, expr.AsBool())...)
+				if err != nil {
+					return fmt.Errorf("output %q: invalid filter expression: %w", out.Path, err)
+				}
+				t.filter = prog
+			}
+			targets = append(targets, t)
+		}
+	} else {
+		// single output mode
+		targets = []outputTarget{{path: outputPath}}
+	}
+
+	// route records to output targets
+	for _, rec := range records {
+		ir := &importRecord{UserImportRecord: *rec}
+
+		if len(outputs) > 0 {
+			// evaluate each output's filter against the original row env
+			// we need the raw row data; reconstruct from record fields is not practical,
+			// so we re-evaluate filters against the stored row environments
+			// Instead, route during the row loop above. Let's restructure.
+		}
+		// for single output, just collect all
+		if len(outputs) == 0 {
+			targets[0].records = append(targets[0].records, ir)
 		}
 	}
 
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %w", err)
-	}
-	defer outFile.Close()
+	// If multi-output, we need to route during row processing. Let me restructure
+	// to collect per-output during the main loop instead.
+	if len(outputs) > 0 {
+		// clear - we'll redo this properly
+		for i := range targets {
+			targets[i].records = nil
+		}
 
-	if err := gocsv.MarshalFile(&importRecords, outFile); err != nil {
-		return fmt.Errorf("failed to write output CSV: %w", err)
+		for rowIdx, row := range allRows[1:] {
+			_ = rowIdx
+			rowEnv := make(map[string]any, len(exprEnv)+len(headers))
+			for k, v := range exprEnv {
+				rowEnv[k] = v
+			}
+			for i, h := range headers {
+				if i < len(row) {
+					rowEnv[h] = row[i]
+				} else {
+					rowEnv[h] = ""
+				}
+			}
+
+			// apply global filter
+			if filterProgram != nil {
+				result, err := expr.Run(filterProgram, rowEnv)
+				if err != nil {
+					continue
+				}
+				if match, ok := result.(bool); !ok || !match {
+					continue
+				}
+			}
+
+			// map the record
+			rec := &atomic.UserImportRecord{}
+			for targetField, src := range resolved {
+				var val string
+				if src.program != nil {
+					result, err := expr.Run(src.program, rowEnv)
+					if err != nil {
+						return fmt.Errorf("mapping field %q: expression evaluation failed: %w", targetField, err)
+					}
+					val = fmt.Sprintf("%v", result)
+				} else {
+					val = src.static
+				}
+				if val == "" {
+					continue
+				}
+				if setter, ok := importFieldSetters[targetField]; ok {
+					setter(rec, val)
+				}
+			}
+
+			if rec.Login == "" {
+				continue
+			}
+
+			if rewriter != nil {
+				rec.Login = rewriter.Rewrite(rec.Login)
+				if rec.Email != nil && *rec.Email != "" {
+					rewritten := rewriter.Rewrite(*rec.Email)
+					rec.Email = &rewritten
+				}
+				if rec.BillingEmail != nil && *rec.BillingEmail != "" {
+					rewritten := rewriter.Rewrite(*rec.BillingEmail)
+					rec.BillingEmail = &rewritten
+				}
+			}
+
+			if rec.Email == nil || *rec.Email == "" {
+				login := rec.Login
+				rec.Email = &login
+			}
+
+			if (rec.ImportSource == nil || *rec.ImportSource == "") && source != "" {
+				rec.ImportSource = &source
+			}
+
+			ir := &importRecord{UserImportRecord: *rec}
+
+			// route to matching outputs
+			for i, t := range targets {
+				if t.filter != nil {
+					result, err := expr.Run(t.filter, rowEnv)
+					if err != nil {
+						continue
+					}
+					if match, ok := result.(bool); !ok || !match {
+						continue
+					}
+				}
+				targets[i].records = append(targets[i].records, ir)
+			}
+		}
 	}
 
-	fmt.Fprintf(os.Stderr, "mapped %d records to %s", len(records), outputPath)
+	// write each output target
+	for _, t := range targets {
+		outRecords := t.records
+
+		// for single-output mode, wrap from records slice
+		if len(outputs) == 0 {
+			outRecords = make([]*importRecord, 0, len(records))
+			for _, rec := range records {
+				outRecords = append(outRecords, &importRecord{UserImportRecord: *rec})
+			}
+		}
+
+		if appendMode {
+			var appendErr error
+			outRecords, appendErr = appendExistingCSV(t.path, outRecords)
+			if appendErr != nil {
+				return appendErr
+			}
+		}
+
+		outFile, err := os.Create(t.path)
+		if err != nil {
+			return fmt.Errorf("failed to create output file %s: %w", t.path, err)
+		}
+
+		if err := gocsv.MarshalFile(&outRecords, outFile); err != nil {
+			outFile.Close()
+			return fmt.Errorf("failed to write output CSV %s: %w", t.path, err)
+		}
+		outFile.Close()
+
+		fmt.Fprintf(os.Stderr, "mapped %d records to %s\n", len(outRecords), t.path)
+	}
+
+	totalMapped := len(records)
+	if len(outputs) > 0 {
+		totalMapped = 0
+		for _, t := range targets {
+			totalMapped += len(t.records)
+		}
+	}
+
 	if filtered > 0 || skipped > 0 {
 		var parts []string
 		if filtered > 0 {
@@ -557,9 +738,8 @@ func migrateConvertAction(ctx context.Context, cmd *cli.Command) error {
 		if skipped > 0 {
 			parts = append(parts, fmt.Sprintf("%d skipped — no login", skipped))
 		}
-		fmt.Fprintf(os.Stderr, " (%s)", strings.Join(parts, ", "))
+		fmt.Fprintf(os.Stderr, "(%s)\n", strings.Join(parts, ", "))
 	}
-	fmt.Fprintln(os.Stderr)
 
 	return nil
 }

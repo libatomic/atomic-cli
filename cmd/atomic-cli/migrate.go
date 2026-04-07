@@ -77,6 +77,10 @@ type (
 	}
 )
 
+const (
+	DefaultMigrateOutputPath = "migrate_users.csv"
+)
+
 var (
 	migrateCommonFlags = []cli.Flag{
 		&cli.StringFlag{
@@ -95,7 +99,7 @@ var (
 			Name:    "output",
 			Aliases: []string{"out", "o"},
 			Usage:   "output CSV file path",
-			Value:   "migrate_users.csv",
+			Value:   DefaultMigrateOutputPath,
 		},
 		&cli.BoolFlag{
 			Name:  "subscription-prorate",
@@ -220,7 +224,6 @@ func (r *emailRewriter) Rewrite(email string) string {
 
 	return r.applyTemplate(email)
 }
-
 
 func (r *emailRewriter) applyTemplate(original string) string {
 	result := r.template

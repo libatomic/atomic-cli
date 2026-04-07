@@ -272,6 +272,66 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+// validateImportCSV validates import records for structural errors and uniqueness.
+// Returns an error if validation or uniqueness checks fail.
+func validateImportCSV(records []*importRecord) error {
+	var validationErrors, dupeErrors int
+
+	for _, rec := range records {
+		if err := rec.Validate(); err != nil {
+			validationErrors++
+		}
+	}
+
+	type uniqueField struct {
+		name   string
+		getter func(rec *importRecord) string
+	}
+
+	uniqueFields := []uniqueField{
+		{"login", func(rec *importRecord) string { return strings.ToLower(rec.Login) }},
+		{"email", func(rec *importRecord) string {
+			if rec.Email != nil && *rec.Email != "" {
+				return strings.ToLower(*rec.Email)
+			}
+			return ""
+		}},
+		{"phone_number", func(rec *importRecord) string {
+			if rec.PhoneNumber != nil {
+				return *rec.PhoneNumber
+			}
+			return ""
+		}},
+		{"stripe_customer_id", func(rec *importRecord) string {
+			if rec.StripeCustomerID != nil && *rec.StripeCustomerID != "" {
+				return *rec.StripeCustomerID
+			}
+			return ""
+		}},
+	}
+
+	for _, uf := range uniqueFields {
+		seen := make(map[string]bool)
+		for _, rec := range records {
+			val := uf.getter(rec)
+			if val == "" {
+				continue
+			}
+			if seen[val] {
+				dupeErrors++
+			} else {
+				seen[val] = true
+			}
+		}
+	}
+
+	if validationErrors > 0 || dupeErrors > 0 {
+		return fmt.Errorf("CSV validation failed: %d validation errors, %d duplicate issues; run 'migrate verify' for details", validationErrors, dupeErrors)
+	}
+
+	return nil
+}
+
 // isSameFile checks whether two paths resolve to the same file.
 func isSameFile(a, b string) bool {
 	absA, errA := filepath.Abs(a)

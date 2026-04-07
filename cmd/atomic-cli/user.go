@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
@@ -203,50 +204,132 @@ var (
 				Action:    userImport,
 				Flags: []cli.Flag{
 					&cli.StringFlag{
+						Name:    "config",
+						Aliases: []string{"c"},
+						Usage:   "JSON config file with import parameters (all flags can also be set in the config)",
+					},
+					&cli.StringFlag{
 						Name:  "mime_type",
-						Usage: "specify the mime type of the file to import",
+						Usage: "mime type of the import file",
 						Value: "text/csv",
 					},
 					&cli.StringFlag{
 						Name:  "source",
-						Usage: "specify the source file to import, i.e. atomic, ghost, substack, etc.",
+						Usage: "source identifier (atomic, ghost, substack, etc.)",
 						Value: "atomic",
 					},
-					&cli.StringFlag{
-						Name:  "trial_plan_id",
-						Usage: "specify the trial plan id",
-					},
-					&cli.StringFlag{
-						Name:  "trial_price_id",
-						Usage: "specify the trial price id",
-					},
-					&cli.TimestampFlag{
-						Name:  "trial_end_at",
-						Usage: "specify the trial end at",
+					// import behavior
+					&cli.BoolFlag{
+						Name:  "dry_run",
+						Usage: "preview import without creating or updating users",
 					},
 					&cli.BoolFlag{
-						Name:  "trial_existing_users",
-						Usage: "specify if the trial should be applied to existing users",
+						Name:  "update_existing_users",
+						Usage: "update existing users with CSV data",
 					},
 					&cli.BoolFlag{
-						Name:  "user_email_verified",
-						Usage: "specify if the user email should be verified",
+						Name:  "validate_user_email",
+						Usage: "validate user email addresses",
 					},
-					&cli.StringFlag{
-						Name:  "source_params",
-						Usage: "paths to source params json",
+					&cli.BoolFlag{
+						Name:  "suppress_events",
+						Usage: "suppress user events during import",
 					},
+					&cli.BoolFlag{
+						Name:  "suppress_triggers",
+						Usage: "suppress parent triggers during import",
+					},
+					&cli.BoolFlag{
+						Name:  "rebuild_audiences",
+						Usage: "rebuild audiences after import",
+					},
+					// audience
 					&cli.StringFlag{
 						Name:  "import_audience_id",
-						Usage: "specify the import audience id",
+						Usage: "audience ID to add imported users to",
 					},
 					&cli.StringFlag{
 						Name:  "import_audience_behavior",
-						Usage: "specify the import audience behavior (add_all_users, add_new_users, add_existing_users)",
+						Usage: "audience membership behavior: add_all_users, add_new_users, add_existing_users",
+					},
+					// stripe
+					&cli.StringFlag{
+						Name:  "stripe_account_behavior",
+						Usage: "stripe account behavior: existing, create, none",
+					},
+					// default plans
+					&cli.BoolFlag{
+						Name:  "subscribe_default_plans",
+						Usage: "subscribe new users to instance default plans",
+					},
+					&cli.StringFlag{
+						Name:  "default_plan_behavior",
+						Usage: "default plan behavior: all, non_subscribers, none",
+					},
+					// auto subscribe plans
+					&cli.StringSliceFlag{
+						Name:  "auto_subscribe_plans",
+						Usage: "plan IDs to auto-subscribe users to (repeatable)",
+					},
+					&cli.StringFlag{
+						Name:  "auto_subscribe_behavior",
+						Usage: "auto subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none",
+					},
+					// trials
+					&cli.StringFlag{
+						Name:  "trial_plan_id",
+						Usage: "trial plan ID",
+					},
+					&cli.StringFlag{
+						Name:  "trial_price_id",
+						Usage: "trial price ID",
+					},
+					&cli.TimestampFlag{
+						Name:  "trial_end_at",
+						Usage: "trial end date/time",
 					},
 					&cli.BoolFlag{
-						Name:  "suppress_parent_triggers",
-						Usage: "suppress parent triggers",
+						Name:  "trial_existing_users",
+						Usage: "apply trial to existing users without a subscription",
+					},
+					&cli.StringFlag{
+						Name:  "trial_behavior",
+						Usage: "trial behavior: all, non_subscribers, none",
+					},
+					// default subscription settings
+					&cli.Float64Flag{
+						Name:  "default_discount_percentage",
+						Usage: "default discount percentage for subscriptions",
+					},
+					&cli.StringFlag{
+						Name:  "default_discount_term",
+						Usage: "default discount term: once, repeating, forever",
+					},
+					&cli.IntFlag{
+						Name:  "default_discount_duration_days",
+						Usage: "default discount duration in days",
+					},
+					&cli.BoolFlag{
+						Name:  "default_subscription_prorate",
+						Usage: "prorate subscriptions by default",
+					},
+					&cli.StringFlag{
+						Name:  "default_subscription_anchor_date",
+						Usage: "default subscription anchor date (YYYYMMDD)",
+					},
+					// teams
+					&cli.BoolFlag{
+						Name:  "create_teams",
+						Usage: "enable team import processing",
+					},
+					&cli.StringFlag{
+						Name:  "team_limit_behavior",
+						Usage: "team seat limit behavior: drop_admin, drop_user, expand_subscription",
+					},
+					// email
+					&cli.BoolFlag{
+						Name:  "user_email_verified",
+						Usage: "mark all imported user emails as verified",
 					},
 				},
 			},
@@ -497,7 +580,19 @@ func userList(ctx context.Context, cmd *cli.Command) error {
 func userImport(ctx context.Context, cmd *cli.Command) error {
 	var input atomic.UserImportInput
 
-	if err := BindFlagsFromContext(cmd, &input); err != nil {
+	// load config file first (if provided), then overlay CLI flags
+	if configPath := cmd.String("config"); configPath != "" {
+		configData, err := os.ReadFile(configPath)
+		if err != nil {
+			return fmt.Errorf("failed to read config file: %w", err)
+		}
+		if err := json.Unmarshal(configData, &input); err != nil {
+			return fmt.Errorf("failed to parse config file: %w", err)
+		}
+	}
+
+	// CLI flags override config file values
+	if err := BindFlagsFromContext(cmd, &input, "config"); err != nil {
 		return err
 	}
 
@@ -521,6 +616,23 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		return fmt.Errorf("file is required")
 	}
+
+	// validate the CSV before sending to the API
+	csvFile, err := os.Open(cmd.Args().First())
+	if err != nil {
+		return fmt.Errorf("failed to open file for validation: %w", err)
+	}
+	var records []*importRecord
+	if err := gocsv.UnmarshalFile(csvFile, &records); err != nil {
+		csvFile.Close()
+		return fmt.Errorf("failed to parse CSV for validation: %w", err)
+	}
+	csvFile.Close()
+
+	if err := validateImportCSV(records); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "validated %d records\n", len(records))
 
 	job, err := backend.UserImport(ctx, &input)
 	if err != nil {

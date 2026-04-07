@@ -438,8 +438,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--update_existing_users` | Update existing users with CSV data | `false` |
 | `--validate_user_email` | Validate user email addresses | `true` |
 | `--user_email_verified` | Mark all imported user emails as verified | `false` |
-| `--suppress_events` | Suppress user events during import | `false` |
-| `--suppress_triggers` | Suppress parent triggers during import | `true` |
+| `--user_event_options` | User event options: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Set to `SUPPRESS` to suppress all user events. | `LOG\|EMIT\|CONTEXT` |
 | `--rebuild_audiences` | Rebuild audiences after import | `true` |
 | `--import_audience_id` | Audience ID to add imported users to | |
 | `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |
@@ -458,7 +457,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--default_discount_duration_days` | Default discount duration in days | |
 | `--default_subscription_prorate` | Prorate subscriptions by default | `false` |
 | `--default_subscription_anchor_date` | Default subscription anchor date (YYYYMMDD) | |
-| `--create_teams` | Enable team import processing | `true` |
+| `--create_teams` | Enable team import processing | `false` |
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 
 **Examples:**
@@ -500,7 +499,7 @@ Before calling the API, the CLI validates the input CSV locally — checking per
 
 See [User Import Record CSV Format](#user-import-record-csv-format) for the full column reference.
 
-**Team imports:** When `create_teams` is enabled on the import job (default `true`), records with a `team_key` are grouped. The team owner (`is_team_owner=true`) must have a subscription with `subscription_quantity > 1`. Team members (same `team_key`, `is_team_owner` not set) do not get their own subscription — instead they receive an entitlement to the team owner's subscription, consuming one seat. Records are automatically sorted so team owners are processed before their members. The owner occupies 1 seat; each team member consumes 1 additional seat. For the `migrate substack` command, subscriptions with `metadata["is_group"]="true"` are automatically marked as team owners with the Stripe subscription ID as the `team_key`.
+**Team imports:** When `create_teams` is enabled on the import job (default `false`), records with a `team_key` are grouped. The team owner (`is_team_owner=true`) must have a subscription with `subscription_quantity > 1`. Team members (same `team_key`, `is_team_owner` not set) do not get their own subscription — instead they receive an entitlement to the team owner's subscription, consuming one seat. Records are automatically sorted so team owners are processed before their members. The owner occupies 1 seat; each team member consumes 1 additional seat. For the `migrate substack` command, subscriptions with `metadata["is_group"]="true"` are automatically marked as team owners with the Stripe subscription ID as the `team_key`.
 
 **Team limit behavior** (`team_limit_behavior`, default `drop_admin`): controls what happens when the number of team members exceeds the subscription quantity.
 
@@ -933,6 +932,7 @@ These options apply to all migrate subcommands:
 | `--email-template` | Generate emails from a template with function placeholders (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
 | `--append` | Append to existing output CSV instead of overwriting; deduplicates on `login` (existing rows win) | `true` |
 | `--source` | Import source identifier set on each record's `import_source` field | |
+| `--limit` | Limit the number of records in each output CSV; 0 = no limit | `0` |
 
 #### Email Template Functions
 
@@ -1128,6 +1128,7 @@ The config file is a JSON object with the following top-level keys:
 | `email_domain_overwrite` | string | Rewrite emails to this domain (same as `--email-domain-overwrite`) |
 | `email_template` | string | Generate emails from template (same as `--email-template`) |
 | `source` | string | Import source identifier (same as `--source`) |
+| `limit` | integer | Limit per output file (same as `--limit`) |
 
 CLI flags override config file options when explicitly set.
 

@@ -54,6 +54,7 @@ type (
 		EmailDomainOverwrite string `json:"email_domain_overwrite,omitempty"`
 		EmailTemplate        string `json:"email_template,omitempty"`
 		Source               string `json:"source,omitempty"`
+		Limit                *int   `json:"limit,omitempty"`
 	}
 
 	convertMappingOutput struct {
@@ -185,7 +186,7 @@ func parseBool(val string) bool {
 }
 
 func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
-	_, outputPath, _, rewriter, appendMode, source, err := validateMigrateFlags(cmd, false)
+	_, outputPath, _, rewriter, appendMode, source, limit, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
 	}
@@ -240,6 +241,9 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			}
 			if mf.Options.Source != "" && source == "" {
 				source = mf.Options.Source
+			}
+			if mf.Options.Limit != nil && !cmd.IsSet("limit") {
+				limit = *mf.Options.Limit
 			}
 		}
 
@@ -698,6 +702,11 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			for _, rec := range records {
 				outRecords = append(outRecords, &importRecord{UserImportRecord: *rec})
 			}
+		}
+
+		// apply limit per output
+		if limit > 0 && len(outRecords) > limit {
+			outRecords = outRecords[:limit]
 		}
 
 		if appendMode {

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
@@ -60,9 +61,9 @@ var (
 			Name:  "stripe_account",
 			Usage: "set the user stripe account",
 		},
-		&cli.BoolFlag{
-			Name:  "suppress_events",
-			Usage: "suppress user events",
+		&cli.IntFlag{
+			Name:  "event_options",
+			Usage: "event log options bitmask (1=Log, 2=Emit, 4=Sync, 8=Children, 16=Context, 32=Suppress)",
 		},
 		&cli.BoolFlag{
 			Name:  "subscribe_default_plans",
@@ -231,13 +232,9 @@ var (
 						Name:  "validate_user_email",
 						Usage: "validate user email addresses",
 					},
-					&cli.BoolFlag{
-						Name:  "suppress_events",
-						Usage: "suppress user events during import",
-					},
-					&cli.BoolFlag{
-						Name:  "suppress_triggers",
-						Usage: "suppress parent triggers during import",
+					&cli.StringFlag{
+						Name:  "user_event_options",
+						Usage: "user event options: pipe-delimited flags (LOG|EMIT|SYNC|CHILDREN|CONTEXT|SUPPRESS); default: LOG|EMIT|CONTEXT",
 					},
 					&cli.BoolFlag{
 						Name:  "rebuild_audiences",
@@ -592,9 +589,21 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// CLI flags override config file values
-	if err := BindFlagsFromContext(cmd, &input, "config"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "config", "user_event_options"); err != nil {
 		return err
 	}
+
+	// parse user_event_options string flag
+	if evtStr := cmd.String("user_event_options"); evtStr != "" {
+		opts, err := parseEventLogOptions(evtStr)
+		if err != nil {
+			return err
+		}
+		input.UserEventOptions = &opts
+	}
+
+	// set fields that are json:"-" and can't be bound via BindFlagsFromContext
+	input.MimeType = cmd.String("mime_type")
 
 	if cmd.Args().First() != "" {
 		var err error
@@ -669,4 +678,33 @@ func userDelete(ctx context.Context, cmd *cli.Command) error {
 	fmt.Println("User deleted")
 
 	return nil
+}
+
+var eventLogOptionNames = map[string]atomic.EventLogOption{
+	"LOG":      atomic.EventLogOptionLog,
+	"EMIT":     atomic.EventLogOptionEmit,
+	"SYNC":     atomic.EventLogOptionSync,
+	"CHILDREN": atomic.EventLogOptionChildren,
+	"CONTEXT":  atomic.EventLogOptionContext,
+	"SUPPRESS": atomic.EventLogOptionSuppress,
+}
+
+func parseEventLogOptions(s string) (atomic.EventLogOption, error) {
+	var opts atomic.EventLogOption
+	for _, part := range strings.Split(s, "|") {
+		name := strings.TrimSpace(strings.ToUpper(part))
+		if name == "" {
+			continue
+		}
+		val, ok := eventLogOptionNames[name]
+		if !ok {
+			valid := make([]string, 0, len(eventLogOptionNames))
+			for k := range eventLogOptionNames {
+				valid = append(valid, k)
+			}
+			return 0, fmt.Errorf("unknown event option %q; valid values: %s", name, strings.Join(valid, ", "))
+		}
+		opts |= val
+	}
+	return opts, nil
 }

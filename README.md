@@ -933,6 +933,7 @@ These options apply to all migrate subcommands:
 | `--append` | Append to existing output CSV instead of overwriting; deduplicates on `login` (existing rows win) | `true` |
 | `--source` | Import source identifier set on each record's `import_source` field | |
 | `--limit` | Limit the number of records in each output CSV; 0 = no limit | `0` |
+| `--skip` | Skip the first N records in each output CSV; 0 = no skip | `0` |
 
 #### Email Template Functions
 
@@ -1129,6 +1130,7 @@ The config file is a JSON object with the following top-level keys:
 | `email_template` | string | Generate emails from template (same as `--email-template`) |
 | `source` | string | Import source identifier (same as `--source`) |
 | `limit` | integer | Limit per output file (same as `--limit`) |
+| `skip` | integer | Skip first N records per output file (same as `--skip`) |
 
 CLI flags override config file options when explicitly set.
 

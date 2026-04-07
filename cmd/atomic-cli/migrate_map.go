@@ -55,6 +55,7 @@ type (
 		EmailTemplate        string `json:"email_template,omitempty"`
 		Source               string `json:"source,omitempty"`
 		Limit                *int   `json:"limit,omitempty"`
+		Skip                 *int   `json:"skip,omitempty"`
 	}
 
 	convertMappingOutput struct {
@@ -186,7 +187,7 @@ func parseBool(val string) bool {
 }
 
 func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
-	_, outputPath, _, rewriter, appendMode, source, limit, err := validateMigrateFlags(cmd, false)
+	_, outputPath, _, rewriter, appendMode, source, limit, skip, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
 	}
@@ -244,6 +245,9 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			}
 			if mf.Options.Limit != nil && !cmd.IsSet("limit") {
 				limit = *mf.Options.Limit
+			}
+			if mf.Options.Skip != nil && !cmd.IsSet("skip") {
+				skip = *mf.Options.Skip
 			}
 		}
 
@@ -704,7 +708,12 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			}
 		}
 
-		// apply limit per output
+		// apply skip and limit per output
+		if skip > 0 && len(outRecords) > skip {
+			outRecords = outRecords[skip:]
+		} else if skip > 0 {
+			outRecords = nil
+		}
 		if limit > 0 && len(outRecords) > limit {
 			outRecords = outRecords[:limit]
 		}

@@ -135,6 +135,11 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 			Usage: "limit the number of records in each output CSV; 0 = no limit",
 			Value: 0,
 		},
+		&cli.IntFlag{
+			Name:  "skip",
+			Usage: "skip the first N records in each output CSV; 0 = no skip",
+			Value: 0,
+		},
 	}
 
 	migrateCmd = &cli.Command{
@@ -175,13 +180,14 @@ func initStripeClient(apiKey string) (*stripeclient.API, error) {
 	return stripeclient.New(apiKey, nil), nil
 }
 
-func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun bool, output string, prorate bool, rewriter *emailRewriter, appendMode bool, source string, limit int, err error) {
+func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun bool, output string, prorate bool, rewriter *emailRewriter, appendMode bool, source string, limit, skip int, err error) {
 	dryRun = cmd.Bool("dry-run")
 	output = cmd.String("output")
 	prorate = cmd.Bool("subscription-prorate")
 	appendMode = cmd.Bool("append")
 	source = cmd.String("source")
 	limit = int(cmd.Int("limit"))
+	skip = int(cmd.Int("skip"))
 
 	emailDomain := cmd.String("email-domain-overwrite")
 	emailTemplate := cmd.String("email-template")
@@ -309,7 +315,7 @@ func shortHash(s string) string {
 	return hex.EncodeToString(h[:])[:8]
 }
 
-func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, rewriter *emailRewriter, appendMode bool, source string, limit int) error {
+func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, rewriter *emailRewriter, appendMode bool, source string, limit, skip int) error {
 	importRecords := make([]*importRecord, 0, len(records))
 
 	for _, rec := range records {
@@ -370,6 +376,12 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 		}
 
 		importRecords = append(importRecords, ir)
+	}
+
+	if skip > 0 && len(importRecords) > skip {
+		importRecords = importRecords[skip:]
+	} else if skip > 0 {
+		importRecords = nil
 	}
 
 	if limit > 0 && len(importRecords) > limit {

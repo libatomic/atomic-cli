@@ -89,7 +89,12 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  "founder-plan",
-			Usage: "Passport plan ID for founding members",
+			Usage: "Passport plan ID for founding members (requires --founders)",
+		},
+		&cli.BoolFlag{
+			Name:  "founders",
+			Usage: "include founding member subscriptions in the migration",
+			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "create-plans",
@@ -98,8 +103,8 @@ var (
 		},
 		&cli.BoolFlag{
 			Name:  "apply-discounts",
-			Usage: "calculate and apply per-user forever discounts for price differences",
-			Value: true,
+			Usage: "calculate and apply per-user forever discounts for price differences; when false, users are moved to the active price for their interval",
+			Value: false,
 		},
 	)
 
@@ -140,16 +145,22 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	// instance is only required when creating plans or using existing plans
 	requireInstance := createPlans || subscriberPlan != ""
 
-	dryRun, output, prorate, rewriter, appendMode, _, limit, skip, err := validateMigrateFlags(cmd, requireInstance)
+	dryRun, output, prorate, rewriter, appendMode, _, limit, _, err := validateMigrateFlags(cmd, requireInstance)
 	if err != nil {
 		return err
 	}
 
 	founderPlan := cmd.String("founder-plan")
+	founders := cmd.Bool("founders")
 	applyDiscounts := cmd.Bool("apply-discounts")
+	verbose := mainCmd.Bool("verbose")
 
 	if subscriberPlan != "" && createPlans {
 		return fmt.Errorf("--subscriber-plan and --create-plans are mutually exclusive")
+	}
+
+	if founderPlan != "" {
+		founders = true
 	}
 
 	sc, err := initStripeClient(cmd.String("stripe-key"))
@@ -184,16 +195,18 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("no Substack prices found in Stripe (looking for metadata substack=yes)")
 	}
 
-	// Separate active prices and check for founding
+	// Separate active prices; skip founding prices unless --founders is set
 	var activePriceInfos []*sourcePriceInfo
 	var hasFoundingPrice bool
 	for _, p := range allPrices {
 		if p.PriceType == "founding" {
 			hasFoundingPrice = true
-			activePriceInfos = append(activePriceInfos, &sourcePriceInfo{
-				StripePrice: p.StripePrice,
-				PriceType:   p.PriceType,
-			})
+			if founders {
+				activePriceInfos = append(activePriceInfos, &sourcePriceInfo{
+					StripePrice: p.StripePrice,
+					PriceType:   p.PriceType,
+				})
+			}
 		} else if p.Active {
 			activePriceInfos = append(activePriceInfos, &sourcePriceInfo{
 				StripePrice: p.StripePrice,
@@ -203,10 +216,12 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Pass 2: Display price mapping report
-	displaySubstackPriceReport(allPrices)
+	if verbose {
+		displaySubstackPriceReport(allPrices)
+	}
 
-	// Check founding plan requirement
-	if hasFoundingPrice && founderPlan == "" && !createPlans && subscriberPlan != "" {
+	// Check founding plan requirement (only when --founders is enabled)
+	if founders && hasFoundingPrice && founderPlan == "" && !createPlans && subscriberPlan != "" {
 		return fmt.Errorf("founding member price found in Stripe but --founder-plan not set; use --founder-plan or --create-plans")
 	}
 
@@ -233,7 +248,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 
 	// Pass 4: Collect active subscriptions
 	bar = newMigrateProgress(len(allPrices), "Collecting subscriptions")
-	records, err := collectSubstackSubscriptions(sc, allPrices, mapping, bar)
+	records, err := collectSubstackSubscriptions(sc, allPrices, mapping, founders, limit, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
@@ -273,19 +288,19 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		subscriberOutput := fmt.Sprintf("%s-subscribers%s", base, ext)
 		founderOutput := fmt.Sprintf("%s-founders%s", base, ext)
 
-		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", limit, skip); err != nil {
+		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0); err != nil {
 			return fmt.Errorf("failed to write subscriber CSV: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d subscriber records to %s\n", len(subscriberRecords), subscriberOutput)
 
 		if len(founderRecords) > 0 {
-			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", limit, skip); err != nil {
+			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0); err != nil {
 				return fmt.Errorf("failed to write founder CSV: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "wrote %d founder records to %s\n", len(founderRecords), founderOutput)
 		}
 	} else {
-		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode, "substack-stripe", limit, skip); err != nil {
+		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0); err != nil {
 			return fmt.Errorf("failed to write CSV: %w", err)
 		}
 
@@ -754,11 +769,17 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 	return mapping, nil
 }
 
-func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
+func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, limit int, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
 
 	for _, sp := range prices {
+		// skip founding prices when --founders is not set
+		if sp.PriceType == "founding" && !founders {
+			bar.Add(1)
+			continue
+		}
+
 		planID, interval := mapSubstackPriceToPassportPlan(sp, mapping)
 		if planID == "" {
 			bar.Add(1)
@@ -868,6 +889,10 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			}
 
 			records = append(records, rec)
+
+			if limit > 0 && len(records) >= limit {
+				break
+			}
 		}
 
 		if err := iter.Err(); err != nil {
@@ -875,6 +900,10 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 		}
 
 		bar.Add(1)
+
+		if limit > 0 && len(records) >= limit {
+			break
+		}
 	}
 
 	return records, nil

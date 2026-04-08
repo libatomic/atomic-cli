@@ -170,6 +170,12 @@ func main() {
 			Aliases: []string{"f"},
 			Usage:   "specify the fields to print",
 		},
+		&cli.BoolFlag{
+			Name:    "verbose",
+			Aliases: []string{"v"},
+			Usage:   "enable verbose output",
+			Value:   false,
+		},
 		&cli.StringFlag{
 			Name:    "instance_id",
 			Usage:   "set the instance id for the command",
@@ -186,6 +192,8 @@ func main() {
 		instCmd,
 		appCmd,
 		userCmd,
+		planCmd,
+		priceCmd,
 		optionCmd,
 		accessTokenCmd,
 		dbCommand,

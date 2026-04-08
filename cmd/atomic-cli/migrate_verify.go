@@ -41,11 +41,6 @@ var (
 			Name:  "dedupe",
 			Usage: "deduplicate records on the specified field; first occurrence wins (valid: login, email, phone_number, stripe_customer_id)",
 		},
-		&cli.BoolFlag{
-			Name:    "verbose",
-			Aliases: []string{"v"},
-			Usage:   "print each duplicate row with the colliding field and value",
-		},
 	)
 
 	migrateVerifyCmd = &cli.Command{
@@ -72,7 +67,7 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 
 	inputPath := cmd.String("input")
 	dedupeField := cmd.String("dedupe")
-	verbose := cmd.Bool("verbose")
+	verbose := mainCmd.Bool("verbose")
 
 	if dedupeField != "" {
 		validFields := map[string]bool{"login": true, "email": true, "phone_number": true, "stripe_customer_id": true}

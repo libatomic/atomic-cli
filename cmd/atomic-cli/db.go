@@ -55,10 +55,6 @@ var (
 						Name:  "apply",
 						Usage: "do not execute migrations",
 					},
-					&cli.BoolFlag{
-						Name:  "verbose",
-						Usage: "enable verbose output",
-					},
 				},
 			},
 		},
@@ -197,7 +193,7 @@ func dbMigrate(ctx context.Context, c *cli.Command) error {
 
 		fmt.Printf("Total %d migrations proposed\n", len(res.Changes.Pending))
 	} else {
-		if c.Bool("verbose") {
+		if mainCmd.Bool("verbose") {
 			for _, change := range res.Changes.Applied {
 				fmt.Println(change)
 			}

@@ -224,9 +224,9 @@ var (
 						Name:  "dry_run",
 						Usage: "preview import without creating or updating users",
 					},
-					&cli.BoolFlag{
-						Name:  "update_existing_users",
-						Usage: "update existing users with CSV data",
+					&cli.StringFlag{
+						Name:  "existing_user_behavior",
+						Usage: "behavior for existing users: skip, merge, recreate",
 					},
 					&cli.BoolFlag{
 						Name:  "validate_user_email",

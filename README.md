@@ -437,7 +437,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--mime_type` | MIME type of the import file | `text/csv` |
 | `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
 | `--dry_run` | Preview import without creating or updating users | `false` |
-| `--update_existing_users` | Update existing users with CSV data | `false` |
+| `--existing_user_behavior` | Behavior for existing users: `skip`, `merge` (update and process subscriptions), `recreate` (delete and re-create) | `merge` |
 | `--validate_user_email` | Validate user email addresses | `true` |
 | `--user_email_verified` | Mark all imported user emails as verified | `false` |
 | `--user_event_options` | User event options: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Default is log-only for imports. Set to `LOG\|EMIT\|CONTEXT` for full event processing, or `SUPPRESS` to suppress all. | `LOG` |

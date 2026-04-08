@@ -106,6 +106,25 @@ var (
 			Usage: "calculate and apply per-user forever discounts for price differences; when false, users are moved to the active price for their interval",
 			Value: false,
 		},
+		&cli.BoolFlag{
+			Name:  "omit-customer-id",
+			Usage: "omit stripe_customer_id from the output CSV (for sandbox testing with a different Stripe account)",
+			Value: false,
+		},
+		&cli.BoolFlag{
+			Name:  "omit-payment-methods",
+			Usage: "omit subscription_payment_method from the output CSV",
+			Value: false,
+		},
+		&cli.BoolFlag{
+			Name:  "migrate-test-cards",
+			Usage: "use Stripe test cards for subscription_payment_method based on currency (mutually exclusive with --omit-payment-methods)",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "shift-anchor-dates",
+			Usage: "shift all billing cycle anchor dates forward by a duration (e.g. 24h, 7d, 30d) for testing",
+		},
 	)
 
 	migrateSubstackCmd = &cli.Command{
@@ -153,10 +172,27 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	founderPlan := cmd.String("founder-plan")
 	founders := cmd.Bool("founders")
 	applyDiscounts := cmd.Bool("apply-discounts")
+	omitCustomerID := cmd.Bool("omit-customer-id")
+	omitPaymentMethods := cmd.Bool("omit-payment-methods")
+	migrateTestCard := cmd.Bool("migrate-test-cards")
+	shiftAnchorStr := cmd.String("shift-anchor-dates")
 	verbose := mainCmd.Bool("verbose")
 
 	if subscriberPlan != "" && createPlans {
 		return fmt.Errorf("--subscriber-plan and --create-plans are mutually exclusive")
+	}
+
+	if omitPaymentMethods && migrateTestCard {
+		return fmt.Errorf("--omit-payment-methods and --migrate-test-cards are mutually exclusive")
+	}
+
+	var shiftAnchor time.Duration
+	if shiftAnchorStr != "" {
+		var err error
+		shiftAnchor, err = parseDuration(shiftAnchorStr)
+		if err != nil {
+			return fmt.Errorf("invalid --shift-anchor-dates value %q: %w", shiftAnchorStr, err)
+		}
 	}
 
 	if founderPlan != "" {
@@ -248,7 +284,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 
 	// Pass 4: Collect active subscriptions
 	bar = newMigrateProgress(len(allPrices), "Collecting subscriptions")
-	records, err := collectSubstackSubscriptions(sc, allPrices, mapping, founders, limit, bar)
+	records, err := collectSubstackSubscriptions(sc, allPrices, mapping, founders, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
@@ -288,19 +324,19 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		subscriberOutput := fmt.Sprintf("%s-subscribers%s", base, ext)
 		founderOutput := fmt.Sprintf("%s-founders%s", base, ext)
 
-		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0); err != nil {
+		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0, omitCustomerID); err != nil {
 			return fmt.Errorf("failed to write subscriber CSV: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d subscriber records to %s\n", len(subscriberRecords), subscriberOutput)
 
 		if len(founderRecords) > 0 {
-			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0); err != nil {
+			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0, omitCustomerID); err != nil {
 				return fmt.Errorf("failed to write founder CSV: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "wrote %d founder records to %s\n", len(founderRecords), founderOutput)
 		}
 	} else {
-		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0); err != nil {
+		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0, omitCustomerID); err != nil {
 			return fmt.Errorf("failed to write CSV: %w", err)
 		}
 
@@ -769,7 +805,7 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 	return mapping, nil
 }
 
-func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, limit int, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
+func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
 
@@ -792,6 +828,7 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 		params.Filters.AddFilter("price", "", sp.StripePrice.ID)
 		params.Filters.AddFilter("status", "", "active")
 		params.AddExpand("data.customer")
+		params.AddExpand("data.default_payment_method")
 		params.AddExpand("data.discount")
 		params.AddExpand("data.discount.coupon")
 
@@ -840,6 +877,15 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 				StripeSubID:   sub.ID,
 			}
 
+			// capture payment method
+			if !omitPaymentMethods {
+				if migrateTestCard {
+					rec.PaymentMethod = stripeTestCardForCurrency(currency)
+				} else if sub.DefaultPaymentMethod != nil {
+					rec.PaymentMethod = sub.DefaultPaymentMethod.ID
+				}
+			}
+
 			// detect group/team subscriptions
 			if sub.Metadata["is_group"] == "true" {
 				rec.IsTeamOwner = true
@@ -869,9 +915,15 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 
 			if sub.CancelAt > 0 {
 				cancelAt := time.Unix(sub.CancelAt, 0).UTC()
+				if shiftAnchor > 0 {
+					cancelAt = cancelAt.Add(shiftAnchor)
+				}
 				rec.EndAt = &cancelAt
 			} else if sub.CancelAtPeriodEnd && sub.CurrentPeriodEnd > 0 {
 				cancelAt := time.Unix(sub.CurrentPeriodEnd, 0).UTC()
+				if shiftAnchor > 0 {
+					cancelAt = cancelAt.Add(shiftAnchor)
+				}
 				rec.EndAt = &cancelAt
 			} else if sub.BillingCycleAnchor > 0 {
 				anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
@@ -883,6 +935,10 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 					case atomic.SubscriptionIntervalYear:
 						anchor = anchor.AddDate(1, 0, 0)
 					}
+				}
+
+				if shiftAnchor > 0 {
+					anchor = anchor.Add(shiftAnchor)
 				}
 
 				rec.AnchorDate = &anchor
@@ -970,6 +1026,55 @@ func setPriceAmountsFromPassport(mapping *passportPlanMapping, planID string, in
 		if opt.UnitAmount != nil {
 			mapping.priceAmounts[priceAmountKey(planID, interval, cur)] = *opt.UnitAmount
 		}
+	}
+}
+
+// parseDuration parses a duration string supporting Go duration syntax plus
+// "d" suffix for days (e.g. "7d", "30d", "24h", "2h30m").
+func parseDuration(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		days := strings.TrimSuffix(s, "d")
+		n, err := fmt.Sscanf(days, "%d", new(int))
+		if err != nil || n != 1 {
+			return 0, fmt.Errorf("invalid day duration: %s", s)
+		}
+		var d int
+		fmt.Sscanf(days, "%d", &d)
+		return time.Duration(d) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
+// stripeTestCardForCurrency returns a Stripe test payment method token for the given currency.
+// See https://docs.stripe.com/testing#international-cards
+func stripeTestCardForCurrency(currency string) string {
+	switch strings.ToLower(currency) {
+	case "usd":
+		return "pm_card_visa"
+	case "gbp":
+		return "pm_card_gb"
+	case "eur":
+		return "pm_card_de"
+	case "cad":
+		return "pm_card_ca"
+	case "aud":
+		return "pm_card_au"
+	case "jpy":
+		return "pm_card_jp"
+	case "sgd":
+		return "pm_card_sg"
+	case "hkd":
+		return "pm_card_hk"
+	case "nzd":
+		return "pm_card_nz"
+	case "brl":
+		return "pm_card_br"
+	case "mxn":
+		return "pm_card_mx"
+	case "inr":
+		return "pm_card_in"
+	default:
+		return "pm_card_visa"
 	}
 }
 

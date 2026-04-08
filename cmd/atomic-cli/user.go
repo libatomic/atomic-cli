@@ -240,6 +240,7 @@ var (
 					&cli.BoolFlag{
 						Name:  "rebuild_audiences",
 						Usage: "rebuild audiences after import",
+						Value: true,
 					},
 					// audience
 					&cli.StringFlag{
@@ -309,7 +310,7 @@ var (
 					},
 					&cli.StringFlag{
 						Name:  "default_subscription_anchor_date",
-						Usage: "default subscription anchor date (YYYYMMDD)",
+						Usage: "default subscription anchor date (RFC3339, e.g. 2026-05-08T21:29:00Z)",
 					},
 					// teams
 					&cli.BoolFlag{

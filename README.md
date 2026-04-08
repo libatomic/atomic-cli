@@ -457,7 +457,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--default_discount_term` | Default discount term: `once`, `repeating`, `forever` | `forever` |
 | `--default_discount_duration_days` | Default discount duration in days | |
 | `--default_subscription_prorate` | Prorate subscriptions by default | `false` |
-| `--default_subscription_anchor_date` | Default subscription anchor date (YYYYMMDD) | |
+| `--default_subscription_anchor_date` | Default subscription anchor date (RFC3339, e.g. `2026-05-08T21:29:00Z`) | |
 | `--create_teams` | Enable team import processing | `false` |
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 
@@ -1092,7 +1092,7 @@ All migrate subcommands output a CSV file with the following columns. This is th
 | `subscription_currency` | string | No | `usd` | The currency for the subscription. |
 | `subscription_quantity` | integer | No | `1` | The quantity for the subscription. |
 | `subscription_interval` | string | No | — | Billing interval: `month`, `year`, `once`. |
-| `subscription_anchor_date` | date | No | today | Billing cycle anchor. Format: `YYYYMMDD`. |
+| `subscription_anchor_date` | date-time | No | today | Billing cycle anchor. Format: RFC 3339 (e.g. `2026-05-08T21:29:00Z`). |
 | `subscription_end_at` | date-time | No | — | Subscription end date. Format: RFC 3339. |
 | `subscription_prorate` | boolean | No | `false` | If true, prorate the period between creation and anchor date. |
 | `discount_percentage` | float | No | — | Discount percentage to apply to the subscription. |

@@ -55,6 +55,7 @@ type (
 		UserAmount    int64
 		DiscountPct   *float64
 		DiscountTerm  *atomicpkg.CreditTerm
+		PaymentMethod string
 		StripePriceID string
 		StripeSubID   string
 	}
@@ -315,12 +316,14 @@ func shortHash(s string) string {
 	return hex.EncodeToString(h[:])[:8]
 }
 
-func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, rewriter *emailRewriter, appendMode bool, source string, limit, skip int) error {
+func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, prorate bool, rewriter *emailRewriter, appendMode bool, source string, limit, skip int, omitCustomerID ...bool) error {
 	importRecords := make([]*importRecord, 0, len(records))
 
 	for _, rec := range records {
 		login := rewriter.Rewrite(rec.Email)
 		email := login
+
+		skipCustomer := len(omitCustomerID) > 0 && omitCustomerID[0]
 
 		ir := &importRecord{
 			UserImportRecord: atomicpkg.UserImportRecord{
@@ -328,7 +331,6 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 				Email:                &email,
 				EmailVerified:        ptr.Bool(true),
 				Name:                 &rec.Name,
-				StripeCustomerID:     &rec.CustomerID,
 				SubscriptionQuantity: &rec.Quantity,
 				SubscriptionInterval: (*atomicpkg.SubscriptionInterval)(&rec.Interval),
 				SubscriptionCurrency: &rec.Currency,
@@ -336,6 +338,26 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			},
 			MigrateStripePrice:        rec.StripePriceID,
 			MigrateStripeSubscription: rec.StripeSubID,
+		}
+
+		if !skipCustomer && rec.CustomerID != "" {
+			ir.StripeCustomerID = &rec.CustomerID
+		}
+
+		if rec.PaymentMethod != "" {
+			ir.SubscriptionPaymentMethod = &rec.PaymentMethod
+		}
+
+		// when email rewriting is active, store the original email and customer ID
+		// as stripe customer metadata so the migration can be traced back
+		if rewriter != nil && rec.Email != "" {
+			if ir.StripeCustomerMetadata == nil {
+				ir.StripeCustomerMetadata = make(util.Map[string, string])
+			}
+			ir.StripeCustomerMetadata["atomic_migrate:customer_email"] = rec.Email
+			if rec.CustomerID != "" {
+				ir.StripeCustomerMetadata["atomic_migrate:customer_id"] = rec.CustomerID
+			}
 		}
 
 		if source != "" {
@@ -365,9 +387,9 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 		}
 
 		if rec.EndAt != nil {
-			ir.SubscriptionEndAt = &util.Timestamp{Time: *rec.EndAt}
+			ir.SubscriptionEndAt = &util.Timestamp{Time: rec.EndAt.UTC()}
 		} else if rec.AnchorDate != nil {
-			ir.SubscriptionAnchorDate = &util.Date{Time: *rec.AnchorDate}
+			ir.SubscriptionAnchorDate = &util.Timestamp{Time: rec.AnchorDate.UTC()}
 		}
 
 		if rec.DiscountPct != nil {

@@ -254,23 +254,18 @@ var (
 						Name:  "stripe_account_behavior",
 						Usage: "stripe account behavior: existing, create, none",
 					},
-					// default plans
-					&cli.BoolFlag{
-						Name:  "subscribe_default_plans",
-						Usage: "subscribe new users to instance default plans",
-					},
+					// plans
 					&cli.StringFlag{
 						Name:  "default_plan_behavior",
 						Usage: "default plan behavior: all, non_subscribers, none",
 					},
-					// auto subscribe plans
 					&cli.StringSliceFlag{
-						Name:  "auto_subscribe_plans",
-						Usage: "plan IDs to auto-subscribe users to (repeatable)",
+						Name:  "subscribe_plans",
+						Usage: "plan IDs to subscribe users to (repeatable)",
 					},
 					&cli.StringFlag{
-						Name:  "auto_subscribe_behavior",
-						Usage: "auto subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none",
+						Name:  "subscribe_behavior",
+						Usage: "subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none",
 					},
 					// trials
 					&cli.StringFlag{

@@ -443,10 +443,9 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--import_audience_id` | Audience ID to add imported users to | |
 | `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |
 | `--stripe_account_behavior` | Stripe account behavior: `existing`, `create`, `none` | `existing` |
-| `--subscribe_default_plans` | Subscribe new users to instance default plans | `true` |
-| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` | `non_subscribers` |
-| `--auto_subscribe_plans` | Plan IDs to auto-subscribe users to (repeatable) | |
-| `--auto_subscribe_behavior` | Auto subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
+| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` — controls both subscribe plans and instance defaults | `non_subscribers` |
+| `--subscribe_plans` | Plan IDs to subscribe users to (repeatable) | |
+| `--subscribe_behavior` | Subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
 | `--trial_plan_id` | Trial plan ID | |
 | `--trial_price_id` | Trial price ID | |
 | `--trial_end_at` | Trial end date/time | |
@@ -467,7 +466,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 atomic-cli user import migrate_users.csv \
   -i inst_abc123 \
   --user_email_verified \
-  --auto_subscribe_plans plan_abc123 \
+  --subscribe_plans plan_abc123 \
   --auto_subscribe_behavior all_users
 
 # Import with a JSON config file
@@ -483,9 +482,9 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --
 {
   "dry_run": false,
   "user_email_verified": true,
-  "subscribe_default_plans": true,
-  "auto_subscribe_plans": ["plan_abc123", "plan_def456"],
-  "auto_subscribe_behavior": "all_users",
+  "default_plan_behavior": "all",
+  "subscribe_plans": ["plan_abc123", "plan_def456"],
+  "subscribe_behavior": "all_users",
   "create_teams": true,
   "team_limit_behavior": "drop_admin"
 }
@@ -984,7 +983,7 @@ atomic-cli migrate substack [options]
 2. **Price report** - Displays a table of all discovered prices showing type, amount, currency, active status, and currency options. Shows how prices map to Passport plans.
 
 3. **Plan resolution** - Resolves plans in one of three ways:
-   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. Records are split into separate CSV files by plan type (subscribers and founders) without `subscription_plan_id`. Use the import-level `auto_subscribe_plans` parameter at import time to auto-subscribe users to the correct plans.
+   - **Default** (no `--create-plans`, no `--subscriber-plan`): generates a `plans-<stripe_account_id>.jsonl` file describing the plans and prices that need to be created. Records are split into separate CSV files by plan type (subscribers and founders) without `subscription_plan_id`. Use the import-level `subscribe_plans` parameter at import time to auto-subscribe users to the correct plans.
    - With `--create-plans`: creates a hidden "Subscriber" plan with monthly/annual prices and a hidden "Founder" plan with an annual price, matching amounts and currency options from the active Stripe prices. Prompts for confirmation before creating (skipped with `--dry-run`).
    - With `--subscriber-plan` / `--founder-plan`: fetches the existing Passport plans and reads their active price amounts for discount calculation.
 

@@ -438,7 +438,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--update_existing_users` | Update existing users with CSV data | `false` |
 | `--validate_user_email` | Validate user email addresses | `true` |
 | `--user_email_verified` | Mark all imported user emails as verified | `false` |
-| `--user_event_options` | User event options: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Set to `SUPPRESS` to suppress all user events. | `LOG\|EMIT\|CONTEXT` |
+| `--user_event_options` | User event options: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Default is log-only for imports. Set to `LOG\|EMIT\|CONTEXT` for full event processing, or `SUPPRESS` to suppress all. | `LOG` |
 | `--rebuild_audiences` | Rebuild audiences after import | `true` |
 | `--import_audience_id` | Audience ID to add imported users to | |
 | `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |

@@ -234,7 +234,8 @@ var (
 					},
 					&cli.StringFlag{
 						Name:  "user_event_options",
-						Usage: "user event options: pipe-delimited flags (LOG|EMIT|SYNC|CHILDREN|CONTEXT|SUPPRESS); default: LOG|EMIT|CONTEXT",
+						Usage: "user event options: pipe-delimited flags (LOG|EMIT|SYNC|CHILDREN|CONTEXT|SUPPRESS)",
+						Value: atomic.EventLogOptionLog.String(),
 					},
 					&cli.BoolFlag{
 						Name:  "rebuild_audiences",
@@ -248,6 +249,7 @@ var (
 					&cli.StringFlag{
 						Name:  "import_audience_behavior",
 						Usage: "audience membership behavior: add_all_users, add_new_users, add_existing_users",
+						Value: string(atomic.UserImportAudienceBehaviorNone),
 					},
 					// stripe
 					&cli.StringFlag{

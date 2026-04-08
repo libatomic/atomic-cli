@@ -19,6 +19,8 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Instance Management](#instance-management)
   - [Application Management](#application-management)
   - [User Management](#user-management)
+  - [Plan Management](#plan-management)
+  - [Price Management](#price-management)
   - [Access Token Management](#access-token-management)
   - [Partner Management](#partner-management)
   - [Asset Management](#asset-management)
@@ -509,6 +511,196 @@ See [User Import Record CSV Format](#user-import-record-csv-format) for the full
 | `expand_subscription` | The subscription quantity is automatically increased to accommodate all team members. |
 
 All team capacity events (drops, expansions, orphaned members, failures) are logged in the job report under the "Team Entitlements" section. Orphaned team members (no matching owner for their `team_key`) are reported with the expected owner's login.
+
+### Plan Management
+
+Manage plans with the `plan` (or `plans`) command.
+
+#### Create Plan
+
+```bash
+atomic-cli plan create <name> [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|------------------------|----------------------------------------------|---------|
+| `--file` | Read plan parameters from a JSON file | `false` |
+| `--name` | Plan name | |
+| `--description` | Plan description | |
+| `--type` | Plan type: `free`, `paid`, `enterprise` | |
+| `--active` | Set the plan as active | |
+| `--hidden` | Set the plan as hidden | |
+| `--default` | Set the plan as the default plan | |
+| `--password` | Set the plan password | |
+| `--image` | Set the plan image URL | |
+| `--stripe_product` | Stripe product ID | |
+| `--metadata` | Set plan metadata from a JSON file | |
+
+**Example:**
+```bash
+atomic-cli -i inst_abc123 plan create "Premium" \
+  --type paid \
+  --active
+```
+
+#### Update Plan
+
+```bash
+atomic-cli plan update <plan_id> [options]
+```
+
+Accepts the same options as `create` (except `--file`, `--type`, and `--stripe_product`).
+
+#### Get Plan
+
+```bash
+atomic-cli plan get <plan_id> [options]
+```
+
+**Options:**
+
+| Option | Description |
+|--------------|----------------------------------------------|
+| `--expand` | Expand fields (`prices`, `categories`, `audiences`) |
+
+#### List Plans
+
+```bash
+atomic-cli plan list [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------------|----------------------------------------------|---------|
+| `--type` | Filter by plan type (repeatable) | |
+| `--hidden` | Include hidden plans | `false` |
+| `--inactive` | Include inactive plans | `false` |
+| `--limit` | Limit the number of results | |
+| `--offset` | Pagination offset | |
+| `--expand` | Expand fields (`prices`, `categories`, `audiences`) | |
+
+#### Delete Plan
+
+```bash
+atomic-cli plan delete <plan_id>
+```
+
+#### Subscribe User to Plan
+
+```bash
+atomic-cli plan subscribe <plan_id> [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|------------------------|----------------------------------------------|---------|
+| `--user_id` | User ID to subscribe | *required* |
+| `--price_id` | Specific price ID | |
+| `--interval` | Subscription interval: `month`, `year` | |
+| `--currency` | Subscription currency | |
+| `--quantity` | Subscription quantity | `1` |
+| `--no_prorate` | Do not prorate the subscription | `false` |
+| `--no_entitlement` | Do not create entitlements | `false` |
+| `--trial` | Start the subscription with a trial | `false` |
+| `--password` | Plan password | |
+| `--expand` | Expand fields | |
+
+**Example:**
+```bash
+atomic-cli -i inst_abc123 plan subscribe plan_abc123 \
+  --user_id user_xyz789 \
+  --interval month \
+  --currency usd
+```
+
+### Price Management
+
+Manage prices with the `price` (or `prices`) command.
+
+#### Create Price
+
+```bash
+atomic-cli price create <name> [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|------------------------|----------------------------------------------|---------|
+| `--file` | Read price parameters from a JSON file | `false` |
+| `--plan_id` | Plan ID this price belongs to | *required* |
+| `--name` | Price name | |
+| `--currency` | Price currency | `usd` |
+| `--type` | Price type: `one_time`, `recurring` | `recurring` |
+| `--amount` | Price amount in cents | |
+| `--interval` | Recurring interval: `month`, `year` | |
+| `--frequency` | Recurring frequency | `1` |
+| `--active` | Set the price as active | |
+| `--hidden` | Set the price as hidden | |
+| `--metered` | Metered price | `false` |
+| `--stripe_price` | Stripe price ID | |
+| `--metadata` | Set price metadata from a JSON file | |
+
+**Example:**
+```bash
+atomic-cli -i inst_abc123 price create "Monthly" \
+  --plan_id plan_abc123 \
+  --amount 999 \
+  --interval month \
+  --currency usd
+```
+
+#### Update Price
+
+```bash
+atomic-cli price update <price_id> [options]
+```
+
+**Options:**
+
+| Option | Description |
+|--------------|----------------------------------------------|
+| `--name` | Price name |
+| `--active` | Set the price as active |
+| `--hidden` | Set the price as hidden |
+| `--amount` | Price amount in cents |
+| `--metadata` | Set price metadata from a JSON file |
+
+#### Get Price
+
+```bash
+atomic-cli price get <price_id> [options]
+```
+
+**Options:**
+
+| Option | Description |
+|--------------|----------------------------------------------|
+| `--expand` | Expand fields (`plan`) |
+
+#### List Prices
+
+```bash
+atomic-cli price list [options]
+```
+
+**Options:**
+
+| Option | Description |
+|--------------|----------------------------------------------|
+| `--plan_id` | Filter by plan ID |
+| `--limit` | Limit the number of results |
+| `--offset` | Pagination offset |
+
+#### Delete Price
+
+```bash
+atomic-cli price delete <price_id>
+```
 
 ### Access Token Management
 

@@ -21,12 +21,15 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [User Management](#user-management)
   - [Plan Management](#plan-management)
   - [Price Management](#price-management)
+  - [Category Management](#category-management)
+  - [Audience Management](#audience-management)
   - [Access Token Management](#access-token-management)
   - [Partner Management](#partner-management)
   - [Asset Management](#asset-management)
   - [Job Management](#job-management)
   - [Option Management](#option-management)
   - [Database Management](#database-management)
+  - [Import Command](#import-command)
   - [Migrate Command](#migrate-command)
   - [Stripe Management](#stripe-management)
 - [Output Formats](#output-formats)
@@ -617,6 +620,14 @@ atomic-cli -i inst_abc123 plan subscribe plan_abc123 \
   --currency usd
 ```
 
+#### Import Plans
+
+```bash
+atomic-cli plan import <file.json> [--dry-run]
+```
+
+Imports plans with prices from a JSON array file. Each plan is created in the target instance with all nested prices. Categories are preserved.
+
 ### Price Management
 
 Manage prices with the `price` (or `prices`) command.
@@ -701,6 +712,106 @@ atomic-cli price list [options]
 ```bash
 atomic-cli price delete <price_id>
 ```
+
+### Category Management
+
+Manage categories with the `category` (or `categories`) command.
+
+#### Create Category
+
+```bash
+atomic-cli category create <name> [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------------|----------------------------------------------|---------|
+| `--file` | Read category parameters from a JSON file | `false` |
+| `--name` | Category name | |
+| `--description` | Category description | |
+| `--active` | Set the category as active | `true` |
+| `--hidden` | Set the category as hidden | `false` |
+
+#### Update Category
+
+```bash
+atomic-cli category update <category_id> [options]
+```
+
+Accepts the same options as `create` (except `--file`).
+
+#### Get Category
+
+```bash
+atomic-cli category get <category_id>
+```
+
+#### List Categories
+
+```bash
+atomic-cli category list [options]
+```
+
+**Options:**
+
+| Option | Description |
+|--------------|----------------------------------------------|
+| `--limit` | Limit the number of results |
+| `--offset` | Pagination offset |
+
+#### Delete Category
+
+```bash
+atomic-cli category delete <category_id>
+```
+
+#### Import Categories
+
+```bash
+atomic-cli category import <file.json> [--dry-run]
+```
+
+Imports categories from a JSON array file. Each category's `instance_id` and `id` are ignored; categories are created in the instance specified by `-i`.
+
+### Audience Management
+
+Manage audiences with the `audience` (or `audiences`) command.
+
+#### List Audiences
+
+```bash
+atomic-cli audience list [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|--------------|----------------------------------------------|---------|
+| `--internal` | Filter by internal audiences | |
+| `--static` | Filter by static audiences | |
+| `--limit` | Limit the number of results | |
+| `--offset` | Pagination offset | |
+
+#### Get Audience
+
+```bash
+atomic-cli audience get <audience_id>
+```
+
+#### Delete Audience
+
+```bash
+atomic-cli audience delete <audience_id>
+```
+
+#### Import Audiences
+
+```bash
+atomic-cli audience import <file.json> [--dry-run]
+```
+
+Imports non-internal audiences from a JSON array file. Internal audiences are automatically skipped. Each audience's expression filter (`expr`) is preserved.
 
 ### Access Token Management
 
@@ -1053,6 +1164,54 @@ atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate
 atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate --create --apply
 ```
 
+### Import Command
+
+Import data from a remote Passport instance into the local instance. Connects to a remote API, lists objects, and creates/updates them locally.
+
+```bash
+atomic-cli -i <target_instance> import [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|------------------------|----------------------------------------------|---------|
+| `--remote-host` | Remote Passport API host (e.g. `api.example.com`) | *required* |
+| `--remote-token` | Remote access token (mutually exclusive with client credentials) | |
+| `--remote-client-id` | Remote client ID for client credentials auth | |
+| `--remote-client-secret` | Remote client secret for client credentials auth | |
+| `--types`, `-t` | Types to import (repeatable): `categories`, `plans`, `audiences`, `templates`, `assets`, `articles` | *required* |
+| `--plan-types` | Plan types to import: `paid`, `free`, `all` | `all` |
+| `--overwrite` | Overwrite existing items | `true` |
+| `--dry-run` | Preview what would be imported without making changes | `false` |
+
+Types are imported in dependency order: categories, plans, audiences, templates, assets, articles.
+
+**Examples:**
+
+```bash
+# Import categories and plans from staging
+atomic-cli -i prod_inst import \
+  --remote-host api.staging.example.com \
+  --remote-client-id xxx --remote-client-secret yyy \
+  --types categories,plans
+
+# Import everything, dry run
+atomic-cli -i local_inst import \
+  --remote-host api.source.com \
+  --remote-token bearer_xxx \
+  --types categories,plans,audiences,templates,articles \
+  --dry-run
+
+# Import only paid plans, skip existing
+atomic-cli -i new_inst import \
+  --remote-host api.source.com \
+  --remote-token xxx \
+  --types plans \
+  --plan-types paid \
+  --overwrite=false
+```
+
 ### Migrate Command
 
 Migrate subscriber data from external platforms into Passport. The `migrate` command scans a source platform's Stripe account, maps subscriptions to Passport plans, calculates per-user discounts for grandfathered pricing, and outputs a CSV file compatible with `user import`.
@@ -1095,6 +1254,9 @@ All migrate subcommands output a CSV file with the following columns. This is th
 | `subscription_anchor_date` | date-time | No | today | Billing cycle anchor. Format: RFC 3339 (e.g. `2026-05-08T21:29:00Z`). |
 | `subscription_end_at` | date-time | No | — | Subscription end date. Format: RFC 3339. |
 | `subscription_prorate` | boolean | No | `false` | If true, prorate the period between creation and anchor date. |
+| `subscription_payment_method` | string | No | — | Stripe payment method ID or test card token (e.g. `pm_card_visa`) for the subscription. |
+| `metadata` | string | No | — | User metadata as pipe-delimited key=value pairs (e.g. `key1=val1\|key2=val2`). Supports nested values when type is `any`. |
+| `stripe_customer_metadata` | string | No | — | Stripe customer metadata as pipe-delimited key=value pairs. Applied when a Stripe customer is created during import. |
 | `discount_percentage` | float | No | — | Discount percentage to apply to the subscription. |
 | `discount_term` | string | No | — | Discount term: `once`, `repeating`, `forever`. |
 | `discount_duration_days` | integer | No | — | Discount duration in days. |
@@ -1164,9 +1326,14 @@ atomic-cli migrate substack [options]
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
 | `--subscriber-plan` | Existing Passport plan ID for regular subscribers | |
-| `--founder-plan` | Existing Passport plan ID for founding members | |
+| `--founder-plan` | Existing Passport plan ID for founding members (implies `--founders`) | |
+| `--founders` | Include founding member subscriptions in the migration | `false` |
 | `--create-plans` | Auto-create Subscriber and Founder plans from Stripe data | `false` |
-| `--apply-discounts` | Calculate per-user forever discounts for price differences | `true` |
+| `--apply-discounts` | Calculate per-user forever discounts for price differences; when false, users are moved to the active price | `false` |
+| `--omit-customer-id` | Omit `stripe_customer_id` from the output CSV (for sandbox testing) | `false` |
+| `--omit-payment-methods` | Omit `subscription_payment_method` from the output CSV | `false` |
+| `--migrate-test-cards` | Use Stripe test cards for `subscription_payment_method` based on currency (mutually exclusive with `--omit-payment-methods`) | `false` |
+| `--shift-anchor-dates` | Shift all billing cycle anchor dates forward by a duration (e.g. `24h`, `7d`, `30d`) for testing | |
 
 **How it works:**
 

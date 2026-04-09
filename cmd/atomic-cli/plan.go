@@ -197,6 +197,18 @@ var (
 				},
 				Action: planSubscribe,
 			},
+			{
+				Name:      "import",
+				Usage:     "import plans with prices from a JSON file",
+				ArgsUsage: "<file>",
+				Action:    planImport,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "dry-run",
+						Usage: "preview what would be created without making changes",
+					},
+				},
+			},
 		},
 	}
 )
@@ -457,6 +469,105 @@ func planSubscribe(ctx context.Context, cmd *cli.Command) error {
 		WithSingleValue(true),
 		WithFields("id", "user_id", "plan_id", "price_id", "status", "recurring_interval", "quantity", "created_at"),
 	)
+
+	return nil
+}
+
+func planImport(ctx context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
+		return fmt.Errorf("JSON file is required")
+	}
+
+	dryRun := cmd.Bool("dry-run")
+
+	content, err := os.ReadFile(cmd.Args().First())
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var plans []atomic.Plan
+	if err := json.Unmarshal(content, &plans); err != nil {
+		return fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "parsed %d plans\n", len(plans))
+
+	var planCount, priceCount int
+	for _, plan := range plans {
+		if dryRun {
+			fmt.Fprintf(os.Stderr, "[DRY RUN] would create plan: %s (%s)\n", plan.Name, plan.Type)
+			for _, price := range plan.Prices {
+				fmt.Fprintf(os.Stderr, "  would create price: %s %d %s (%s/%d)\n",
+					price.Name, ptr.Value(price.FlatAmount, 0), price.Currency,
+					ptr.Value(price.RecurringInterval, ""), ptr.Value(price.RecurringFrequency, 0))
+			}
+			planCount++
+			priceCount += len(plan.Prices)
+			continue
+		}
+
+		createInput := &atomic.PlanCreateInput{
+			InstanceID:  inst.UUID,
+			Name:        plan.Name,
+			Description: plan.Description,
+			Type:        plan.Type,
+			Active:      &plan.Active,
+			Hidden:      &plan.Hidden,
+			Default:     &plan.Default,
+			Image:       plan.Image,
+			Metadata:    plan.Metadata,
+			Categories:  plan.Categories,
+		}
+
+		newPlan, err := backend.PlanCreate(ctx, createInput)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to create plan %q: %s\n", plan.Name, err)
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "created plan: %s -> %s\n", newPlan.Name, newPlan.UUID)
+		planCount++
+
+		for _, price := range plan.Prices {
+			priceInput := &atomic.PriceCreateInput{
+				InstanceID: &inst.UUID,
+				PlanID:     newPlan.UUID,
+				Name:       price.Name,
+				Currency:   price.Currency,
+				Active:     &price.Active,
+				Hidden:     &price.Hidden,
+				Amount:     price.FlatAmount,
+				Type:       price.RecurringType,
+				Metered:    price.Metered,
+			}
+
+			if price.CurrencyOptions != nil {
+				priceInput.CurrencyOptions = price.CurrencyOptions
+			}
+
+			if price.RecurringInterval != nil {
+				priceInput.Recurring = &atomic.PriceRecurring{
+					Interval:  string(*price.RecurringInterval),
+					Frequency: int64(ptr.Value(price.RecurringFrequency, 1)),
+				}
+			}
+
+			if price.TrialSettings != nil {
+				priceInput.TrialSettings = price.TrialSettings
+			}
+
+			newPrice, err := backend.PriceCreate(ctx, priceInput)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  failed to create price %q: %s\n", price.Name, err)
+				continue
+			}
+
+			fmt.Fprintf(os.Stderr, "  created price: %s -> %s\n", newPrice.Name, newPrice.UUID)
+			priceCount++
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "%d plans, %d prices created\n", planCount, priceCount)
 
 	return nil
 }

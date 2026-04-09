@@ -23,10 +23,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
+	"github.com/libatomic/atomic/pkg/queue"
+	"github.com/schollz/progressbar/v3"
 	"github.com/urfave/cli/v3"
 )
 
@@ -332,6 +335,11 @@ var (
 						Name:  "verify_user_email",
 						Usage: "override email_verified on all imported users (true=verified, false=unverified); when not set, uses each record's email_verified field",
 						Value: true,
+					},
+					// wait
+					&cli.BoolFlag{
+						Name:  "wait",
+						Usage: "wait for the import job to complete, showing a progress bar",
 					},
 				},
 			},
@@ -655,6 +663,10 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 
 	PrintResult(cmd, []*atomic.Job{job}, WithFields("id", "type", "queue_status", "created_at"))
 
+	if cmd.Bool("wait") {
+		return waitForJob(ctx, job, mainCmd.Bool("verbose"))
+	}
+
 	return nil
 }
 
@@ -683,6 +695,131 @@ func userDelete(ctx context.Context, cmd *cli.Command) error {
 	fmt.Println("User deleted")
 
 	return nil
+}
+
+func waitForJob(ctx context.Context, job *atomic.Job, verbose bool) error {
+	fmt.Fprintf(os.Stderr, "\nwaiting for job %s...\n", job.UUID)
+
+	var bar *progressbar.ProgressBar
+	var barTotal int64
+
+	// start with an indeterminate spinner until we know the total
+	bar = progressbar.NewOptions(-1,
+		progressbar.OptionSetDescription("Starting"),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionSpinnerType(14),
+		progressbar.OptionClearOnFinish(),
+	)
+
+	var logSinceMs *int64
+	pollInterval := 3 * time.Second
+	logLimit := ptr.Uint64(20)
+
+	for {
+		select {
+		case <-ctx.Done():
+			bar.Finish()
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+
+		getInput := &atomic.JobGetInput{
+			JobID:    &job.UUID,
+			LogLimit: logLimit,
+			LogSince: logSinceMs,
+		}
+
+		updated, err := backend.JobGet(ctx, getInput)
+		if err != nil {
+			bar.Finish()
+			return fmt.Errorf("failed to poll job: %w", err)
+		}
+
+		// show new logs above the progress bar if verbose
+		if verbose && len(updated.Logs) > 0 {
+			bar.Clear()
+
+			// logs come in reverse chronological order, print oldest first
+			for i := len(updated.Logs) - 1; i >= 0; i-- {
+				entry := updated.Logs[i]
+				fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", entry.Timestamp.Format("15:04:05"), entry.Level, entry.Message)
+			}
+
+			// update logSince to the most recent log timestamp (unix millis)
+			ms := updated.Logs[0].Timestamp.UnixMilli()
+			logSinceMs = &ms
+		}
+
+		// update progress bar from state status
+		if updated.State != nil {
+			status := updated.State.Status()
+
+			// find the current stage for precise unit-based progress
+			var currentStage *atomic.JobStateStage
+			if status.CurrentStage != "" && status.Stages != nil {
+				currentStage = status.Stages[status.CurrentStage]
+			}
+
+			if currentStage != nil && currentStage.UnitsTotal > 0 {
+				// switch to a unit-based progress bar if the total changed
+				if barTotal != currentStage.UnitsTotal {
+					bar.Finish()
+					barTotal = currentStage.UnitsTotal
+					bar = progressbar.NewOptions(int(barTotal),
+						progressbar.OptionSetDescription(currentStage.Name),
+						progressbar.OptionSetWriter(os.Stderr),
+						progressbar.OptionShowCount(),
+						progressbar.OptionClearOnFinish(),
+						progressbar.OptionSetPredictTime(true),
+					)
+				}
+				bar.Set(int(currentStage.UnitsCompleted))
+			} else {
+				// fallback to percentage-based progress
+				if barTotal == 0 && status.Progress > 0 {
+					bar.Finish()
+					barTotal = 100
+					bar = progressbar.NewOptions(100,
+						progressbar.OptionSetDescription("Processing"),
+						progressbar.OptionSetWriter(os.Stderr),
+						progressbar.OptionShowCount(),
+						progressbar.OptionClearOnFinish(),
+					)
+				}
+				if barTotal > 0 {
+					pct := int(status.Progress * 100)
+					if pct > 100 {
+						pct = 100
+					}
+					bar.Set(pct)
+				}
+			}
+
+			if status.Message != "" {
+				bar.Describe(status.Message)
+			}
+		}
+
+		// check terminal states
+		switch updated.Status {
+		case queue.StatusSuccess:
+			bar.Finish()
+			fmt.Fprintf(os.Stderr, "\njob %s completed successfully\n", job.UUID)
+			return nil
+
+		case queue.StatusError:
+			bar.Finish()
+			errMsg := "unknown error"
+			if updated.Error != nil {
+				errMsg = *updated.Error
+			}
+			return fmt.Errorf("job %s failed: %s", job.UUID, errMsg)
+
+		case queue.StatusCanceled:
+			bar.Finish()
+			return fmt.Errorf("job %s was canceled", job.UUID)
+		}
+	}
 }
 
 var eventLogOptionNames = map[string]atomic.EventLogOption{

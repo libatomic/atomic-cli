@@ -464,6 +464,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--default_subscription_anchor_date` | Default subscription anchor date (RFC3339, e.g. `2026-05-08T21:29:00Z`) | |
 | `--create_teams` | Enable team import processing | `false` |
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
+| `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. | `false` |
 
 **Examples:**
 
@@ -480,6 +481,9 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json
 
 # Config file overridden by CLI flag
 atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --dry_run
+
+# Import and wait for completion with progress bar and log streaming
+atomic-cli user import migrate_users.csv -i inst_abc123 --wait --verbose
 ```
 
 **Example config file (`import-config.json`):**
@@ -1641,18 +1645,17 @@ Rows without a `login` value after mapping are skipped. Both filtered and skippe
 Validates a user import CSV by running per-record validation (`UserImportRecord.Validate()`) and checking uniqueness constraints. Optionally deduplicates the file. Uses the global `--output` flag for the deduplicated output path.
 
 ```bash
-atomic-cli migrate verify [options]
+atomic-cli migrate verify <input.csv> [options]
 ```
 
 **Verify-specific options** (in addition to [common options](#common-options)):
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
-| `--input`, `--in` | Input CSV file path to verify | *required* |
 | `--dedupe` | Deduplicate on the specified field; first occurrence wins | |
 | `--verbose`, `-v` | Print each duplicate row with the colliding field and value | `false` |
 
-When `--dedupe` is set, the deduplicated CSV is written to `--output`. If `--output` resolves to the same file as `--input`, you will be prompted before overwriting.
+When `--dedupe` is set, the deduplicated CSV is written to `--output`. If `--output` resolves to the same file as the input, you will be prompted before overwriting.
 
 Valid `--dedupe` fields: `login`, `email`, `phone_number`, `stripe_customer_id`.
 
@@ -1675,23 +1678,18 @@ When `--dedupe` is not set, duplicates are reported as errors and the command ex
 
 ```bash
 # Validate only — report summary
-atomic-cli migrate verify \
-  --input ./merged-users.csv
+atomic-cli migrate verify ./merged-users.csv
 
 # Validate with verbose duplicate details
-atomic-cli migrate verify \
-  --input ./merged-users.csv \
-  --verbose
+atomic-cli migrate verify ./merged-users.csv --verbose
 
 # Deduplicate on login, writing to a separate file
-atomic-cli migrate verify \
-  --input ./merged-users.csv \
+atomic-cli migrate verify ./merged-users.csv \
   --dedupe login \
   --output ./merged-users-clean.csv
 
 # Deduplicate in place (prompts before overwriting)
-atomic-cli migrate verify \
-  --input ./merged-users.csv \
+atomic-cli migrate verify ./merged-users.csv \
   --dedupe login \
   --output ./merged-users.csv
 ```

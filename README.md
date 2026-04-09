@@ -438,8 +438,8 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
 | `--dry_run` | Preview import without creating or updating users | `false` |
 | `--existing_user_behavior` | Behavior for existing users: `skip`, `merge` (update and process subscriptions), `recreate` (delete and re-create) | `merge` |
-| `--validate_user_email` | Validate user email addresses | `true` |
-| `--user_email_verified` | Mark all imported user emails as verified | `false` |
+| `--validate_user_email` | Validate user email addresses | `false` |
+| `--verify_user_email` | Override `email_verified` on all records (overrides each record's field when set) | `true` |
 | `--user_event_options` | User event options: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Default is log-only for imports. Set to `LOG\|EMIT\|CONTEXT` for full event processing, or `SUPPRESS` to suppress all. | `LOG` |
 | `--rebuild_audiences` | Rebuild audiences after import | `true` |
 | `--import_audience_id` | Audience ID to add imported users to | |
@@ -467,7 +467,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 # Import with CLI flags
 atomic-cli user import migrate_users.csv \
   -i inst_abc123 \
-  --user_email_verified \
+  --verify_user_email \
   --subscribe_plans plan_abc123 \
   --auto_subscribe_behavior all_users
 
@@ -483,7 +483,7 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --
 ```json
 {
   "dry_run": false,
-  "user_email_verified": true,
+  "verify_user_email": true,
   "default_plan_behavior": "all",
   "subscribe_plans": ["plan_abc123", "plan_def456"],
   "subscribe_behavior": "all_users",

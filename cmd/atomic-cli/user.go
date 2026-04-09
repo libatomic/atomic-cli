@@ -323,8 +323,9 @@ var (
 					},
 					// email
 					&cli.BoolFlag{
-						Name:  "user_email_verified",
-						Usage: "mark all imported user emails as verified",
+						Name:  "verify_user_email",
+						Usage: "override email_verified on all imported users (true=verified, false=unverified); when not set, uses each record's email_verified field",
+						Value: true,
 					},
 				},
 			},

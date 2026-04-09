@@ -1166,7 +1166,7 @@ atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate --creat
 
 ### Import Command
 
-Import data from a remote Passport instance into the local instance. Connects to a remote API, lists objects, and creates/updates them locally.
+Import data from a remote Passport instance into the local instance. Connects to a remote API, lists objects by type, and creates or updates them in the target instance specified by `-i`. Uses progress bars and spinners during fetching and importing, and prints a summary table at the end.
 
 ```bash
 atomic-cli -i <target_instance> import [options]
@@ -1182,10 +1182,37 @@ atomic-cli -i <target_instance> import [options]
 | `--remote-client-secret` | Remote client secret for client credentials auth | |
 | `--types`, `-t` | Types to import (repeatable): `categories`, `plans`, `audiences`, `templates`, `assets`, `articles` | *required* |
 | `--plan-types` | Plan types to import: `paid`, `free`, `all` | `all` |
-| `--overwrite` | Overwrite existing items | `true` |
+| `--overwrite` | Overwrite existing items (matched by name) | `true` |
 | `--dry-run` | Preview what would be imported without making changes | `false` |
 
-Types are imported in dependency order: categories, plans, audiences, templates, assets, articles.
+Use the global `-v` / `--verbose` flag to show individual items being imported and detailed error messages.
+
+**Import order and behavior:**
+
+Types are imported in dependency order to ensure references resolve correctly:
+
+1. **Categories** — matched by name. Created or updated in target.
+2. **Plans** — fetched with prices and categories via preload. Plan categories are remapped from source to target by slug/name. Plan images are downloaded from remote URLs and created as local public assets. Prices are created for each plan; duplicate prices (same name on same plan) are silently skipped. The `--plan-types` flag filters by `paid`, `free`, or `all`.
+3. **Audiences** — internal audiences are automatically skipped. Audience expression filters that reference `category_id.$in` UUIDs are remapped from source category UUIDs to target category UUIDs (matched by category name). Matched by name for overwrite.
+4. **Templates** — uses the built-in `Overwrite` flag on `TemplateCreate`. Preserves slug, type, title, body, settings, defaults, metadata, and events.
+5. **Assets** — created from remote URLs. The server downloads the content and determines size and mime type.
+6. **Articles** — fetched in pages of 100 (paginated). Categories are remapped by ID. Verbose mode does not list individual articles due to potential volume.
+
+**Summary table:**
+
+After all types are processed, a summary table is printed:
+
+```
+Type              Found  Created  Updated  Skipped   Errors
+-----------------------------------------------------------------
+Categories           33       33        0        0        0
+Plans                 9        9        0        0        0
+Prices               10       10        0        0        0
+Audiences            25       25        0        0        0
+Templates            12       12        0        0        0
+-----------------------------------------------------------------
+import complete
+```
 
 **Examples:**
 
@@ -1196,8 +1223,8 @@ atomic-cli -i prod_inst import \
   --remote-client-id xxx --remote-client-secret yyy \
   --types categories,plans
 
-# Import everything, dry run
-atomic-cli -i local_inst import \
+# Import everything with verbose output, dry run
+atomic-cli -v -i local_inst import \
   --remote-host api.source.com \
   --remote-token bearer_xxx \
   --types categories,plans,audiences,templates,articles \
@@ -1210,6 +1237,12 @@ atomic-cli -i new_inst import \
   --types plans \
   --plan-types paid \
   --overwrite=false
+
+# Full instance clone (all content types)
+atomic-cli -v -i target_inst import \
+  --remote-host api.source.com \
+  --remote-client-id xxx --remote-client-secret yyy \
+  --types categories,plans,audiences,templates,assets,articles
 ```
 
 ### Migrate Command

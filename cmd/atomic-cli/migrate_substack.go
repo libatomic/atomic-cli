@@ -102,9 +102,23 @@ var (
 			Value: false,
 		},
 		&cli.BoolFlag{
-			Name:  "apply-discounts",
-			Usage: "calculate and apply per-user forever discounts for price differences; when false, users are moved to the active price for their interval",
+			Name:  "legacy-pricing",
+			Usage: "calculate forever discounts for users on grandfathered prices (price difference between source and target plan)",
 			Value: false,
+		},
+		&cli.BoolFlag{
+			Name:  "apply-discounts",
+			Usage: "carry over existing Stripe subscription coupons/discounts to the import CSV",
+			Value: true,
+		},
+		&cli.Float64Flag{
+			Name:  "discount-threshold",
+			Usage: "minimum discount percentage to include (discounts below this are ignored)",
+			Value: 1,
+		},
+		&cli.StringFlag{
+			Name:  "discount-term",
+			Usage: "override the discount term for all applied discounts (once, repeating, forever); when not set, uses the coupon's original term",
 		},
 		&cli.BoolFlag{
 			Name:  "omit-customer-id",
@@ -171,7 +185,10 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 
 	founderPlan := cmd.String("founder-plan")
 	founders := cmd.Bool("founders")
+	legacyPricing := cmd.Bool("legacy-pricing")
 	applyDiscounts := cmd.Bool("apply-discounts")
+	discountThreshold := cmd.Float64("discount-threshold")
+	discountTermOverride := cmd.String("discount-term")
 	omitCustomerID := cmd.Bool("omit-customer-id")
 	omitPaymentMethods := cmd.Bool("omit-payment-methods")
 	migrateTestCard := cmd.Bool("migrate-test-cards")
@@ -296,9 +313,42 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		log.Warn("no active subscriptions found")
 	}
 
-	// Pass 5: Calculate per-user discounts
+	// Pass 5: Process discounts
+	// Parse discount term override if provided
+	var termOverride *atomic.CreditTerm
+	if discountTermOverride != "" {
+		t := atomic.CreditTerm(discountTermOverride)
+		termOverride = &t
+	}
+
+	// Apply discount threshold filter and term override on existing Stripe coupons
 	if applyDiscounts {
-		calculatePerUserDiscounts(records, mapping)
+		for _, rec := range records {
+			if rec.DiscountPct == nil {
+				continue
+			}
+			// filter below threshold
+			if *rec.DiscountPct < discountThreshold {
+				rec.DiscountPct = nil
+				rec.DiscountTerm = nil
+				continue
+			}
+			// apply term override
+			if termOverride != nil {
+				rec.DiscountTerm = termOverride
+			}
+		}
+	} else {
+		// --apply-discounts=false: strip all existing coupon discounts
+		for _, rec := range records {
+			rec.DiscountPct = nil
+			rec.DiscountTerm = nil
+		}
+	}
+
+	// Legacy pricing: calculate price-difference discounts
+	if legacyPricing {
+		calculateLegacyPricingDiscounts(records, mapping)
 	}
 
 	// Pass 6: Write CSV(s)
@@ -981,17 +1031,20 @@ func mapSubstackPriceToPassportPlan(sp *substackPrice, mapping *passportPlanMapp
 	}
 }
 
-func calculatePerUserDiscounts(records []*migrationRecord, mapping *passportPlanMapping) {
+// calculateLegacyPricingDiscounts computes a forever discount based on the
+// difference between the subscriber's source price and the target plan price.
+// If the record already has a discount (from an existing Stripe coupon), the
+// percentages are added together and the term is set to forever.
+func calculateLegacyPricingDiscounts(records []*migrationRecord, mapping *passportPlanMapping) {
 	for _, rec := range records {
 		passportAmount, ok := mapping.getAmount(rec.PlanID, rec.Interval, rec.Currency)
 		if !ok || passportAmount <= 0 {
-			log.Warnf("no Passport price found for plan %s interval %s currency %s (%s); skipping discount",
+			log.Warnf("no Passport price found for plan %s interval %s currency %s (%s); skipping legacy pricing",
 				rec.PlanID, rec.Interval, rec.Currency, rec.Email)
 			continue
 		}
 
 		if rec.UserAmount <= 0 {
-			log.Warnf("no user amount in %s for %s; skipping discount", rec.Currency, rec.Email)
 			continue
 		}
 
@@ -999,9 +1052,19 @@ func calculatePerUserDiscounts(records []*migrationRecord, mapping *passportPlan
 			continue
 		}
 
-		pct := math.Round((1.0-float64(rec.UserAmount)/float64(passportAmount))*10000) / 100
+		legacyPct := math.Round((1.0-float64(rec.UserAmount)/float64(passportAmount))*10000) / 100
 		term := atomic.CreditTermForever
-		rec.DiscountPct = &pct
+
+		if rec.DiscountPct != nil {
+			// combine with existing coupon discount
+			combined := *rec.DiscountPct + legacyPct
+			if combined > 100 {
+				combined = 100
+			}
+			rec.DiscountPct = &combined
+		} else {
+			rec.DiscountPct = &legacyPct
+		}
 		rec.DiscountTerm = &term
 	}
 }

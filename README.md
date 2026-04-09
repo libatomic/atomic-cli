@@ -1362,7 +1362,10 @@ atomic-cli migrate substack [options]
 | `--founder-plan` | Existing Passport plan ID for founding members (implies `--founders`) | |
 | `--founders` | Include founding member subscriptions in the migration | `false` |
 | `--create-plans` | Auto-create Subscriber and Founder plans from Stripe data | `false` |
-| `--apply-discounts` | Calculate per-user forever discounts for price differences; when false, users are moved to the active price | `false` |
+| `--legacy-pricing` | Calculate forever discounts for users on grandfathered prices (price difference between source and target plan) | `false` |
+| `--apply-discounts` | Carry over existing Stripe subscription coupons/discounts to the import CSV | `true` |
+| `--discount-threshold` | Minimum discount percentage to include (discounts below this are ignored) | `1` |
+| `--discount-term` | Override the discount term for all applied discounts (`once`, `repeating`, `forever`); when not set, uses the coupon's original term | |
 | `--omit-customer-id` | Omit `stripe_customer_id` from the output CSV (for sandbox testing) | `false` |
 | `--omit-payment-methods` | Omit `subscription_payment_method` from the output CSV | `false` |
 | `--migrate-test-cards` | Use Stripe test cards for `subscription_payment_method` based on currency (mutually exclusive with `--omit-payment-methods`) | `false` |
@@ -1385,7 +1388,10 @@ atomic-cli migrate substack [options]
    - The Stripe price and subscription IDs (written as `migrate_stripe_price` and `migrate_stripe_subscription` in the CSV for audit purposes)
    - Cancellation handling: if `cancel_at` or `cancel_at_period_end` is set, the subscription end date is recorded and the billing anchor is omitted. Otherwise, the billing cycle anchor is advanced by one interval if it falls in the past.
 
-5. **Discount calculation** - When `--apply-discounts` is enabled, compares each subscriber's price (in their subscription currency) against the corresponding Passport plan price at the same interval and currency. If the subscriber's rate is lower, a forever percentage discount is calculated so they keep their grandfathered price. If their rate is equal to or higher than the current price, no discount is applied.
+5. **Discount handling** - Two types of discounts can be applied:
+   - **Existing coupons** (`--apply-discounts`, default on): Stripe subscription discounts/coupons are carried over. The `--discount-threshold` filters out discounts below a minimum percentage (default 1%). The `--discount-term` can override the coupon's original term.
+   - **Legacy pricing** (`--legacy-pricing`): Compares each subscriber's source price against the target Passport plan price. If the subscriber's rate is lower, a forever percentage discount is calculated to preserve their grandfathered price.
+   - When both are enabled and a subscriber has an existing coupon AND a legacy price difference, the percentages are added together (capped at 100%) and the term is set to `forever`.
 
 6. **CSV output** - In default mode (no plans), writes two CSVs: `migrate_users-<id>-subscribers.csv` and `migrate_users-<id>-founders.csv` (if founders exist), without `subscription_plan_id`. In plan mode, writes a single CSV (suffixed with `-<stripe_account_id>`) with `subscription_plan_id` set. All CSVs include `migrate_stripe_price` and `migrate_stripe_subscription` audit columns.
 
@@ -1404,19 +1410,27 @@ atomic-cli migrate substack \
   --create-plans \
   --dry-run
 
-# Auto-create plans and apply discounts
+# Auto-create plans with legacy pricing discounts
 atomic-cli migrate substack \
   -i inst_abc123 \
   --stripe-key sk_live_xxx \
   --create-plans \
+  --legacy-pricing \
   --out production_migrate.csv
 
-# Use existing plans, skip discount calculation
+# Use existing plans, carry over coupons with 5% threshold
 atomic-cli migrate substack \
   -i inst_abc123 \
   --stripe-key sk_live_xxx \
   --subscriber-plan plan_abc123 \
   --founder-plan plan_def456 \
+  --discount-threshold 5
+
+# Use existing plans, strip all discounts
+atomic-cli migrate substack \
+  -i inst_abc123 \
+  --stripe-key sk_live_xxx \
+  --subscriber-plan plan_abc123 \
   --apply-discounts=false
 
 # Rewrite emails for safe testing against a staging environment (no instance required)

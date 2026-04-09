@@ -295,6 +295,7 @@ var (
 					&cli.StringFlag{
 						Name:  "discount_behavior",
 						Usage: "discount behavior: aggregate (shared coupons), individual (per-user coupons), none",
+						Value: "aggregate",
 					},
 					// default subscription settings
 					&cli.Float64Flag{

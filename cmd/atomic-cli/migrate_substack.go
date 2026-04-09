@@ -139,6 +139,10 @@ var (
 			Name:  "shift-anchor-dates",
 			Usage: "shift all billing cycle anchor dates forward by a duration (e.g. 24h, 7d, 30d) for testing",
 		},
+		&cli.IntFlag{
+			Name:  "estimated-total",
+			Usage: "estimated total subscriptions (enables a progress bar instead of a spinner)",
+		},
 	)
 
 	migrateSubstackCmd = &cli.Command{
@@ -300,7 +304,12 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Pass 4: Collect active subscriptions
-	bar = newMigrateSpinner("Collecting subscriptions")
+	estimatedTotal := int(cmd.Int("estimated-total"))
+	if estimatedTotal > 0 {
+		bar = newMigrateProgress(estimatedTotal, "Collecting subscriptions")
+	} else {
+		bar = newMigrateSpinner("Collecting subscriptions")
+	}
 	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, bar)
 	bar.Finish()
 	if err != nil {
@@ -892,6 +901,7 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
+	startTime := time.Now()
 
 	for _, sp := range prices {
 		// check for cancellation
@@ -909,7 +919,7 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 			continue
 		}
 
-		bar.Describe(fmt.Sprintf("Collecting subscriptions (%d found)", len(records)))
+		bar.Describe(collectingSubsStatus(len(records), startTime))
 
 		params := &stripe.SubscriptionListParams{}
 		params.Filters.AddFilter("price", "", sp.StripePrice.ID)
@@ -1040,7 +1050,7 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 
 			records = append(records, rec)
 			bar.Add(1)
-			bar.Describe(fmt.Sprintf("Collecting subscriptions (%d found)", len(records)))
+			bar.Describe(collectingSubsStatus(len(records), startTime))
 
 			if limit > 0 && len(records) >= limit {
 				break
@@ -1057,6 +1067,15 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 	}
 
 	return records, nil
+}
+
+func collectingSubsStatus(count int, start time.Time) string {
+	elapsed := time.Since(start).Seconds()
+	if elapsed < 1 || count == 0 {
+		return fmt.Sprintf("Collecting subscriptions (%d found)", count)
+	}
+	rate := float64(count) / elapsed
+	return fmt.Sprintf("Collecting subscriptions (%d found, %.1f/s)", count, rate)
 }
 
 func mapSubstackPriceToPassportPlan(sp *substackPrice, mapping *passportPlanMapping) (string, atomic.SubscriptionInterval) {

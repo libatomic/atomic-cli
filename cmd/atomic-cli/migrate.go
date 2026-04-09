@@ -303,11 +303,11 @@ func extractTemplateArg(tag, funcName string) string {
 	return ""
 }
 
-// sanitizeEmail converts an email to a safe string.
-// bob+test@hotmail.com → bob_test_hotmail_com
+// sanitizeEmail converts an email to a lowercase login-safe string.
+// Bob+Test@Hotmail.com → bob*test*hotmail.com
 func sanitizeEmail(email string) string {
-	r := strings.NewReplacer("@", "_", ".", "_", "+", "_", "-", "_")
-	return r.Replace(email)
+	r := strings.NewReplacer("@", "*", "+", "*")
+	return strings.ToLower(r.Replace(email))
 }
 
 // shortHash returns the first 8 hex characters of the SHA-256 hash.

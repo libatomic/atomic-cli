@@ -32,22 +32,17 @@ var (
 	migrateVerifyFlags = append(
 		migrateCommonFlags,
 		&cli.StringFlag{
-			Name:     "input",
-			Aliases:  []string{"in"},
-			Usage:    "input CSV file path to verify",
-			Required: true,
-		},
-		&cli.StringFlag{
 			Name:  "dedupe",
 			Usage: "deduplicate records on the specified field; first occurrence wins (valid: login, email, phone_number, stripe_customer_id)",
 		},
 	)
 
 	migrateVerifyCmd = &cli.Command{
-		Name:   "verify",
-		Usage:  "validate a user import CSV and optionally deduplicate records",
-		Flags:  migrateVerifyFlags,
-		Action: migrateVerifyAction,
+		Name:      "verify",
+		Usage:     "validate a user import CSV and optionally deduplicate records",
+		ArgsUsage: "<input.csv>",
+		Flags:     migrateVerifyFlags,
+		Action:    migrateVerifyAction,
 	}
 )
 
@@ -65,7 +60,10 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	inputPath := cmd.String("input")
+	inputPath := cmd.Args().First()
+	if inputPath == "" {
+		return fmt.Errorf("input CSV file path is required")
+	}
 	dedupeField := cmd.String("dedupe")
 	verbose := mainCmd.Bool("verbose")
 
@@ -133,6 +131,9 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 
 	// track duplicates: field name -> count
 	duplicateCounts := make(map[string]int)
+	// track rows already flagged as duplicates to avoid double-counting
+	// when login and email have the same value
+	dupeRows := make(map[int]bool)
 
 	for _, uf := range uniqueFields {
 		seen := make(map[string]int) // value -> first row (1-based)
@@ -143,14 +144,18 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 				continue
 			}
 			if firstRow, exists := seen[val]; exists {
-				issues = append(issues, verifyIssue{
-					Row:     row,
-					Login:   rec.Login,
-					Field:   uf.name,
-					Value:   val,
-					Message: fmt.Sprintf("duplicate %s (first seen at row %d)", uf.name, firstRow),
-				})
-				duplicateCounts[uf.name]++
+				// only report if this row hasn't already been flagged as a duplicate
+				if !dupeRows[row] {
+					issues = append(issues, verifyIssue{
+						Row:     row,
+						Login:   rec.Login,
+						Field:   uf.name,
+						Value:   val,
+						Message: fmt.Sprintf("duplicate %s (first seen at row %d)", uf.name, firstRow),
+					})
+					duplicateCounts[uf.name]++
+					dupeRows[row] = true
+				}
 			} else {
 				seen[val] = row
 			}

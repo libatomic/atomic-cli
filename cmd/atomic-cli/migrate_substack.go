@@ -300,8 +300,8 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Pass 4: Collect active subscriptions
-	bar = newMigrateProgress(len(allPrices), "Collecting subscriptions")
-	records, err := collectSubstackSubscriptions(sc, allPrices, mapping, founders, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, bar)
+	bar = newMigrateSpinner("Collecting subscriptions")
+	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
@@ -396,6 +396,40 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 			fmt.Fprintf(os.Stderr, "wrote %d records to %s\n", len(records), output)
 		}
 	}
+
+	// Print export summary
+	var monthly, yearly, once, withDiscount, withEndAt int
+	for _, rec := range records {
+		switch rec.Interval {
+		case atomic.SubscriptionIntervalMonth:
+			monthly++
+		case atomic.SubscriptionIntervalYear:
+			yearly++
+		case atomic.SubscriptionIntervalOnce:
+			once++
+		}
+		if rec.DiscountPct != nil && *rec.DiscountPct > 0 {
+			withDiscount++
+		}
+		if rec.EndAt != nil {
+			withEndAt++
+		}
+	}
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "Export Summary\n")
+	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 35))
+	fmt.Fprintf(os.Stderr, "%-20s %10d\n", "Total", len(records))
+	fmt.Fprintf(os.Stderr, "%-20s %10d\n", "Monthly", monthly)
+	fmt.Fprintf(os.Stderr, "%-20s %10d\n", "Yearly", yearly)
+	if once > 0 {
+		fmt.Fprintf(os.Stderr, "%-20s %10d\n", "One-time", once)
+	}
+	fmt.Fprintf(os.Stderr, "%-20s %10d\n", "With discount", withDiscount)
+	if withEndAt > 0 {
+		fmt.Fprintf(os.Stderr, "%-20s %10d\n", "Canceling", withEndAt)
+	}
+	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 35))
 
 	return nil
 }
@@ -855,24 +889,27 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 	return mapping, nil
 }
 
-func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
+func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
 
 	for _, sp := range prices {
+		// check for cancellation
+		if ctx.Err() != nil {
+			return records, ctx.Err()
+		}
+
 		// skip founding prices when --founders is not set
 		if sp.PriceType == "founding" && !founders {
-			bar.Add(1)
 			continue
 		}
 
 		planID, interval := mapSubstackPriceToPassportPlan(sp, mapping)
 		if planID == "" {
-			bar.Add(1)
 			continue
 		}
 
-		bar.Describe(fmt.Sprintf("Scanning price %s", sp.StripePrice.ID))
+		bar.Describe(fmt.Sprintf("Collecting subscriptions (%d found)", len(records)))
 
 		params := &stripe.SubscriptionListParams{}
 		params.Filters.AddFilter("price", "", sp.StripePrice.ID)
@@ -885,6 +922,10 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 		iter := sc.Subscriptions.List(params)
 		for iter.Next() {
 			sub := iter.Subscription()
+
+			if ctx.Err() != nil {
+				return records, ctx.Err()
+			}
 
 			if sub.Customer == nil {
 				continue
@@ -902,7 +943,10 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			}
 
 			currency := string(sub.Currency)
-			userAmount := getUserAmount(sp.StripePrice, currency)
+			var userAmount int64
+			if legacyPricing {
+				userAmount = getUserAmount(sp.StripePrice, currency)
+			}
 
 			quantity := 1
 			if sub.Items != nil {
@@ -995,6 +1039,8 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 			}
 
 			records = append(records, rec)
+			bar.Add(1)
+			bar.Describe(fmt.Sprintf("Collecting subscriptions (%d found)", len(records)))
 
 			if limit > 0 && len(records) >= limit {
 				break
@@ -1004,8 +1050,6 @@ func collectSubstackSubscriptions(sc *stripeclient.API, prices []*substackPrice,
 		if err := iter.Err(); err != nil {
 			return nil, fmt.Errorf("failed to list subscriptions for price %s: %w", sp.StripePrice.ID, err)
 		}
-
-		bar.Add(1)
 
 		if limit > 0 && len(records) >= limit {
 			break

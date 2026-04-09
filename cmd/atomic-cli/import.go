@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -569,6 +570,35 @@ func importAudiences(ctx context.Context, remote *client.Client, dryRun bool, ov
 		}
 	}
 
+	// build category UUID mapping: source UUID string → target UUID string
+	// audiences reference categories by raw UUID in their expr filters
+	remoteCats, _ := remote.CategoryList(ctx, &atomic.CategoryListInput{})
+	targetCats, _ := backend.CategoryList(ctx, &atomic.CategoryListInput{InstanceID: inst.UUID})
+
+	// source raw UUID → category name
+	sourceCatUUIDToName := make(map[string]string)
+	for _, rc := range remoteCats {
+		sourceCatUUIDToName[rc.ID.UUID().String()] = rc.Name
+	}
+
+	// category name → target raw UUID
+	targetCatNameToUUID := make(map[string]string)
+	for _, tc := range targetCats {
+		targetCatNameToUUID[tc.Name] = tc.ID.UUID().String()
+	}
+
+	// source raw UUID → target raw UUID
+	catUUIDMap := make(map[string]string)
+	for sourceUUID, name := range sourceCatUUIDToName {
+		if targetUUID, ok := targetCatNameToUUID[name]; ok {
+			catUUIDMap[sourceUUID] = targetUUID
+		}
+	}
+
+	if verbose && len(catUUIDMap) > 0 {
+		fmt.Fprintf(os.Stderr, "  mapped %d category UUIDs for expr remapping\n", len(catUUIDMap))
+	}
+
 	// cache existing audiences by name
 	existingAuds, _ := backend.AudienceList(ctx, &atomic.AudienceListInput{
 		InstanceID:        inst.UUID,
@@ -589,6 +619,9 @@ func importAudiences(ctx context.Context, remote *client.Client, dryRun bool, ov
 			continue
 		}
 
+		// remap category UUIDs in the audience expr
+		remappedExpr := remapAudienceExpr(aud.Expr, catUUIDMap)
+
 		existingAud := existingAudByName[aud.Name]
 
 		if existingAud != nil && !overwrite {
@@ -601,7 +634,7 @@ func importAudiences(ctx context.Context, remote *client.Client, dryRun bool, ov
 				InstanceID: inst.UUID,
 				AudienceID: existingAud.UUID,
 				Name:       &aud.Name,
-				Expr:       &aud.Expr,
+				Expr:       &remappedExpr,
 			}); err != nil {
 				stats.Errors++
 				if verbose {
@@ -616,8 +649,8 @@ func importAudiences(ctx context.Context, remote *client.Client, dryRun bool, ov
 				Name:       aud.Name,
 				Metadata:   aud.Metadata,
 			}
-			if aud.Expr.Source != "" {
-				input.Expr = &aud.Expr
+			if remappedExpr.Source != "" {
+				input.Expr = &remappedExpr
 			}
 			if aud.Static {
 				input.Static = &aud.Static
@@ -839,6 +872,32 @@ func importArticles(ctx context.Context, remote *client.Client, dryRun bool, ver
 
 	bar.Finish()
 	return stats, nil
+}
+
+// remapAudienceExpr replaces source category UUIDs in the audience expression
+// filter with target category UUIDs. Works by marshaling to JSON, doing string
+// replacements, and unmarshaling back.
+func remapAudienceExpr(expr atomic.AudienceExpr, uuidMap map[string]string) atomic.AudienceExpr {
+	if len(uuidMap) == 0 {
+		return expr
+	}
+
+	data, err := json.Marshal(expr)
+	if err != nil {
+		return expr
+	}
+
+	s := string(data)
+	for sourceUUID, targetUUID := range uuidMap {
+		s = strings.ReplaceAll(s, sourceUUID, targetUUID)
+	}
+
+	var result atomic.AudienceExpr
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		return expr
+	}
+
+	return result
 }
 
 // importImageAsAsset creates a local asset from a remote image URL.

@@ -456,6 +456,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--trial_end_at` | Trial end date/time | |
 | `--trial_existing_users` | Apply trial to existing users without a subscription | `false` |
 | `--trial_behavior` | Trial behavior: `all`, `non_subscribers`, `none` | `non_subscribers` |
+| `--discount_behavior` | Discount behavior: `aggregate` (shared instance coupons), `individual` (per-user coupons), `none` | `aggregate` |
 | `--default_discount_percentage` | Default discount percentage for subscriptions | |
 | `--default_discount_term` | Default discount term: `once`, `repeating`, `forever` | `forever` |
 | `--default_discount_duration_days` | Default discount duration in days | |

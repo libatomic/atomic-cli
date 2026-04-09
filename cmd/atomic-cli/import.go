@@ -26,9 +26,9 @@ import (
 	"path"
 	"strings"
 
+	client "github.com/libatomic/atomic-go"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
-	client "github.com/libatomic/atomic-go"
 	"github.com/urfave/cli/v3"
 )
 
@@ -903,7 +903,7 @@ func remapAudienceExpr(expr atomic.AudienceExpr, uuidMap map[string]string) atom
 // importImageAsAsset creates a local asset from a remote image URL.
 // The server downloads the image, determines size and mime type.
 // Returns the local asset link URL on success.
-func importImageAsAsset(ctx context.Context, imageURL string, verbose bool) (string, error) {
+func importImageAsAsset(ctx context.Context, imageURL string, _ bool) (string, error) {
 	parsed, err := url.Parse(imageURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid image URL: %w", err)
@@ -931,4 +931,3 @@ func importImageAsAsset(ctx context.Context, imageURL string, verbose bool) (str
 
 	return fmt.Sprintf("/assets/%s", asset.UUID), nil
 }
-

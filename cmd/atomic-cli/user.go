@@ -291,6 +291,11 @@ var (
 						Name:  "trial_behavior",
 						Usage: "trial behavior: all, non_subscribers, none",
 					},
+					// discounts
+					&cli.StringFlag{
+						Name:  "discount_behavior",
+						Usage: "discount behavior: aggregate (shared coupons), individual (per-user coupons), none",
+					},
 					// default subscription settings
 					&cli.Float64Flag{
 						Name:  "default_discount_percentage",

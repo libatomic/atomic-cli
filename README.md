@@ -464,6 +464,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--default_subscription_anchor_date` | Default subscription anchor date (RFC3339, e.g. `2026-05-08T21:29:00Z`) | |
 | `--create_teams` | Enable team import processing | `false` |
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
+| `--job_event_options` | Event options for the job completed event: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Controls whether the completion event triggers emails, webhooks, etc. | |
 | `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. | `false` |
 
 **Examples:**

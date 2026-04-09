@@ -74,6 +74,14 @@ var (
 				Name:  "dry-run",
 				Usage: "preview what would be imported without making changes",
 			},
+			&cli.StringFlag{
+				Name:  "email-domain",
+				Usage: "rewrite email domains in template metadata (from_address, reply_to) to this domain; defaults to the target instance name",
+			},
+			&cli.StringFlag{
+				Name:  "email-name",
+				Usage: "rewrite email display names in template metadata (from_address, reply_to) to this name; defaults to target instance title",
+			},
 		},
 		Action: importAction,
 	}
@@ -100,6 +108,11 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	overwrite := cmd.Bool("overwrite")
 	dryRun := cmd.Bool("dry-run")
 	verbose := mainCmd.Bool("verbose")
+	emailDomain := cmd.String("email-domain")
+	if emailDomain == "" && inst != nil {
+		emailDomain = inst.Name
+	}
+	emailName := cmd.String("email-name")
 
 	if remoteToken == "" && (remoteClientID == "" || remoteClientSecret == "") {
 		return fmt.Errorf("either --remote-token or --remote-client-id and --remote-client-secret are required")
@@ -171,7 +184,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if typeSet["templates"] {
-		stats, err := importTemplates(ctx, remote, dryRun, overwrite, verbose)
+		stats, err := importTemplates(ctx, remote, dryRun, overwrite, verbose, emailDomain, emailName)
 		if err != nil {
 			return fmt.Errorf("templates: %w", err)
 		}
@@ -302,6 +315,7 @@ func importCategories(ctx context.Context, remote *client.Client, dryRun bool, o
 func importPlans(ctx context.Context, remote *client.Client, dryRun bool, overwrite bool, planTypes string, verbose bool) ([]importStats, error) {
 	planStats := importStats{Type: "Plans"}
 	priceStats := importStats{Type: "Prices"}
+	volumeCreditMap := make(map[string]atomic.ID) // source credit ID → target credit ID
 
 	bar := newMigrateSpinner("Fetching plans")
 	plans, err := remote.PlanList(ctx, &atomic.PlanListInput{})
@@ -488,16 +502,58 @@ func importPlans(ctx context.Context, remote *client.Client, dryRun bool, overwr
 		}
 
 		for _, price := range plan.Prices {
+			// migrate volume credit if needed
+			var volumeCreditID *atomic.ID
+			if price.VolumeCreditID != nil {
+				if mapped, ok := volumeCreditMap[string(*price.VolumeCreditID)]; ok {
+					volumeCreditID = &mapped
+				} else if !dryRun {
+					// use the volume credit from the preloaded price
+					if price.VolumeCredit == nil {
+						if verbose {
+							fmt.Fprintf(os.Stderr, "\n  error fetching volume credit %s: credit not found on preloaded price\n", *price.VolumeCreditID)
+						}
+					} else {
+						sourceCredit := price.VolumeCredit
+						newCredit, err := backend.CreditCreate(ctx, &atomic.CreditCreateInput{
+							InstanceID: inst.UUID,
+							Type:       atomic.CreditTypeVolumeDiscount,
+							Name:       sourceCredit.Name,
+							PercentOff: sourceCredit.PercentOff,
+							Amount:     sourceCredit.Amount,
+							Term:       sourceCredit.Term,
+							Duration:   sourceCredit.Duration,
+							Metadata:   sourceCredit.Metadata,
+						})
+						if err != nil {
+							if verbose {
+								fmt.Fprintf(os.Stderr, "\n  error creating volume credit: %s\n", err)
+							}
+						} else {
+							volumeCreditID = &newCredit.UUID
+							volumeCreditMap[string(*price.VolumeCreditID)] = newCredit.UUID
+							if verbose {
+								fmt.Fprintf(os.Stderr, "\n  created volume credit %s → %s\n", *price.VolumeCreditID, newCredit.UUID)
+							}
+						}
+					}
+				}
+			}
+
 			priceInput := &atomic.PriceCreateInput{
-				InstanceID: &inst.UUID,
-				PlanID:     targetPlanID,
-				Name:       price.Name,
-				Currency:   price.Currency,
-				Active:     &price.Active,
-				Hidden:     &price.Hidden,
-				Amount:     price.FlatAmount,
-				Type:       price.RecurringType,
-				Metered:    price.Metered,
+				InstanceID:     &inst.UUID,
+				PlanID:         targetPlanID,
+				Name:           price.Name,
+				Currency:       price.Currency,
+				Active:         &price.Active,
+				Hidden:         &price.Hidden,
+				Amount:         price.FlatAmount,
+				Type:           price.RecurringType,
+				Metered:        price.Metered,
+				Volume:         &price.Volume,
+				VolumeCreditID: volumeCreditID,
+				TierMode:       price.TierMode,
+				Tiers:          price.Tiers,
 			}
 
 			if price.CurrencyOptions != nil {
@@ -670,7 +726,7 @@ func importAudiences(ctx context.Context, remote *client.Client, dryRun bool, ov
 	return stats, nil
 }
 
-func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, overwrite bool, verbose bool) (importStats, error) {
+func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, overwrite bool, verbose bool, emailDomain string, emailName string) (importStats, error) {
 	stats := importStats{Type: "Templates"}
 
 	bar := newMigrateSpinner("Fetching templates")
@@ -693,6 +749,31 @@ func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, ov
 		}
 	}
 
+	// build audience ID mapping: source ID → name, name → target ID
+	remoteAuds, _ := remote.AudienceList(ctx, &atomic.AudienceListInput{ReturnMemberCount: ptr.False})
+	targetAuds, _ := backend.AudienceList(ctx, &atomic.AudienceListInput{InstanceID: inst.UUID, ReturnMemberCount: ptr.False})
+
+	sourceAudIDToName := make(map[string]string)
+	for _, a := range remoteAuds {
+		sourceAudIDToName[string(a.UUID)] = a.Name
+	}
+
+	targetAudNameToID := make(map[string]string)
+	for _, a := range targetAuds {
+		targetAudNameToID[a.Name] = string(a.UUID)
+	}
+
+	audIDMap := make(map[string]string)
+	for sourceID, name := range sourceAudIDToName {
+		if targetID, ok := targetAudNameToID[name]; ok {
+			audIDMap[sourceID] = targetID
+		}
+	}
+
+	if verbose && len(audIDMap) > 0 {
+		fmt.Fprintf(os.Stderr, "  mapped %d audience IDs for template metadata remapping\n", len(audIDMap))
+	}
+
 	bar = newMigrateProgress(len(templates), "Importing templates")
 
 	for _, tmpl := range templates {
@@ -702,6 +783,10 @@ func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, ov
 			stats.Created++
 			continue
 		}
+
+		// remap audience IDs in template metadata
+		metadata := remapTemplateAudiences(tmpl.Metadata, audIDMap)
+		metadata = remapTemplateEmails(metadata, emailDomain, emailName)
 
 		slug := tmpl.Slug
 		input := &atomic.TemplateCreateInput{
@@ -713,7 +798,7 @@ func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, ov
 			Body:       tmpl.Body,
 			Settings:   tmpl.Settings,
 			Defaults:   tmpl.Defaults,
-			Metadata:   tmpl.Metadata,
+			Metadata:   metadata,
 			Events:     tmpl.Events,
 			Overwrite:  overwrite,
 		}
@@ -730,6 +815,108 @@ func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, ov
 
 	bar.Finish()
 	return stats, nil
+}
+
+// remapTemplateAudiences replaces audience IDs in template metadata.audiences
+// using the provided source→target ID mapping.
+func remapTemplateAudiences(metadata atomic.Metadata, audIDMap map[string]string) atomic.Metadata {
+	if metadata == nil || len(audIDMap) == 0 {
+		return metadata
+	}
+
+	rawAudiences, ok := metadata["audiences"]
+	if !ok {
+		return metadata
+	}
+
+	audiences, ok := rawAudiences.([]interface{})
+	if !ok {
+		return metadata
+	}
+
+	remapped := make([]interface{}, 0, len(audiences))
+	for _, raw := range audiences {
+		id, ok := raw.(string)
+		if !ok {
+			remapped = append(remapped, raw)
+			continue
+		}
+		if targetID, mapped := audIDMap[id]; mapped {
+			remapped = append(remapped, targetID)
+		} else {
+			remapped = append(remapped, id)
+		}
+	}
+
+	// copy metadata to avoid mutating the original
+	result := make(atomic.Metadata, len(metadata))
+	for k, v := range metadata {
+		result[k] = v
+	}
+	result["audiences"] = remapped
+
+	return result
+}
+
+// remapTemplateEmails rewrites email domains and display names in template
+// metadata fields (from_address, reply_to). If emailDomain is empty, no
+// rewriting is performed.
+func remapTemplateEmails(metadata atomic.Metadata, emailDomain, emailName string) atomic.Metadata {
+	if metadata == nil || emailDomain == "" {
+		return metadata
+	}
+
+	// if emailName is empty, retain the original name from the template
+
+	changed := false
+	result := make(atomic.Metadata, len(metadata))
+	for k, v := range metadata {
+		result[k] = v
+	}
+
+	for _, field := range []string{"from_address", "reply_to"} {
+		raw, ok := result[field]
+		if !ok {
+			continue
+		}
+
+		addrMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		addr, _ := addrMap["address"].(string)
+		if addr == "" {
+			continue
+		}
+
+		// copy the address map
+		newAddr := make(map[string]interface{}, len(addrMap))
+		for k, v := range addrMap {
+			newAddr[k] = v
+		}
+
+		// rewrite the domain part of the email
+		if at := strings.LastIndex(addr, "@"); at >= 0 {
+			localPart := addr[:at]
+			newAddr["address"] = localPart + "@" + emailDomain
+			newAddr["verified"] = false
+			changed = true
+		}
+
+		if emailName != "" {
+			newAddr["name"] = emailName
+			changed = true
+		}
+
+		result[field] = newAddr
+	}
+
+	if !changed {
+		return metadata
+	}
+
+	return result
 }
 
 func importAssets(ctx context.Context, remote *client.Client, dryRun bool, verbose bool) (importStats, error) {

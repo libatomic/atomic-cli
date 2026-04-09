@@ -336,6 +336,11 @@ var (
 						Usage: "override email_verified on all imported users (true=verified, false=unverified); when not set, uses each record's email_verified field",
 						Value: true,
 					},
+					// job completion event
+					&cli.StringFlag{
+						Name:  "job_event_options",
+						Usage: "event options for the job completed event: pipe-delimited flags (LOG|EMIT|SYNC|CHILDREN|CONTEXT|SUPPRESS)",
+					},
 					// wait
 					&cli.BoolFlag{
 						Name:  "wait",
@@ -602,7 +607,7 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// CLI flags override config file values
-	if err := BindFlagsFromContext(cmd, &input, "config", "user_event_options"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "config", "user_event_options", "job_event_options"); err != nil {
 		return err
 	}
 
@@ -613,6 +618,15 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 			return err
 		}
 		input.UserEventOptions = &opts
+	}
+
+	// parse job_event_options string flag
+	if evtStr := cmd.String("job_event_options"); evtStr != "" {
+		opts, err := parseEventLogOptions(evtStr)
+		if err != nil {
+			return err
+		}
+		input.JobCompletedEventOptions = &opts
 	}
 
 	// set fields that are json:"-" and can't be bound via BindFlagsFromContext
@@ -712,7 +726,7 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose bool) error {
 	)
 
 	var logSinceMs *int64
-	pollInterval := 3 * time.Second
+	pollInterval := time.Second
 	logLimit := ptr.Uint64(20)
 
 	for {

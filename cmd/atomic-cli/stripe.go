@@ -79,6 +79,7 @@ var (
 			stripeImportCmd,
 			stripeConnectCmd,
 			stripeWebhookCmd,
+			stripeRepairCmd,
 		},
 	}
 )

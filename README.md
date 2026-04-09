@@ -2147,6 +2147,52 @@ atomic-cli stripe webhook -k sk_test_xxx --ngrok --display-events 50
 atomic-cli stripe webhook -k sk_test_xxx
 ```
 
+#### Repair
+
+Recreate missing Stripe objects (products, prices, coupons) from Passport data. This is useful after importing plans, prices, and credits from a remote Passport instance — the Passport records exist but the corresponding Stripe objects do not. The command checks each item against Stripe, creates any missing objects, and updates the Passport records with the new Stripe IDs.
+
+**Test mode only** — only works with `sk_test_` or `rk_test_` keys.
+
+```bash
+atomic-cli stripe repair [options]
+```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|-------------|-------|------------------------------------------------------|---------|
+| `--types` | `-t` | Types to repair: `plans`, `prices`, `credits`, `all` | `all` |
+| `--dry-run` | | Preview what would be repaired without making changes | `false` |
+
+**What gets repaired:**
+
+| Type | Passport Field | Stripe Object | Notes |
+|---------|----------------------|----------------|-------|
+| Plans | `stripe_product` | Product | Created with ID `atomic_{plan_uuid}`. Only paid plans. |
+| Prices | `stripe_price` | Price | Includes tiered/volume pricing and currency options. Requires the plan's Stripe product to exist. |
+| Credits | `stripe_coupon` | Coupon | Aggregate coupons (`owner_id` is null) and volume discount credits. |
+
+For each item, the command:
+1. Checks if the existing Stripe ID (if any) resolves to a real Stripe object
+2. If missing, creates a new Stripe object with the Passport data
+3. Updates the Passport record with the new Stripe ID
+
+**Examples:**
+
+```bash
+# Preview what would be repaired
+atomic-cli stripe repair -k sk_test_xxx -i inst_abc --dry-run --verbose
+
+# Repair everything
+atomic-cli stripe repair -k sk_test_xxx -i inst_abc --verbose
+
+# Repair only prices
+atomic-cli stripe repair -k sk_test_xxx -i inst_abc -t prices
+
+# Repair only credits (coupons)
+atomic-cli stripe repair -k sk_test_xxx -i inst_abc -t credits --verbose
+```
+
 ## Output Formats
 
 The CLI supports multiple output formats controlled by the `--out-format` option:

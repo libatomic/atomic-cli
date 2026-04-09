@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/expr-lang/expr"
@@ -314,10 +316,17 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		headerIndex[strings.TrimSpace(strings.ToLower(h))] = i
 	}
 
-	// build expr environment from CSV headers so expressions can reference columns
-	exprEnv := make(map[string]any, len(headers))
+	// build expr environment from CSV headers so expressions can reference columns;
+	// headers with spaces/special chars also get a sanitized alias (e.g. "Emails opened (6mo)" -> "Emails_opened__6mo_")
+	exprEnv := make(map[string]any, len(headers)*2)
+	headerAlias := make(map[string]string, len(headers)) // sanitized name -> original name
 	for _, h := range headers {
 		exprEnv[h] = ""
+		sanitized := sanitizeHeader(h)
+		if sanitized != h {
+			exprEnv[sanitized] = ""
+			headerAlias[sanitized] = h
+		}
 	}
 
 	// custom expr functions registered via expr.Function for proper variadic support
@@ -396,7 +405,7 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		func(format string, args ...any) string { return "" },
 	)
 
-	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn}
+	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn, atoiFn()}
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
 	for name, value := range fileVars {
@@ -479,10 +488,13 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			rowEnv[k] = v
 		}
 		for i, h := range headers {
+			val := ""
 			if i < len(row) {
-				rowEnv[h] = row[i]
-			} else {
-				rowEnv[h] = ""
+				val = row[i]
+			}
+			rowEnv[h] = val
+			if sanitized := sanitizeHeader(h); sanitized != h {
+				rowEnv[sanitized] = val
 			}
 		}
 
@@ -792,4 +804,35 @@ func validateMapping(mapping convertMapping) error {
 	}
 
 	return nil
+}
+
+var headerSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+// sanitizeHeader converts a CSV header to a valid expr identifier.
+// "Emails opened (6mo)" -> "Emails_opened__6mo_"
+func sanitizeHeader(h string) string {
+	return headerSanitizeRe.ReplaceAllString(h, "_")
+}
+
+// atoiFn converts a string to an integer for use in expr expressions.
+func atoiFn() expr.Option {
+	return expr.Function(
+		"atoi",
+		func(params ...any) (any, error) {
+			s, ok := params[0].(string)
+			if !ok {
+				return 0, fmt.Errorf("atoi: argument must be a string")
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return 0, nil
+			}
+			n, err := strconv.Atoi(s)
+			if err != nil {
+				return 0, fmt.Errorf("atoi: %w", err)
+			}
+			return n, nil
+		},
+		new(func(string) int),
+	)
 }

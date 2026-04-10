@@ -194,6 +194,11 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	// substack-specific default output (only when the user did not explicitly set --output)
+	if !cmd.IsSet("output") {
+		output = DefaultMigrateSubstackOutputPath
+	}
+
 	founderPlan := cmd.String("founder-plan")
 	founders := cmd.Bool("founders")
 	legacyPricing := cmd.Bool("legacy-pricing")
@@ -232,18 +237,13 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to initialize Stripe client: %w", err)
 	}
 
-	// retrieve the stripe account to suffix output files
+	// retrieve the stripe account; the suffix is still used to name plans-<suffix>.jsonl
 	acct, err := sc.Accounts.Get()
 	if err != nil {
 		return fmt.Errorf("failed to retrieve Stripe account: %w", err)
 	}
 
 	stripeAccountSuffix := strings.TrimPrefix(acct.ID, "acct_")
-
-	// suffix the output file with the stripe account id
-	ext := filepath.Ext(output)
-	base := strings.TrimSuffix(output, ext)
-	output = fmt.Sprintf("%s-%s%s", base, stripeAccountSuffix, ext)
 
 	// Pass 1: Discover all Substack prices
 	bar := newMigrateSpinner("Scanning Stripe for Substack prices")
@@ -418,6 +418,17 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		subscriberOutput := fmt.Sprintf("%s-subscribers%s", base, ext)
 		founderOutput := fmt.Sprintf("%s-founders%s", base, ext)
 
+		if !dryRun {
+			if err := promptOverwriteIfExists(subscriberOutput, appendMode); err != nil {
+				return err
+			}
+			if len(founderRecords) > 0 {
+				if err := promptOverwriteIfExists(founderOutput, appendMode); err != nil {
+					return err
+				}
+			}
+		}
+
 		if err := writeImportCSV(subscriberRecords, subscriberOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0, omitCustomerID); err != nil {
 			return fmt.Errorf("failed to write subscriber CSV: %w", err)
 		}
@@ -430,6 +441,12 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 			fmt.Fprintf(os.Stderr, "wrote %d founder records to %s\n", len(founderRecords), founderOutput)
 		}
 	} else {
+		if !dryRun {
+			if err := promptOverwriteIfExists(output, appendMode); err != nil {
+				return err
+			}
+		}
+
 		if err := writeImportCSV(records, output, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0, omitCustomerID); err != nil {
 			return fmt.Errorf("failed to write CSV: %w", err)
 		}

@@ -80,8 +80,30 @@ type (
 )
 
 const (
-	DefaultMigrateOutputPath = "migrate_users.csv"
+	DefaultMigrateOutputPath         = "migrate_users.csv"
+	DefaultMigrateSubstackOutputPath = "migrate_substack.csv"
+	DefaultMigrateMapOutputPath      = "migrate_map.csv"
 )
+
+// promptOverwriteIfExists checks whether the given output path already exists
+// and, if so, prompts the user to confirm overwriting. Append mode is exempt
+// since it merges into the existing file.
+func promptOverwriteIfExists(path string, appendMode bool) error {
+	if appendMode {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	confirmed, err := confirmAction(fmt.Sprintf("Output %s already exists; overwrite?", path))
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return fmt.Errorf("aborted — output file already exists")
+	}
+	return nil
+}
 
 var (
 	migrateCommonFlags = []cli.Flag{

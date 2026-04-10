@@ -1321,7 +1321,7 @@ These options apply to all migrate subcommands:
 |------------------------|----------------------------------------------|---------|
 | `--stripe-key` | Stripe API key for the source account (or `$STRIPE_API_KEY`) | *required* |
 | `--dry-run` | Preview what would happen without creating plans | `false` |
-| `--output`, `--out` | Output CSV file path (automatically suffixed with `-<stripe_account_id>` for substack) | `migrate_users.csv` |
+| `--output`, `--out` | Output CSV file path. Each subcommand has its own default: `migrate substack` → `migrate_substack.csv`, `migrate map` → `migrate_map.csv`. When the file already exists and `--append=false`, the command prompts for confirmation before overwriting. | (per-subcommand) |
 | `--subscription-prorate` | Set prorate flag on migrated subscriptions | `false` |
 | `--email-domain-overwrite` | Rewrite all emails to use this domain (e.g. `passport.xyz`); mutually exclusive with `--email-template` | |
 | `--email-template` | Generate emails from a template with function placeholders (see [Email Template Functions](#email-template-functions)); mutually exclusive with `--email-domain-overwrite` | |
@@ -1406,7 +1406,7 @@ atomic-cli migrate substack [options]
    - **Legacy pricing** (`--legacy-pricing`): Compares each subscriber's source price against the target Passport plan price. If the subscriber's rate is lower, a forever percentage discount is calculated to preserve their grandfathered price.
    - When both are enabled and a subscriber has an existing coupon AND a legacy price difference, the percentages are added together (capped at 100%) and the term is set to `forever`.
 
-6. **CSV output** - In default mode (no plans), writes two CSVs: `migrate_users-<id>-subscribers.csv` and `migrate_users-<id>-founders.csv` (if founders exist), without `subscription_plan_id`. In plan mode, writes a single CSV (suffixed with `-<stripe_account_id>`) with `subscription_plan_id` set. All CSVs include `migrate_stripe_price` and `migrate_stripe_subscription` audit columns.
+6. **CSV output** - The default output file is `migrate_substack.csv` (override with `--output`). In default mode (no plans), writes two CSVs: `migrate_substack-subscribers.csv` and `migrate_substack-founders.csv` (if founders exist), without `subscription_plan_id`. In plan mode, writes a single CSV with `subscription_plan_id` set. All CSVs include `migrate_stripe_price` and `migrate_stripe_subscription` audit columns. If the output file already exists and `--append=false`, the command prompts for confirmation before overwriting.
 
 **Examples:**
 
@@ -1414,7 +1414,7 @@ atomic-cli migrate substack [options]
 # Generate plans JSONL and subscriber/founder CSVs (default behavior, no instance required)
 atomic-cli migrate substack \
   --stripe-key sk_live_xxx
-# outputs: plans-1A2B3C4D.jsonl, migrate_users-1A2B3C4D-subscribers.csv, migrate_users-1A2B3C4D-founders.csv
+# outputs: plans-1A2B3C4D.jsonl, migrate_substack-subscribers.csv, migrate_substack-founders.csv
 
 # Auto-create plans, preview with dry run
 atomic-cli migrate substack \

@@ -233,6 +233,11 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	// map-specific default output (only when the user did not explicitly set --output)
+	if !cmd.IsSet("output") {
+		outputPath = DefaultMigrateMapOutputPath
+	}
+
 	inputPath := cmd.String("input")
 	mappingFilePath := cmd.String("config")
 	inlineColumns := cmd.StringSlice("columns")
@@ -774,6 +779,10 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			outRecords, appendErr = appendExistingCSV(t.path, outRecords)
 			if appendErr != nil {
 				return appendErr
+			}
+		} else {
+			if err := promptOverwriteIfExists(t.path, false); err != nil {
+				return err
 			}
 		}
 

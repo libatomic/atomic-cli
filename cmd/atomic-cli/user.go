@@ -227,6 +227,10 @@ var (
 						Name:  "dry_run",
 						Usage: "preview import without creating or updating users",
 					},
+					&cli.BoolFlag{
+						Name:  "ignore_created_at",
+						Usage: "ignore the created_at column from the CSV; users are created with the current timestamp",
+					},
 					&cli.StringFlag{
 						Name:  "existing_user_behavior",
 						Usage: "behavior for existing users: skip, merge, recreate",
@@ -293,6 +297,16 @@ var (
 					&cli.StringFlag{
 						Name:  "trial_behavior",
 						Usage: "trial behavior: all, non_subscribers, none",
+					},
+					// expired subscriptions
+					&cli.StringFlag{
+						Name:  "expired_subscription_behavior",
+						Usage: "behavior when subscription_end_at is in the past: none (skip the sub), trial (start a trial of the same plan)",
+					},
+					&cli.IntFlag{
+						Name:  "expired_subscription_trial_days",
+						Usage: "trial length in days when expired_subscription_behavior=trial",
+						Value: 15,
 					},
 					// discounts
 					&cli.StringFlag{

@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
@@ -108,6 +109,17 @@ var (
 	// importFieldSetters maps CSV tag names to functions that set the corresponding
 	// field on a UserImportRecord from a string value.
 	importFieldSetters = map[string]func(rec *atomic.UserImportRecord, val string){
+		"created_at": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			t, err := parseFlexibleTime(v)
+			if err != nil {
+				return
+			}
+			rec.CreatedAt = &util.Timestamp{Time: t.UTC()}
+		},
 		"login": func(rec *atomic.UserImportRecord, val string) {
 			rec.Login = strings.TrimSpace(val)
 		},
@@ -186,6 +198,33 @@ var (
 func parseBool(val string) bool {
 	val = strings.TrimSpace(strings.ToLower(val))
 	return val == "true" || val == "1" || val == "yes"
+}
+
+// parseFlexibleTime parses a timestamp string in a few common formats
+// (RFC3339 with or without nanos, ISO date, unix seconds). The result is
+// caller-normalized to UTC where used.
+func parseFlexibleTime(val string) (time.Time, error) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return time.Time{}, fmt.Errorf("empty time value")
+	}
+	formats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, val); err == nil {
+			return t, nil
+		}
+	}
+	// try unix seconds
+	if secs, err := strconv.ParseInt(val, 10, 64); err == nil {
+		return time.Unix(secs, 0), nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognized time format: %s", val)
 }
 
 func migrateMapAction(ctx context.Context, cmd *cli.Command) error {

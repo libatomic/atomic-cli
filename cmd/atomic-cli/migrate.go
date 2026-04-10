@@ -50,6 +50,7 @@ type (
 		Interval      atomicpkg.SubscriptionInterval
 		Currency      string
 		Quantity      int
+		CreatedAt     *time.Time // user created_at; sourced from stripe customer.created
 		AnchorDate    *time.Time
 		EndAt         *time.Time
 		UserAmount    int64
@@ -390,6 +391,10 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			ir.SubscriptionEndAt = &util.Timestamp{Time: rec.EndAt.UTC()}
 		} else if rec.AnchorDate != nil {
 			ir.SubscriptionAnchorDate = &util.Timestamp{Time: rec.AnchorDate.UTC()}
+		}
+
+		if rec.CreatedAt != nil {
+			ir.CreatedAt = &util.Timestamp{Time: rec.CreatedAt.UTC()}
 		}
 
 		if rec.DiscountPct != nil {

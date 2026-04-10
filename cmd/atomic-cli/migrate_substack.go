@@ -981,6 +981,12 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 				StripeSubID:   sub.ID,
 			}
 
+			// derive user created_at from the stripe customer's created date (UTC)
+			if sub.Customer.Created > 0 {
+				t := time.Unix(sub.Customer.Created, 0).UTC()
+				rec.CreatedAt = &t
+			}
+
 			// capture payment method
 			if !omitPaymentMethods {
 				if migrateTestCard {

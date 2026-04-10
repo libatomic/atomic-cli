@@ -440,6 +440,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--mime_type` | MIME type of the import file | `text/csv` |
 | `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
 | `--dry_run` | Preview import without creating or updating users | `false` |
+| `--ignore_created_at` | Ignore the `created_at` column from the CSV; users are created with the current timestamp at job runtime | `false` |
 | `--existing_user_behavior` | Behavior for existing users: `skip`, `merge` (update and process subscriptions), `recreate` (delete and re-create) | `merge` |
 | `--validate_user_email` | Validate user email addresses | `false` |
 | `--verify_user_email` | Override `email_verified` on all records (overrides each record's field when set) | `true` |
@@ -456,6 +457,8 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--trial_end_at` | Trial end date/time | |
 | `--trial_existing_users` | Apply trial to existing users without a subscription | `false` |
 | `--trial_behavior` | Trial behavior: `all`, `non_subscribers`, `none` | `non_subscribers` |
+| `--expired_subscription_behavior` | Behavior when `subscription_end_at` is in the past: `none` (skip the expired sub, still import the user), `trial` (start the user on a trial of the same plan for `--expired_subscription_trial_days`) | `none` |
+| `--expired_subscription_trial_days` | Trial length (days) used when `--expired_subscription_behavior=trial` | `15` |
 | `--discount_behavior` | Discount behavior: `aggregate` (shared instance coupons), `individual` (per-user coupons), `none` | `aggregate` |
 | `--default_discount_percentage` | Default discount percentage for subscriptions | |
 | `--default_discount_term` | Default discount term: `once`, `repeating`, `forever` | `forever` |
@@ -1390,6 +1393,7 @@ atomic-cli migrate substack [options]
 
 4. **Subscription collection** - Iterates every discovered Substack price (active and inactive) and lists all active Stripe subscriptions on each. For each subscriber, captures:
    - Customer ID, email, name
+   - **`created_at`** sourced from the Stripe customer's `created` timestamp (UTC), so imported users preserve their original signup date
    - Subscription currency, quantity, billing cycle anchor
    - The Stripe price and subscription IDs (written as `migrate_stripe_price` and `migrate_stripe_subscription` in the CSV for audit purposes)
    - Cancellation handling: if `cancel_at` or `cancel_at_period_end` is set, the subscription end date is recorded and the billing anchor is omitted. Otherwise, the billing cycle anchor is advanced by one interval if it falls in the past.
@@ -1554,7 +1558,9 @@ Column values can be:
 - **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and variables are available
 - **bool/number** — a static value applied to every row
 
-Supported target fields: `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
+Supported target fields: `created_at`, `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
+
+The `created_at` field accepts RFC3339, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`, or unix seconds — values are normalized to UTC. When omitted, the user is created with the timestamp at job runtime.
 
 **Example config file with multiple outputs:**
 

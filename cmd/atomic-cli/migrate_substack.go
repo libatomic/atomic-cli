@@ -19,11 +19,14 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,6 +145,10 @@ var (
 		&cli.IntFlag{
 			Name:  "estimated-total",
 			Usage: "estimated total subscriptions (enables a progress bar instead of a spinner)",
+		},
+		&cli.BoolFlag{
+			Name:  "diff",
+			Usage: "produce an incremental diff CSV containing only subscribers created after the latest created_at in the existing output (or last -diff-NN.csv); writes to <base>-diff-NN.csv with auto-incrementing suffix",
 		},
 	)
 
@@ -303,6 +310,34 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	// Diff mode: resolve the cutoff timestamp from the latest existing CSV
+	// (or last -diff-NN.csv) and pick the next diff filename
+	diffMode := cmd.Bool("diff")
+	var diffSince *time.Time
+	if diffMode {
+		sourcePath, nextOutput, err := resolveDiffPaths(output)
+		if err != nil {
+			return fmt.Errorf("diff: failed to resolve paths: %w", err)
+		}
+		if sourcePath != "" {
+			cutoff, err := readMaxCreatedAt(sourcePath)
+			if err != nil {
+				return fmt.Errorf("diff: failed to read %s: %w", sourcePath, err)
+			}
+			if cutoff != nil {
+				diffSince = cutoff
+				fmt.Fprintf(os.Stderr, "diff mode: starting from created_at > %s (source: %s)\n",
+					cutoff.UTC().Format(time.RFC3339), sourcePath)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "diff mode: no existing output found, doing a full collection\n")
+		}
+		output = nextOutput
+		// diff files are always written fresh (no append)
+		appendMode = false
+		fmt.Fprintf(os.Stderr, "diff mode: writing to %s\n", output)
+	}
+
 	// Pass 4: Collect active subscriptions
 	estimatedTotal := int(cmd.Int("estimated-total"))
 	if estimatedTotal > 0 {
@@ -310,7 +345,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		bar = newMigrateSpinner("Collecting subscriptions")
 	}
-	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, bar)
+	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, diffSince, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
@@ -898,10 +933,14 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 	return mapping, nil
 }
 
-func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
+func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, since *time.Time, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
 	startTime := time.Now()
+	var sinceUnix int64
+	if since != nil {
+		sinceUnix = since.Unix()
+	}
 
 	for _, sp := range prices {
 		// check for cancellation
@@ -938,6 +977,11 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 			}
 
 			if sub.Customer == nil {
+				continue
+			}
+
+			// diff mode: skip customers created at-or-before the cutoff
+			if sinceUnix > 0 && sub.Customer.Created <= sinceUnix {
 				continue
 			}
 
@@ -1072,7 +1116,126 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 		}
 	}
 
+	// sort ascending by customer created_at; this is the natural order users
+	// were created in stripe and matches the diff cutoff semantics
+	sort.SliceStable(records, func(i, j int) bool {
+		var ti, tj time.Time
+		if records[i].CreatedAt != nil {
+			ti = *records[i].CreatedAt
+		}
+		if records[j].CreatedAt != nil {
+			tj = *records[j].CreatedAt
+		}
+		return ti.Before(tj)
+	})
+
 	return records, nil
+}
+
+// resolveDiffPaths returns the source path to read for the diff cutoff (the
+// highest existing -diff-NN.csv, or the base file if none exist), and the
+// next diff output path with an incremented suffix. The source path is empty
+// if no existing file is found — the caller should treat that as a fresh run.
+func resolveDiffPaths(basePath string) (sourcePath, nextOutput string, err error) {
+	ext := filepath.Ext(basePath)
+	base := strings.TrimSuffix(basePath, ext)
+
+	// the base may have already been suffixed earlier in JSONL mode (-subscribers,
+	// -founders); diff numbering applies to whatever the current output points to
+	dir := filepath.Dir(base)
+	stem := filepath.Base(base)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+
+	maxNum := 0
+	maxFile := ""
+	prefix := stem + "-diff-"
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ext) {
+			continue
+		}
+		mid := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ext)
+		n, err := strconv.Atoi(mid)
+		if err != nil || n <= 0 {
+			continue
+		}
+		if n > maxNum {
+			maxNum = n
+			maxFile = filepath.Join(dir, name)
+		}
+	}
+
+	if maxNum > 0 {
+		sourcePath = maxFile
+	} else if _, err := os.Stat(basePath); err == nil {
+		sourcePath = basePath
+	}
+
+	nextOutput = fmt.Sprintf("%s-diff-%02d%s", base, maxNum+1, ext)
+	return sourcePath, nextOutput, nil
+}
+
+// readMaxCreatedAt scans an existing import CSV and returns the latest
+// created_at timestamp found in any row, or nil if the column is missing or
+// empty in every row.
+func readMaxCreatedAt(path string) (*time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1
+
+	header, err := r.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	col := -1
+	for i, h := range header {
+		if strings.EqualFold(strings.TrimSpace(h), "created_at") {
+			col = i
+			break
+		}
+	}
+	if col < 0 {
+		return nil, nil
+	}
+
+	var maxTime *time.Time
+	for {
+		row, err := r.Read()
+		if err != nil {
+			break
+		}
+		if col >= len(row) {
+			continue
+		}
+		val := strings.TrimSpace(row[col])
+		if val == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, val)
+		if err != nil {
+			continue
+		}
+		t = t.UTC()
+		if maxTime == nil || t.After(*maxTime) {
+			tCopy := t
+			maxTime = &tCopy
+		}
+	}
+
+	return maxTime, nil
 }
 
 func collectingSubsStatus(count int, start time.Time) string {

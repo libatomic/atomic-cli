@@ -1379,6 +1379,7 @@ atomic-cli migrate substack [options]
 | `--omit-payment-methods` | Omit `subscription_payment_method` from the output CSV | `false` |
 | `--migrate-test-cards` | Use Stripe test cards for `subscription_payment_method` based on currency (mutually exclusive with `--omit-payment-methods`) | `false` |
 | `--shift-anchor-dates` | Shift all billing cycle anchor dates forward by a duration (e.g. `24h`, `7d`, `30d`) for testing | |
+| `--diff` | Produce an incremental diff CSV containing only customers created after the latest `created_at` in the existing output (or last `-diff-NN.csv`). Writes to `<base>-diff-NN.csv` with auto-incrementing suffix (e.g. `-diff-01.csv`, `-diff-02.csv`). If no existing output is found, falls back to a full collection. Records in the diff are still sorted ascending by `created_at`. | `false` |
 
 **How it works:**
 
@@ -1397,6 +1398,8 @@ atomic-cli migrate substack [options]
    - Subscription currency, quantity, billing cycle anchor
    - The Stripe price and subscription IDs (written as `migrate_stripe_price` and `migrate_stripe_subscription` in the CSV for audit purposes)
    - Cancellation handling: if `cancel_at` or `cancel_at_period_end` is set, the subscription end date is recorded and the billing anchor is omitted. Otherwise, the billing cycle anchor is advanced by one interval if it falls in the past.
+
+   After collection, records are sorted ascending by `created_at` so the resulting CSV reflects the order users originally signed up. This is also the cutoff used by `--diff`.
 
 5. **Discount handling** - Two types of discounts can be applied:
    - **Existing coupons** (`--apply-discounts`, default on): Stripe subscription discounts/coupons are carried over. The `--discount-threshold` filters out discounts below a minimum percentage (default 1%). The `--discount-term` can override the coupon's original term.

@@ -38,21 +38,24 @@ var (
 		Usage: "import data from a remote Passport instance",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "remote-host",
-				Usage:    "remote Passport API host (e.g. api.example.com)",
-				Required: true,
+				Name:  "remote-profile",
+				Usage: "use a profile from the credentials file as the source (host/access_token/client_id/client_secret/instance_id); mutually exclusive with --remote-host / --remote-token / --remote-client-id / --remote-client-secret",
+			},
+			&cli.StringFlag{
+				Name:  "remote-host",
+				Usage: "remote Passport API host (e.g. api.example.com); mutually exclusive with --remote-profile",
 			},
 			&cli.StringFlag{
 				Name:  "remote-token",
-				Usage: "remote access token (mutually exclusive with --remote-client-id/--remote-client-secret)",
+				Usage: "remote access token (mutually exclusive with --remote-client-id/--remote-client-secret and --remote-profile)",
 			},
 			&cli.StringFlag{
 				Name:  "remote-client-id",
-				Usage: "remote client ID for client credentials auth",
+				Usage: "remote client ID for client credentials auth (mutually exclusive with --remote-profile)",
 			},
 			&cli.StringFlag{
 				Name:  "remote-client-secret",
-				Usage: "remote client secret for client credentials auth",
+				Usage: "remote client secret for client credentials auth (mutually exclusive with --remote-profile)",
 			},
 			&cli.StringSliceFlag{
 				Name:     "types",
@@ -99,6 +102,13 @@ type (
 )
 
 func importAction(ctx context.Context, cmd *cli.Command) error {
+	// import always writes to the target instance — fail fast if it's missing
+	// rather than crashing somewhere downstream
+	if inst == nil {
+		return fmt.Errorf("a target instance is required: pass -i / --instance_id, or set instance_id in your credentials profile")
+	}
+
+	remoteProfile := cmd.String("remote-profile")
 	remoteHost := cmd.String("remote-host")
 	remoteToken := cmd.String("remote-token")
 	remoteClientID := cmd.String("remote-client-id")
@@ -113,6 +123,31 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 		emailDomain = inst.Name
 	}
 	emailName := cmd.String("email-name")
+
+	// --remote-profile is mutually exclusive with the explicit --remote-* flags
+	if remoteProfile != "" {
+		if remoteHost != "" || remoteToken != "" || remoteClientID != "" || remoteClientSecret != "" {
+			return fmt.Errorf("--remote-profile is mutually exclusive with --remote-host / --remote-token / --remote-client-id / --remote-client-secret")
+		}
+
+		credsPath := mainCmd.String("credentials")
+		cf := loadCredentials(credsPath)
+		if len(cf.Profiles()) == 0 {
+			return fmt.Errorf("--remote-profile %q: no profiles found in %s", remoteProfile, credsPath)
+		}
+		host, ok := cf.Lookup(remoteProfile, "host")
+		if !ok {
+			return fmt.Errorf("--remote-profile %q: profile not found in %s (known: %v)", remoteProfile, credsPath, cf.Profiles())
+		}
+		remoteHost = host
+		remoteToken, _ = cf.Lookup(remoteProfile, "access_token")
+		remoteClientID, _ = cf.Lookup(remoteProfile, "client_id")
+		remoteClientSecret, _ = cf.Lookup(remoteProfile, "client_secret")
+	}
+
+	if remoteHost == "" {
+		return fmt.Errorf("--remote-host or --remote-profile is required")
+	}
 
 	if remoteToken == "" && (remoteClientID == "" || remoteClientSecret == "") {
 		return fmt.Errorf("either --remote-token or --remote-client-id and --remote-client-secret are required")
@@ -150,11 +185,22 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 		typeSet[strings.ToLower(t)] = true
 	}
 
-	if dryRun {
-		fmt.Fprintf(os.Stderr, "[DRY RUN] previewing import from %s\n\n", remoteHost)
-	} else {
-		fmt.Fprintf(os.Stderr, "importing from %s\n\n", remoteHost)
+	// announce the source and the target so the user can sanity-check before
+	// any data moves
+	srcLabel := remoteHost
+	if remoteProfile != "" {
+		srcLabel = fmt.Sprintf("%s (profile: %s)", remoteHost, remoteProfile)
 	}
+	targetLabel := mainCmd.String("host")
+	if inst != nil {
+		targetLabel = fmt.Sprintf("%s — instance %s (%s)", targetLabel, inst.Name, inst.UUID)
+	}
+
+	mode := "importing"
+	if dryRun {
+		mode = "[DRY RUN] previewing import"
+	}
+	fmt.Fprintf(os.Stderr, "%s\n  source: %s\n  target: %s\n\n", mode, srcLabel, targetLabel)
 
 	var allStats []importStats
 

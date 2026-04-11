@@ -67,3 +67,34 @@ func TOML(key func() string, source altsrc.Sourcer) *DynamicKeySource {
 func YAML(key func() string, source altsrc.Sourcer) *DynamicKeySource {
 	return NewDynamicKeySource(yaml.Unmarshal, "yaml", key, source)
 }
+
+// CredentialsSource looks up <profile>.<field> in the cli credentials file.
+// It uses the loadCredentials cache so the file is parsed exactly once per
+// path regardless of how many flags reference it. Both YAML and TOML are
+// supported transparently.
+type CredentialsSource struct {
+	pathFn    func() string
+	profileFn func() string
+	field     string
+}
+
+func NewCredentialsSource(field string, pathFn, profileFn func() string) *CredentialsSource {
+	return &CredentialsSource{
+		pathFn:    pathFn,
+		profileFn: profileFn,
+		field:     field,
+	}
+}
+
+func (c *CredentialsSource) Lookup() (string, bool) {
+	cf := loadCredentials(c.pathFn())
+	return cf.Lookup(c.profileFn(), c.field)
+}
+
+func (c *CredentialsSource) String() string {
+	return fmt.Sprintf("credentials file %q profile %q field %q", c.pathFn(), c.profileFn(), c.field)
+}
+
+func (c *CredentialsSource) GoString() string {
+	return fmt.Sprintf("CredentialsSource{file:%q,profile:%q,field:%q}", c.pathFn(), c.profileFn(), c.field)
+}

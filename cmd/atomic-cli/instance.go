@@ -230,7 +230,20 @@ func instGet(ctx context.Context, cmd *cli.Command) error {
 
 	id, err := atomic.ParseID(cmd.Args().First())
 	if err != nil {
-		return fmt.Errorf("failed to parse instance id: %w", err)
+
+		insts, err := backend.InstanceList(ctx, &atomic.InstanceListInput{
+			Name: ptr.String(cmd.Args().First()),
+		})
+		if err != nil {
+			return err
+		}
+
+		if len(insts) == 0 {
+			return fmt.Errorf("instance not found")
+		}
+
+		PrintResult(cmd, insts, WithFields("id", "name", "title", "created_at", "parent_id"))
+		return nil
 	}
 
 	input.InstanceID = &id

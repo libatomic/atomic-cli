@@ -1185,16 +1185,25 @@ atomic-cli -i <target_instance> import [options]
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
-| `--remote-host` | Remote Passport API host (e.g. `api.example.com`) | *required* |
-| `--remote-token` | Remote access token (mutually exclusive with client credentials) | |
-| `--remote-client-id` | Remote client ID for client credentials auth | |
-| `--remote-client-secret` | Remote client secret for client credentials auth | |
+| `--remote-profile` | Use a profile from `~/.atomic/credentials` as the source. Reads `host`, `access_token`, `client_id`, `client_secret`, and `instance_id` from the named profile. **Mutually exclusive** with `--remote-host` / `--remote-token` / `--remote-client-id` / `--remote-client-secret`. | |
+| `--remote-host` | Remote Passport API host (e.g. `api.example.com`); mutually exclusive with `--remote-profile` | |
+| `--remote-token` | Remote access token (mutually exclusive with client credentials and with `--remote-profile`) | |
+| `--remote-client-id` | Remote client ID for client credentials auth (mutually exclusive with `--remote-profile`) | |
+| `--remote-client-secret` | Remote client secret for client credentials auth (mutually exclusive with `--remote-profile`) | |
 | `--types`, `-t` | Types to import (repeatable): `categories`, `plans`, `audiences`, `templates`, `assets`, `articles` | *required* |
 | `--plan-types` | Plan types to import: `paid`, `free`, `all` | `all` |
 | `--overwrite` | Overwrite existing items (matched by name) | `true` |
 | `--dry-run` | Preview what would be imported without making changes | `false` |
 
 Use the global `-v` / `--verbose` flag to show individual items being imported and detailed error messages.
+
+When the import starts, the source and target are printed up front so you can sanity-check before any data moves:
+
+```
+importing
+  source: api.staging.example.com (profile: staging)
+  target: api.production.example.com — instance ankler.production (CZ6psMmMo4BBCGyE2NyR2)
+```
 
 **Import order and behavior:**
 
@@ -1252,6 +1261,12 @@ atomic-cli -v -i target_inst import \
   --remote-host api.source.com \
   --remote-client-id xxx --remote-client-secret yyy \
   --types categories,plans,audiences,templates,assets,articles
+
+# Use a credentials profile for the source — host/token/client_id/client_secret
+# are all read from ~/.atomic/credentials under the named profile
+atomic-cli -i target_inst import \
+  --remote-profile staging \
+  --types categories,plans,audiences,templates
 ```
 
 ### Migrate Command

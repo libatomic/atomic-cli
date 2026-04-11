@@ -37,7 +37,6 @@ import (
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/libatomic/atomic/pkg/util"
 	"github.com/spf13/cast"
-	altsrc "github.com/urfave/cli-altsrc/v3"
 	"github.com/urfave/cli/v3"
 )
 
@@ -111,8 +110,7 @@ func main() {
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_DB_SOURCE"),
 				cli.EnvVar("DB_SOURCE"),
-				TOML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.db_source", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("db_source", func() string { return creds }, func() string { return profile }),
 			),
 			Hidden: true,
 		},
@@ -121,8 +119,7 @@ func main() {
 			Usage: "specify the access token",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_ACCESS_TOKEN"),
-				TOML(func() string { return fmt.Sprintf("%s.access_token", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.access_token", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("access_token", func() string { return creds }, func() string { return profile }),
 			),
 		},
 		&cli.StringFlag{
@@ -130,8 +127,7 @@ func main() {
 			Usage: "specify the client id",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_CLIENT_ID"),
-				TOML(func() string { return fmt.Sprintf("%s.client_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.client_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("client_id", func() string { return creds }, func() string { return profile }),
 			),
 		},
 		&cli.StringFlag{
@@ -139,8 +135,7 @@ func main() {
 			Usage: "specify the client secret",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_CLIENT_SECRET"),
-				TOML(func() string { return fmt.Sprintf("%s.client_secret", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.client_secret", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("client_secret", func() string { return creds }, func() string { return profile }),
 			),
 		},
 		&cli.StringFlag{
@@ -149,8 +144,7 @@ func main() {
 			Aliases: []string{"h"},
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_API_HOST"),
-				TOML(func() string { return fmt.Sprintf("%s.host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.host", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("host", func() string { return creds }, func() string { return profile }),
 			),
 			Value: client.DefaultAPIHost,
 		},
@@ -160,8 +154,7 @@ func main() {
 			Usage:   "specify the output format",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_OUT_FORMAT"),
-				TOML(func() string { return fmt.Sprintf("%s.out_format", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.out_format", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("out_format", func() string { return creds }, func() string { return profile }),
 			),
 			Value: "table",
 		},
@@ -182,8 +175,7 @@ func main() {
 			Aliases: []string{"i", "instance"},
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("ATOMIC_INSTANCE_ID"),
-				TOML(func() string { return fmt.Sprintf("%s.instance_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
-				YAML(func() string { return fmt.Sprintf("%s.instance_id", profile) }, altsrc.NewStringPtrSourcer(&creds)),
+				NewCredentialsSource("instance_id", func() string { return creds }, func() string { return profile }),
 			),
 		},
 	}
@@ -239,18 +231,26 @@ func main() {
 		}
 
 		if cmd.IsSet("instance_id") {
-			var input atomic.InstanceGetInput
-			var err error
-
 			if id, err := atomic.ParseID(cmd.String("instance_id")); err == nil {
-				input.InstanceID = &id
+				inst, err = backend.InstanceGet(ctx, &atomic.InstanceGetInput{
+					InstanceID: &id,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("failed to get instance %s: %w", cmd.String("instance_id"), err)
+				}
 			} else {
-				input.Name = ptr.String(cmd.String("instance_id"))
-			}
+				insts, err := backend.InstanceList(ctx, &atomic.InstanceListInput{
+					Name: ptr.String(cmd.String("instance_id")),
+				})
+				if err != nil {
+					return nil, fmt.Errorf("failed to list instances: %w", err)
+				}
 
-			inst, err = backend.InstanceGet(ctx, &input)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get instance %s: %w", cmd.String("instance_id"), err)
+				if len(insts) == 0 {
+					return nil, fmt.Errorf("instance not found")
+				}
+
+				inst = insts[0]
 			}
 
 			log.Infof("using instance %s", inst.Name)

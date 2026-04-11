@@ -93,44 +93,74 @@ The CLI supports configuration through environment variables or command-line fla
 
 ### Credentials file (TOML or YAML)
 
-You can also provide credentials in a config file. By default the CLI looks for `~/.atomic/credentials` and supports either TOML or YAML.
+You can store one or more named profiles in a credentials file and switch between them with `--profile`. By default the CLI looks for `~/.atomic/credentials` and accepts either TOML or YAML (TOML is tried first; YAML is the fallback).
 
 - Default path: `~/.atomic/credentials`
-- Override path: use `--credentials` (alias `-c`)
-- Supported keys under the `default` section: `access_token`, `client_id`, `client_secret`, `host`
-- Precedence: flags > environment variables > credentials file
+- Override path: `--credentials` / `-c`
+- Select a profile: `--profile` / `-p` (default: `default`)
+- Precedence per flag: command-line flag > environment variable > credentials file > compiled default
 
-TOML example (`~/.atomic/credentials`):
+**Supported fields** under each profile section:
+
+| Field | Flag equivalent | Notes |
+|---|---|---|
+| `host` | `--host` / `-h` | API host (e.g. `api.example.com` or `https://api.example.com`) |
+| `access_token` | `--access_token` | Bearer token for access-token auth |
+| `client_id` | `--client_id` | OAuth2 client ID for client-credentials auth |
+| `client_secret` | `--client_secret` | OAuth2 client secret |
+| `instance_id` | `-i` / `--instance_id` | Default target instance — accepts a base58 ID **or** an instance name/domain |
+| `out_format` | `--out-format` / `-o` | Default output format (`table`, `json`, `yaml`, etc.) |
+| `db_source` | `--db_source` | Direct DB connection string (hidden flag; for internal use) |
+
+**TOML example** (`~/.atomic/credentials`):
 
 ```toml
 [default]
+host = "api.atomic.example.com"
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+instance_id = "my.instance.example.com"
+
+[staging]
+host = "api.staging.atomic.example.com"
 access_token = "at_XXXXXXXXXXXXXXXX"
-# Alternatively use client credentials:
-# client_id = "your-client-id"
-# client_secret = "your-client-secret"
-host = "https://api.atomic.example.com"
+instance_id = "CZ6psMmMo4BBCGyE2NyR2"
 ```
 
-YAML example (`~/.atomic/credentials`):
+> **TOML strings must be quoted.** `host = foo.example.com` is a syntax error; use `host = "foo.example.com"`. If the file can't be parsed, the CLI prints a warning with the exact parser error and the line number so you can fix it.
+
+**YAML example** (`~/.atomic/credentials`):
 
 ```yaml
 default:
+  host: api.atomic.example.com
+  client_id: your-client-id
+  client_secret: your-client-secret
+  instance_id: my.instance.example.com
+
+staging:
+  host: api.staging.atomic.example.com
   access_token: "at_XXXXXXXXXXXXXXXX"
-  # Alternatively use client credentials:
-  # client_id: "your-client-id"
-  # client_secret: "your-client-secret"
-  host: "https://api.atomic.example.com"
+  instance_id: CZ6psMmMo4BBCGyE2NyR2
 ```
 
-Usage:
+**Usage:**
 
 ```bash
-# Uses default path
+# Use the default profile
 atomic-cli instance list
+
+# Use a named profile
+atomic-cli --profile staging instance list
+atomic-cli -p staging instance list
 
 # Specify a custom credentials file
 atomic-cli --credentials /path/to/credentials instance list
 ```
+
+**Instance lookup by name or domain:** the `instance_id` flag (and the `instance_id` field in a profile) accepts either a base58 ID like `CZ6psMmMo4BBCGyE2NyR2` or a name/domain like `my.instance.example.com`. When a non-ID value is supplied the CLI resolves it via `InstanceList` before running the command, so you can reference instances by their human-readable names in your profiles.
+
+**Multi-profile troubleshooting:** if you add a profile and the CLI suddenly falls back to defaults, a parse error probably broke the whole file. Run with any command (e.g. `atomic-cli instance list`) — the CLI will print a `credentials:` warning pointing at the offending line.
 
 ### Authentication
 

@@ -208,7 +208,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	if typeSet["categories"] {
 		stats, err := importCategories(ctx, remote, dryRun, overwrite, verbose)
 		if err != nil {
-			return fmt.Errorf("categories: %w", err)
+			return fmt.Errorf("import categories failed: %w", err)
 		}
 		allStats = append(allStats, stats)
 	}
@@ -216,7 +216,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	if typeSet["plans"] {
 		stats, err := importPlans(ctx, remote, dryRun, overwrite, planTypes, verbose)
 		if err != nil {
-			return fmt.Errorf("plans: %w", err)
+			return fmt.Errorf("import plans failed: %w", err)
 		}
 		allStats = append(allStats, stats...)
 	}
@@ -224,7 +224,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	if typeSet["audiences"] {
 		stats, err := importAudiences(ctx, remote, dryRun, overwrite, verbose)
 		if err != nil {
-			return fmt.Errorf("audiences: %w", err)
+			return fmt.Errorf("import audiences failed: %w", err)
 		}
 		allStats = append(allStats, stats)
 	}
@@ -232,7 +232,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	if typeSet["templates"] {
 		stats, err := importTemplates(ctx, remote, dryRun, overwrite, verbose, emailDomain, emailName)
 		if err != nil {
-			return fmt.Errorf("templates: %w", err)
+			return fmt.Errorf("import templates failed: %w", err)
 		}
 		allStats = append(allStats, stats)
 	}
@@ -240,7 +240,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	if typeSet["assets"] {
 		stats, err := importAssets(ctx, remote, dryRun, verbose)
 		if err != nil {
-			return fmt.Errorf("assets: %w", err)
+			return fmt.Errorf("import assets failed: %w", err)
 		}
 		allStats = append(allStats, stats)
 	}
@@ -248,7 +248,7 @@ func importAction(ctx context.Context, cmd *cli.Command) error {
 	if typeSet["articles"] {
 		stats, err := importArticles(ctx, remote, dryRun, verbose)
 		if err != nil {
-			return fmt.Errorf("articles: %w", err)
+			return fmt.Errorf("import articles failed: %w", err)
 		}
 		allStats = append(allStats, stats)
 	}
@@ -278,7 +278,7 @@ func importCategories(ctx context.Context, remote *client.Client, dryRun bool, o
 	cats, err := remote.CategoryList(ctx, &atomic.CategoryListInput{})
 	bar.Finish()
 	if err != nil {
-		return stats, err
+		return stats, fmt.Errorf("failed to list remote categories: %w", err)
 	}
 
 	stats.Found = len(cats)
@@ -645,7 +645,7 @@ func importAudiences(ctx context.Context, remote *client.Client, dryRun bool, ov
 	})
 	bar.Finish()
 	if err != nil {
-		return stats, err
+		return stats, fmt.Errorf("failed to list remote audiences: %w", err)
 	}
 
 	var filtered []*atomic.Audience
@@ -779,7 +779,7 @@ func importTemplates(ctx context.Context, remote *client.Client, dryRun bool, ov
 	templates, err := remote.TemplateList(ctx, &atomic.TemplateListInput{})
 	bar.Finish()
 	if err != nil {
-		return stats, err
+		return stats, fmt.Errorf("failed to list remote templates: %w", err)
 	}
 
 	stats.Found = len(templates)
@@ -972,7 +972,7 @@ func importAssets(ctx context.Context, remote *client.Client, dryRun bool, verbo
 	assets, err := remote.AssetList(ctx, &atomic.AssetListInput{})
 	bar.Finish()
 	if err != nil {
-		return stats, err
+		return stats, fmt.Errorf("failed to list remote assets: %w", err)
 	}
 
 	stats.Found = len(assets)
@@ -1040,7 +1040,7 @@ func importArticles(ctx context.Context, remote *client.Client, dryRun bool, ver
 		})
 		if err != nil {
 			bar.Finish()
-			return stats, err
+			return stats, fmt.Errorf("failed to list remote articles (offset %d): %w", offset, err)
 		}
 		if len(page) == 0 {
 			break

@@ -263,11 +263,13 @@ var (
 					&cli.StringFlag{
 						Name:  "stripe_account_behavior",
 						Usage: "stripe account behavior: existing, create, none",
+						Value: "existing",
 					},
 					// plans
 					&cli.StringFlag{
 						Name:  "default_plan_behavior",
 						Usage: "default plan behavior: all, non_subscribers, none",
+						Value: "all",
 					},
 					&cli.StringSliceFlag{
 						Name:  "subscribe_plans",
@@ -276,6 +278,7 @@ var (
 					&cli.StringFlag{
 						Name:  "subscribe_behavior",
 						Usage: "subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none",
+						Value: "subscribers_skip_paid",
 					},
 					// trials
 					&cli.StringFlag{

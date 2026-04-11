@@ -1561,7 +1561,7 @@ Column values can be:
 - **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and variables are available
 - **bool/number** — a static value applied to every row
 
-Supported target fields: `created_at`, `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `stripe_customer_id`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
+Supported target fields (matches all CSV columns on `atomic.UserImportRecord`): `created_at`, `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `metadata`, `stripe_customer_id`, `import_stripe_account`, `stripe_customer_metadata`, `subscription_plan_id`, `subscription_currency`, `subscription_quantity`, `subscription_interval`, `subscription_anchor_date`, `subscription_end_at`, `subscription_prorate`, `subscription_payment_method`, `discount_percentage`, `discount_term`, `discount_duration_days`, `is_team_owner`, `team_key`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
 
 The `created_at` field accepts RFC3339, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`, or unix seconds — values are normalized to UTC. When omitted, the user is created with the timestamp at job runtime.
 

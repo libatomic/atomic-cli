@@ -170,6 +170,10 @@ var (
 			v := strings.TrimSpace(val)
 			rec.StripeCustomerID = &v
 		},
+		"import_stripe_account": func(rec *atomic.UserImportRecord, val string) {
+			b := parseBool(val)
+			rec.ImportStripeAccount = &b
+		},
 		"channel_opt_in": func(rec *atomic.UserImportRecord, val string) {
 			parts := strings.Split(val, "|")
 			for i := range parts {
@@ -192,12 +196,155 @@ var (
 			v := strings.TrimSpace(val)
 			rec.ImportSource = &v
 		},
+		"metadata": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			m := make(util.Map[string, any])
+			if err := m.UnmarshalCSV(v); err == nil {
+				rec.Metadata = m
+			}
+		},
+		"stripe_customer_metadata": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			m := make(util.Map[string, string])
+			if err := m.UnmarshalCSV(v); err == nil {
+				rec.StripeCustomerMetadata = m
+			}
+		},
+		"subscription_plan_id": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			id, err := atomic.ParseID(v)
+			if err != nil {
+				return
+			}
+			rec.SubscriptionPlanID = &id
+		},
+		"subscription_currency": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			rec.SubscriptionCurrency = &v
+		},
+		"subscription_quantity": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return
+			}
+			rec.SubscriptionQuantity = &n
+		},
+		"subscription_interval": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			interval := atomic.SubscriptionInterval(strings.ToLower(v))
+			rec.SubscriptionInterval = &interval
+		},
+		"subscription_anchor_date": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			t, err := parseFlexibleTime(v)
+			if err != nil {
+				return
+			}
+			rec.SubscriptionAnchorDate = &util.Timestamp{Time: t.UTC()}
+		},
+		"subscription_end_at": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			t, err := parseFlexibleTime(v)
+			if err != nil {
+				return
+			}
+			rec.SubscriptionEndAt = &util.Timestamp{Time: t.UTC()}
+		},
+		"subscription_prorate": func(rec *atomic.UserImportRecord, val string) {
+			b := parseBool(val)
+			rec.SubscriptionProrate = &b
+		},
+		"subscription_payment_method": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			rec.SubscriptionPaymentMethod = &v
+		},
+		"discount_percentage": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return
+			}
+			rec.DiscountPercentage = &f
+		},
+		"discount_term": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			term := atomic.CreditTerm(strings.ToLower(v))
+			rec.DiscountTerm = &term
+		},
+		"discount_duration_days": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return
+			}
+			rec.DiscountDurationDays = &n
+		},
+		"is_team_owner": func(rec *atomic.UserImportRecord, val string) {
+			b := parseBool(val)
+			rec.IsTeamOwner = &b
+		},
+		"team_key": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			rec.TeamKey = &v
+		},
 	}
 )
 
 func parseBool(val string) bool {
 	val = strings.TrimSpace(strings.ToLower(val))
 	return val == "true" || val == "1" || val == "yes"
+}
+
+// exprResultToString converts an expr evaluation result to a string suitable
+// for the field setters. time.Time values are formatted as RFC3339 (UTC) so
+// the time setters can parse them; everything else uses default Go formatting.
+func exprResultToString(result any) string {
+	switch v := result.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case time.Time:
+		return v.UTC().Format(time.RFC3339)
+	case *time.Time:
+		if v == nil {
+			return ""
+		}
+		return v.UTC().Format(time.RFC3339)
+	default:
+		return fmt.Sprintf("%v", result)
+	}
 }
 
 // parseFlexibleTime parses a timestamp string in a few common formats
@@ -563,7 +710,7 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 				if err != nil {
 					return fmt.Errorf("mapping field %q: expression evaluation failed on row %d: %w", targetField, len(records)+skipped+filtered+1, err)
 				}
-				val = fmt.Sprintf("%v", result)
+				val = exprResultToString(result)
 			} else {
 				val = src.static
 			}
@@ -832,19 +979,12 @@ func validateMapping(mapping convertMapping) error {
 		return fmt.Errorf("mapping must include a \"login\" field")
 	}
 
-	// validate that all target fields are known
-	knownFields := map[string]bool{
-		"login": true, "email": true, "email_verified": true, "email_opt_in": true,
-		"phone_number": true, "phone_number_verified": true, "phone_number_opt_in": true,
-		"billing_email": true, "billing_phone_number": true, "name": true, "roles": true,
-		"stripe_customer_id": true, "channel_opt_in": true, "category_opt_out": true,
-		"import_comment": true, "import_source": true,
-	}
-
+	// validate that all target fields are known (drives off importFieldSetters
+	// so this stays in sync as new setters are added)
 	for field := range mapping {
-		if !knownFields[field] {
-			valid := make([]string, 0, len(knownFields))
-			for k := range knownFields {
+		if _, ok := importFieldSetters[field]; !ok {
+			valid := make([]string, 0, len(importFieldSetters))
+			for k := range importFieldSetters {
 				valid = append(valid, k)
 			}
 			return fmt.Errorf("unknown target field %q in mapping; valid fields: %s", field, strings.Join(valid, ", "))

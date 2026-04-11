@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gocarina/gocsv"
@@ -750,7 +752,7 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose bool) error {
 		select {
 		case <-ctx.Done():
 			bar.Finish()
-			return ctx.Err()
+			return cancelAndWaitJob(job)
 		case <-time.After(pollInterval):
 		}
 
@@ -849,6 +851,66 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose bool) error {
 		case queue.StatusCanceled:
 			bar.Finish()
 			return fmt.Errorf("job %s was canceled", job.UUID)
+		}
+	}
+}
+
+// cancelAndWaitJob requests cancellation of the job and polls until it reaches
+// a terminal state, timing out after 90s.  A second interrupt abandons the wait
+// and returns immediately (the job may still be running on the server).
+func cancelAndWaitJob(job *atomic.Job) error {
+	const (
+		cancelTimeout = 90 * time.Second
+		pollInterval  = 2 * time.Second
+	)
+
+	fmt.Fprintf(os.Stderr, "\ninterrupt received, attempting to cancel job %s (timeout %s, Ctrl+C again to abandon wait)...\n", job.UUID, cancelTimeout)
+
+	// Fresh background context — the inherited ctx is already canceled.
+	cancelCtx, cancelFn := context.WithTimeout(context.Background(), cancelTimeout)
+	defer cancelFn()
+
+	if err := backend.JobCancel(cancelCtx, &atomic.JobCancelInput{JobID: job.UUID}); err != nil {
+		return fmt.Errorf("failed to request job cancel: %w", err)
+	}
+
+	// Register our own signal channel so a second Ctrl+C abandons the wait.
+	// signal.Notify is additive, so this coexists with the parent's NotifyContext.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-cancelCtx.Done():
+			return fmt.Errorf("timed out after %s waiting for job %s to cancel (job may still be running)", cancelTimeout, job.UUID)
+		case <-sigCh:
+			return fmt.Errorf("abandoned wait for job %s cancel (job may still be running)", job.UUID)
+		case <-ticker.C:
+		}
+
+		updated, err := backend.JobGet(cancelCtx, &atomic.JobGetInput{JobID: &job.UUID})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  failed to poll job during cancel: %s\n", err)
+			continue
+		}
+
+		switch updated.Status {
+		case queue.StatusCanceled:
+			fmt.Fprintf(os.Stderr, "job %s canceled\n", job.UUID)
+			return fmt.Errorf("job %s was canceled", job.UUID)
+		case queue.StatusSuccess:
+			fmt.Fprintf(os.Stderr, "job %s completed before cancel took effect\n", job.UUID)
+			return nil
+		case queue.StatusError:
+			errMsg := "unknown error"
+			if updated.Error != nil {
+				errMsg = *updated.Error
+			}
+			return fmt.Errorf("job %s failed: %s", job.UUID, errMsg)
 		}
 	}
 }

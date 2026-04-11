@@ -65,6 +65,9 @@ type (
 		atomicpkg.UserImportRecord
 		MigrateStripePrice        string `csv:"migrate_stripe_price,omitempty"`
 		MigrateStripeSubscription string `csv:"migrate_stripe_subscription,omitempty"`
+		// MapError captures any non-fatal issue encountered while mapping the row
+		// (e.g. a stripe customer that could not be found). Empty for clean rows.
+		MapError string `csv:"map_error,omitempty"`
 	}
 
 	// emailRewriter rewrites email addresses for testing/sandbox environments.
@@ -107,14 +110,6 @@ func promptOverwriteIfExists(path string, appendMode bool) error {
 
 var (
 	migrateCommonFlags = []cli.Flag{
-		&cli.StringFlag{
-			Name:  "stripe-key",
-			Usage: "Stripe API key for the source account",
-			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("STRIPE_API_KEY"),
-			),
-			Required: false,
-		},
 		&cli.BoolFlag{
 			Name:  "dry-run",
 			Usage: "preview what would happen without making changes",
@@ -169,6 +164,16 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 	migrateCmd = &cli.Command{
 		Name:  "migrate",
 		Usage: "migrate users from external platforms",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "stripe-key",
+				Aliases: []string{"sk"},
+				Usage:   "Stripe API key (sk_...) shared by all migrate subcommands; required by `migrate substack` and by stripe.* expr functions in `migrate map`",
+				Sources: cli.NewValueSourceChain(
+					cli.EnvVar("STRIPE_API_KEY"),
+				),
+			},
+		},
 		Commands: []*cli.Command{
 			migrateSubstackCmd,
 			migrateConvertCmd,

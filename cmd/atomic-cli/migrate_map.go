@@ -23,16 +23,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/apex/log"
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/util"
+	"github.com/schollz/progressbar/v3"
+	"github.com/stripe/stripe-go/v79"
+	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"
 )
 
@@ -48,9 +55,11 @@ type (
 		// Outputs defines multiple output files with per-output filters;
 		// mutually exclusive with the --output CLI flag
 		Outputs []convertMappingOutput `json:"outputs,omitempty"`
-		// Columns maps UserImportRecord field names to expr expressions or static values
+		// Columns maps UserImportRecord field names to expr expressions, static
+		// values, or a {filter, value} struct that only sets the value if filter matches
 		Columns map[string]any `json:"columns"`
 	}
+
 
 	convertMappingOptions struct {
 		Append               *bool  `json:"append,omitempty"`
@@ -59,6 +68,9 @@ type (
 		Source               string `json:"source,omitempty"`
 		Limit                *int   `json:"limit,omitempty"`
 		Skip                 *int   `json:"skip,omitempty"`
+		// Filter mirrors the top-level filter field for ergonomics; both forms work.
+		// If both are set, top-level wins.
+		Filter string `json:"filter,omitempty"`
 	}
 
 	convertMappingOutput struct {
@@ -96,6 +108,10 @@ var (
 		&cli.StringSliceFlag{
 			Name:  "vars",
 			Usage: "define vars for use in expressions as NAME=value (e.g. --vars 'ALL_CATS=News,Sports,Opinion')",
+		},
+		&cli.BoolFlag{
+			Name:  "split-error-rows",
+			Usage: "route rows with non-fatal mapping errors (e.g. stripe customer not found) to a separate <output>_errors.csv file instead of the main output",
 		},
 	)
 
@@ -422,6 +438,11 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		fileFilter = mf.Filter
 		outputs = mf.Outputs
 
+		// allow filter inside options as a fallback for users who put it there
+		if fileFilter == "" && mf.Options != nil && mf.Options.Filter != "" {
+			fileFilter = mf.Options.Filter
+		}
+
 		// config file options override CLI defaults (CLI flags still win if explicitly set)
 		if mf.Options != nil {
 			if mf.Options.EmailDomainOverwrite != "" && rewriter == nil {
@@ -596,6 +617,98 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		func(format string, args ...any) string { return "" },
 	)
 
+	// stripe customer search function — bound to the global --stripe-key.
+	// Lazily inits the client; if the function is referenced in any column or
+	// filter expression and --stripe-key is unset, we fail at compile time so
+	// the user gets immediate feedback (instead of a per-row error).
+	stripeKey := cmd.String("stripe-key")
+	var stripeOnce sync.Once
+	var stripeClient *stripeclient.API
+	var stripeNotFound int
+	var stripeMu sync.Mutex
+	stripeUsed := false
+
+	// progressBar holds the active progress bar (set later, after compile).
+	// stripeLogf clears the bar so warnings appear above it instead of being
+	// chopped up by the bar's \r-based redraw.
+	var progressBar *progressbar.ProgressBar
+	stripeLogf := func(format string, args ...any) {
+		if progressBar != nil {
+			progressBar.Clear()
+		}
+		log.Warnf(format, args...)
+	}
+
+	// per-row soft error accumulator. Reset at the top of each row iteration;
+	// after column evaluation, joined into rec.MapError.
+	var rowSoftErrors []string
+	addRowError := func(msg string) {
+		rowSoftErrors = append(rowSoftErrors, msg)
+	}
+
+	getStripeClient := func() (*stripeclient.API, error) {
+		var initErr error
+		stripeOnce.Do(func() {
+			if stripeKey == "" {
+				initErr = fmt.Errorf("--stripe-key is required to use stripe.* expr functions (set via --stripe-key/--sk or $STRIPE_API_KEY)")
+				return
+			}
+			stripeClient = stripeclient.New(stripeKey, nil)
+		})
+		return stripeClient, initErr
+	}
+
+	// the stripe namespace is exposed as a struct in the env so callers can
+	// use dotted-name syntax like stripe.customer_search(field, value).
+	// Returns ("", err) on real stripe errors (auth, network, rate limit) so
+	// the row loop can fail fast. "Not found" is treated as a soft error: the
+	// function returns "" and records a per-row error message for map_error.
+	stripeCustomerSearch := func(field, val string) (string, error) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return "", nil
+		}
+		sc, err := getStripeClient()
+		if err != nil {
+			return "", err
+		}
+
+		// stripe search query language: field:'value' (single quotes around value)
+		escaped := strings.ReplaceAll(val, `'`, `\'`)
+		query := fmt.Sprintf("%s:'%s'", field, escaped)
+
+		searchParams := &stripe.CustomerSearchParams{}
+		searchParams.Query = query
+		searchParams.Limit = stripe.Int64(1)
+
+		iter := sc.Customers.Search(searchParams)
+		if iter.Next() {
+			cust := iter.Customer()
+			return cust.ID, nil
+		}
+		if iterErr := iter.Err(); iterErr != nil {
+			// any real stripe error is fatal — we don't want to silently
+			// produce hundreds of empty IDs because of an auth or rate-limit issue
+			return "", fmt.Errorf("stripe.customer_search %s=%s: %w", field, val, iterErr)
+		}
+
+		// soft error: customer not found
+		stripeMu.Lock()
+		stripeNotFound++
+		stripeMu.Unlock()
+		msg := fmt.Sprintf("stripe customer not found for %s=%s", field, val)
+		addRowError(msg)
+		if mainCmd.Bool("verbose") {
+			stripeLogf("stripe.customer_search: no customer found for %s=%s", field, val)
+		}
+		return "", nil
+	}
+
+	type stripeNS struct {
+		CustomerSearch func(field, val string) (string, error) `expr:"customer_search"`
+	}
+	exprEnv["stripe"] = stripeNS{CustomerSearch: stripeCustomerSearch}
+
 	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn, atoiFn()}
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
@@ -628,27 +741,82 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	type fieldSource struct {
 		program *vm.Program // non-nil for expr-based mappings
 		static  string      // used when program is nil
+		filter  *vm.Program // optional per-column filter; value is only set when truthy
 	}
 
-	resolved := make(map[string]fieldSource)
-	for targetField, sourceVal := range mapping {
-		switch v := sourceVal.(type) {
+	// helper to compile a single value (string → expr program, otherwise static)
+	compileColumnValue := func(targetField string, raw any) (fieldSource, error) {
+		switch v := raw.(type) {
 		case string:
 			program, err := expr.Compile(v, exprOpts...)
 			if err != nil {
-				return fmt.Errorf("mapping field %q: invalid expression %q: %w", targetField, v, err)
+				return fieldSource{}, fmt.Errorf("mapping field %q: invalid expression %q: %w", targetField, v, err)
 			}
-			resolved[targetField] = fieldSource{program: program}
+			if strings.Contains(v, "stripe.customer_search") {
+				stripeUsed = true
+			}
+			return fieldSource{program: program}, nil
 		case bool:
 			if v {
-				resolved[targetField] = fieldSource{static: "true"}
-			} else {
-				resolved[targetField] = fieldSource{static: "false"}
+				return fieldSource{static: "true"}, nil
 			}
+			return fieldSource{static: "false"}, nil
 		case float64:
-			resolved[targetField] = fieldSource{static: fmt.Sprintf("%g", v)}
+			return fieldSource{static: fmt.Sprintf("%g", v)}, nil
 		default:
-			resolved[targetField] = fieldSource{static: fmt.Sprintf("%v", v)}
+			return fieldSource{static: fmt.Sprintf("%v", v)}, nil
+		}
+	}
+
+	resolved := make(map[string]fieldSource)
+	columnFilterSources := make(map[string]string) // target field -> filter expr (for reporting)
+	for targetField, sourceVal := range mapping {
+		// {filter, value} struct form: only set the column when filter is truthy
+		if obj, ok := sourceVal.(map[string]any); ok {
+			filterRaw, hasFilter := obj["filter"]
+			valueRaw, hasValue := obj["value"]
+			if hasFilter || hasValue {
+				if !hasValue {
+					return fmt.Errorf("mapping field %q: struct form requires \"value\"", targetField)
+				}
+				fs, err := compileColumnValue(targetField, valueRaw)
+				if err != nil {
+					return err
+				}
+				if hasFilter {
+					filterStr, ok := filterRaw.(string)
+					if !ok {
+						return fmt.Errorf("mapping field %q: \"filter\" must be a string expression", targetField)
+					}
+					if filterStr != "" {
+						filterProg, err := expr.Compile(filterStr, append(exprOpts, expr.AsBool())...)
+						if err != nil {
+							return fmt.Errorf("mapping field %q: invalid filter %q: %w", targetField, filterStr, err)
+						}
+						if strings.Contains(filterStr, "stripe.customer_search") {
+							stripeUsed = true
+						}
+						fs.filter = filterProg
+						columnFilterSources[targetField] = filterStr
+					}
+				}
+				resolved[targetField] = fs
+				continue
+			}
+		}
+
+		fs, err := compileColumnValue(targetField, sourceVal)
+		if err != nil {
+			return err
+		}
+		resolved[targetField] = fs
+	}
+
+	// validate stripe key early when any expression references stripe.* — gives
+	// the user immediate feedback instead of a per-row failure later
+	if stripeUsed {
+		if _, err := getStripeClient(); err != nil {
+			return err
 		}
 	}
 
@@ -666,12 +834,149 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	// convert rows
-	var records []*atomic.UserImportRecord
-	skipped := 0
-	filtered := 0
+	// determine output targets up front so the row loop can route directly
+	type outputTarget struct {
+		path       string
+		errorPath  string // sibling _errors file when --split-error-rows is set
+		filterSrc  string
+		filter     *vm.Program
+		records    []*importRecord
+		errRecords []*importRecord // populated when split-error-rows routes a row here
+	}
 
-	for _, row := range allRows[1:] {
+	splitErrorRows := cmd.Bool("split-error-rows")
+	addErrorPath := func(p string) string {
+		ext := filepath.Ext(p)
+		base := strings.TrimSuffix(p, ext)
+		return base + "_errors" + ext
+	}
+
+	var targets []outputTarget
+
+	if len(outputs) > 0 {
+		for _, out := range outputs {
+			t := outputTarget{path: out.Path, filterSrc: out.Filter}
+			if out.Filter != "" {
+				prog, err := expr.Compile(out.Filter, append(exprOpts, expr.AsBool())...)
+				if err != nil {
+					return fmt.Errorf("output %q: invalid filter expression: %w", out.Path, err)
+				}
+				t.filter = prog
+			}
+			if splitErrorRows {
+				t.errorPath = addErrorPath(out.Path)
+			}
+			targets = append(targets, t)
+		}
+	} else {
+		t := outputTarget{path: outputPath}
+		if splitErrorRows {
+			t.errorPath = addErrorPath(outputPath)
+		}
+		targets = []outputTarget{t}
+	}
+
+	// prompt up front before doing any work — the user can bail out before
+	// we make any (potentially expensive) stripe.* calls
+	if !appendMode {
+		for _, t := range targets {
+			if err := promptOverwriteIfExists(t.path, false); err != nil {
+				return err
+			}
+			if t.errorPath != "" {
+				if err := promptOverwriteIfExists(t.errorPath, false); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// summarize filters in effect so the user can see what's being applied,
+	// and warn about redundant copies of the same expression in multiple places
+	type filterLoc struct {
+		kind string // "global" | "output:<path>" | "column:<field>"
+		expr string
+	}
+	var filterLocs []filterLoc
+	if filterExpr != "" {
+		filterLocs = append(filterLocs, filterLoc{kind: "global", expr: filterExpr})
+	}
+	for _, t := range targets {
+		if t.filterSrc != "" {
+			filterLocs = append(filterLocs, filterLoc{kind: "output:" + t.path, expr: t.filterSrc})
+		}
+	}
+	if len(columnFilterSources) > 0 {
+		fields := make([]string, 0, len(columnFilterSources))
+		for f := range columnFilterSources {
+			fields = append(fields, f)
+		}
+		sort.Strings(fields)
+		for _, f := range fields {
+			filterLocs = append(filterLocs, filterLoc{kind: "column:" + f, expr: columnFilterSources[f]})
+		}
+	}
+
+	for _, fl := range filterLocs {
+		fmt.Fprintf(os.Stderr, "filter (%s): %s\n", fl.kind, fl.expr)
+	}
+
+	// detect duplicates: same expression text used in multiple places
+	if len(filterLocs) > 1 {
+		byExpr := make(map[string][]string)
+		for _, fl := range filterLocs {
+			byExpr[fl.expr] = append(byExpr[fl.expr], fl.kind)
+		}
+		for expr, kinds := range byExpr {
+			if len(kinds) > 1 {
+				log.Warnf("redundant filter %q is set in multiple places: %s", expr, strings.Join(kinds, ", "))
+			}
+		}
+	}
+
+	// convert rows — pre-counted so the progress bar has a known total
+	totalRows := len(allRows) - 1
+	if totalRows < 0 {
+		totalRows = 0
+	}
+	if filterExpr != "" || len(targets) > 1 || len(columnFilterSources) > 0 {
+		fmt.Fprintf(os.Stderr, "scanning %d source rows (filters may reduce the mapped count)\n", totalRows)
+	} else {
+		fmt.Fprintf(os.Stderr, "mapping %d rows\n", totalRows)
+	}
+
+	bar := newMigrateProgress(totalRows, "Mapping records")
+	progressBar = bar
+	defer bar.Finish()
+
+	mapped := 0
+	ignored := 0  // rows with no login (or otherwise unmappable)
+	excluded := 0 // rows removed by the global filter
+	errored := 0  // rows that picked up at least one soft error (e.g. stripe not-found)
+
+	updateBarDesc := func() {
+		bar.Describe(fmt.Sprintf("Mapping (mapped:%d excluded:%d ignored:%d errors:%d)", mapped, excluded, ignored, errored))
+	}
+	updateBarDesc()
+
+	for rowIdx, row := range allRows[1:] {
+		// honor ctrl+c — stop processing immediately
+		if err := ctx.Err(); err != nil {
+			bar.Finish()
+			return fmt.Errorf("interrupted: %w", err)
+		}
+
+		bar.Add(1)
+		// refresh the description periodically so the live counts don't churn
+		// the redraw on every row (every 100 keeps it fluid without thrashing)
+		if (rowIdx+1)%100 == 0 {
+			updateBarDesc()
+		}
+
+		// reset per-row soft error accumulator (populated by stripe.* functions
+		// when they hit a recoverable problem like "not found")
+		rowSoftErrors = rowSoftErrors[:0]
+
 		// build row environment for expr evaluation (shared by filter and mappings);
 		// start from the compile-time env (functions, constants) and overlay row values
 		rowEnv := make(map[string]any, len(exprEnv)+len(headers))
@@ -689,26 +994,39 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			}
 		}
 
-		// apply filter
+		// apply global filter
 		if filterProgram != nil {
 			result, err := expr.Run(filterProgram, rowEnv)
 			if err != nil {
 				return fmt.Errorf("filter evaluation failed: %w", err)
 			}
 			if match, ok := result.(bool); !ok || !match {
-				filtered++
+				excluded++
 				continue
 			}
 		}
 
+		// map the record (this is the loop that may make stripe.* calls — only
+		// runs once per row regardless of how many output targets exist)
 		rec := &atomic.UserImportRecord{}
 
 		for targetField, src := range resolved {
+			// per-column filter — skip evaluating the value when the filter is falsey
+			if src.filter != nil {
+				fres, ferr := expr.Run(src.filter, rowEnv)
+				if ferr != nil {
+					return fmt.Errorf("mapping field %q: filter evaluation failed on row %d: %w", targetField, rowIdx+1, ferr)
+				}
+				if match, ok := fres.(bool); !ok || !match {
+					continue
+				}
+			}
+
 			var val string
 			if src.program != nil {
 				result, err := expr.Run(src.program, rowEnv)
 				if err != nil {
-					return fmt.Errorf("mapping field %q: expression evaluation failed on row %d: %w", targetField, len(records)+skipped+filtered+1, err)
+					return fmt.Errorf("mapping field %q: expression evaluation failed on row %d: %w", targetField, rowIdx+1, err)
 				}
 				val = exprResultToString(result)
 			} else {
@@ -726,9 +1044,9 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			setter(rec, val)
 		}
 
-		// skip rows with no login
+		// ignore rows with no login (unmappable)
 		if rec.Login == "" {
-			skipped++
+			ignored++
 			continue
 		}
 
@@ -756,214 +1074,119 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			rec.ImportSource = &source
 		}
 
-		records = append(records, rec)
-	}
-
-	// determine output targets
-	type outputTarget struct {
-		path    string
-		filter  *vm.Program
-		records []*importRecord
-	}
-
-	var targets []outputTarget
-
-	if len(outputs) > 0 {
-		// multi-output mode from config file
-		for _, out := range outputs {
-			t := outputTarget{path: out.Path}
-			if out.Filter != "" {
-				prog, err := expr.Compile(out.Filter, append(exprOpts, expr.AsBool())...)
-				if err != nil {
-					return fmt.Errorf("output %q: invalid filter expression: %w", out.Path, err)
-				}
-				t.filter = prog
-			}
-			targets = append(targets, t)
+		// capture any soft errors picked up during column evaluation
+		hasError := len(rowSoftErrors) > 0
+		if hasError {
+			errored++
 		}
-	} else {
-		// single output mode
-		targets = []outputTarget{{path: outputPath}}
-	}
 
-	// route records to output targets
-	for _, rec := range records {
 		ir := &importRecord{UserImportRecord: *rec}
-
-		if len(outputs) > 0 {
-			// evaluate each output's filter against the original row env
-			// we need the raw row data; reconstruct from record fields is not practical,
-			// so we re-evaluate filters against the stored row environments
-			// Instead, route during the row loop above. Let's restructure.
-		}
-		// for single output, just collect all
-		if len(outputs) == 0 {
-			targets[0].records = append(targets[0].records, ir)
-		}
-	}
-
-	// If multi-output, we need to route during row processing. Let me restructure
-	// to collect per-output during the main loop instead.
-	if len(outputs) > 0 {
-		// clear - we'll redo this properly
-		for i := range targets {
-			targets[i].records = nil
+		if hasError {
+			ir.MapError = strings.Join(rowSoftErrors, "; ")
 		}
 
-		for rowIdx, row := range allRows[1:] {
-			_ = rowIdx
-			rowEnv := make(map[string]any, len(exprEnv)+len(headers))
-			for k, v := range exprEnv {
-				rowEnv[k] = v
-			}
-			for i, h := range headers {
-				if i < len(row) {
-					rowEnv[h] = row[i]
-				} else {
-					rowEnv[h] = ""
-				}
-			}
-
-			// apply global filter
-			if filterProgram != nil {
-				result, err := expr.Run(filterProgram, rowEnv)
+		// route to all matching output targets. With --split-error-rows, error
+		// rows go ONLY to the target's _errors sibling (not the main file).
+		for i, t := range targets {
+			if t.filter != nil {
+				result, err := expr.Run(t.filter, rowEnv)
 				if err != nil {
-					continue
+					return fmt.Errorf("output %q filter evaluation failed on row %d: %w", t.path, rowIdx+1, err)
 				}
 				if match, ok := result.(bool); !ok || !match {
 					continue
 				}
 			}
-
-			// map the record
-			rec := &atomic.UserImportRecord{}
-			for targetField, src := range resolved {
-				var val string
-				if src.program != nil {
-					result, err := expr.Run(src.program, rowEnv)
-					if err != nil {
-						return fmt.Errorf("mapping field %q: expression evaluation failed: %w", targetField, err)
-					}
-					val = fmt.Sprintf("%v", result)
-				} else {
-					val = src.static
-				}
-				if val == "" {
-					continue
-				}
-				if setter, ok := importFieldSetters[targetField]; ok {
-					setter(rec, val)
-				}
-			}
-
-			if rec.Login == "" {
-				continue
-			}
-
-			if rewriter != nil {
-				rec.Login = rewriter.Rewrite(rec.Login)
-				if rec.Email != nil && *rec.Email != "" {
-					rewritten := rewriter.Rewrite(*rec.Email)
-					rec.Email = &rewritten
-				}
-				if rec.BillingEmail != nil && *rec.BillingEmail != "" {
-					rewritten := rewriter.Rewrite(*rec.BillingEmail)
-					rec.BillingEmail = &rewritten
-				}
-			}
-
-			if rec.Email == nil || *rec.Email == "" {
-				login := rec.Login
-				rec.Email = &login
-			}
-
-			if (rec.ImportSource == nil || *rec.ImportSource == "") && source != "" {
-				rec.ImportSource = &source
-			}
-
-			ir := &importRecord{UserImportRecord: *rec}
-
-			// route to matching outputs
-			for i, t := range targets {
-				if t.filter != nil {
-					result, err := expr.Run(t.filter, rowEnv)
-					if err != nil {
-						continue
-					}
-					if match, ok := result.(bool); !ok || !match {
-						continue
-					}
-				}
+			if hasError && splitErrorRows && t.errorPath != "" {
+				targets[i].errRecords = append(targets[i].errRecords, ir)
+			} else {
 				targets[i].records = append(targets[i].records, ir)
 			}
 		}
+		mapped++
+	}
+
+	updateBarDesc()
+	bar.Finish()
+
+	// helper to write a slice of import records to a CSV path
+	writeRecords := func(path string, recs []*importRecord, label string) error {
+		if appendMode {
+			var appendErr error
+			recs, appendErr = appendExistingCSV(path, recs)
+			if appendErr != nil {
+				return appendErr
+			}
+		}
+
+		outFile, err := os.Create(path)
+		if err != nil {
+			return fmt.Errorf("failed to create output file %s: %w", path, err)
+		}
+
+		if err := gocsv.MarshalFile(&recs, outFile); err != nil {
+			outFile.Close()
+			return fmt.Errorf("failed to write output CSV %s: %w", path, err)
+		}
+		outFile.Close()
+
+		fmt.Fprintf(os.Stderr, "%s %d records to %s\n", label, len(recs), path)
+		return nil
+	}
+
+	// apply skip/limit (operates on the in-memory main set per target; the
+	// error sibling is written as-is so the user sees every problem row).
+	applySkipLimit := func(recs []*importRecord) []*importRecord {
+		if skip > 0 && len(recs) > skip {
+			recs = recs[skip:]
+		} else if skip > 0 {
+			recs = nil
+		}
+		if limit > 0 && len(recs) > limit {
+			recs = recs[:limit]
+		}
+		return recs
 	}
 
 	// write each output target
 	for _, t := range targets {
-		outRecords := t.records
-
-		// for single-output mode, wrap from records slice
-		if len(outputs) == 0 {
-			outRecords = make([]*importRecord, 0, len(records))
-			for _, rec := range records {
-				outRecords = append(outRecords, &importRecord{UserImportRecord: *rec})
-			}
+		mainRecs := applySkipLimit(t.records)
+		if err := writeRecords(t.path, mainRecs, "mapped"); err != nil {
+			return err
 		}
 
-		// apply skip and limit per output
-		if skip > 0 && len(outRecords) > skip {
-			outRecords = outRecords[skip:]
-		} else if skip > 0 {
-			outRecords = nil
-		}
-		if limit > 0 && len(outRecords) > limit {
-			outRecords = outRecords[:limit]
-		}
-
-		if appendMode {
-			var appendErr error
-			outRecords, appendErr = appendExistingCSV(t.path, outRecords)
-			if appendErr != nil {
-				return appendErr
-			}
-		} else {
-			if err := promptOverwriteIfExists(t.path, false); err != nil {
+		if t.errorPath != "" && len(t.errRecords) > 0 {
+			if err := writeRecords(t.errorPath, t.errRecords, "errors"); err != nil {
 				return err
 			}
 		}
-
-		outFile, err := os.Create(t.path)
-		if err != nil {
-			return fmt.Errorf("failed to create output file %s: %w", t.path, err)
-		}
-
-		if err := gocsv.MarshalFile(&outRecords, outFile); err != nil {
-			outFile.Close()
-			return fmt.Errorf("failed to write output CSV %s: %w", t.path, err)
-		}
-		outFile.Close()
-
-		fmt.Fprintf(os.Stderr, "mapped %d records to %s\n", len(outRecords), t.path)
 	}
 
-	totalMapped := len(records)
-	if len(outputs) > 0 {
-		totalMapped = 0
-		for _, t := range targets {
-			totalMapped += len(t.records)
-		}
-	}
+	fmt.Fprintf(os.Stderr, "mapped %d records\n", mapped)
 
-	if filtered > 0 || skipped > 0 {
+	if excluded > 0 || ignored > 0 || errored > 0 {
 		var parts []string
-		if filtered > 0 {
-			parts = append(parts, fmt.Sprintf("%d filtered out", filtered))
+		if excluded > 0 {
+			parts = append(parts, fmt.Sprintf("%d excluded by filter", excluded))
 		}
-		if skipped > 0 {
-			parts = append(parts, fmt.Sprintf("%d skipped — no login", skipped))
+		if ignored > 0 {
+			parts = append(parts, fmt.Sprintf("%d ignored — no login", ignored))
+		}
+		if errored > 0 {
+			parts = append(parts, fmt.Sprintf("%d errors (see map_error column)", errored))
 		}
 		fmt.Fprintf(os.Stderr, "(%s)\n", strings.Join(parts, ", "))
+	}
+
+	if stripeUsed {
+		stripeMu.Lock()
+		nf := stripeNotFound
+		stripeMu.Unlock()
+		if nf > 0 {
+			fmt.Fprintf(os.Stderr, "stripe.customer_search: %d not found\n", nf)
+		} else {
+			fmt.Fprintf(os.Stderr, "stripe.customer_search: all lookups resolved\n")
+		}
 	}
 
 	return nil

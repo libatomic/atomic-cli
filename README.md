@@ -1315,11 +1315,18 @@ All imported users automatically receive `import:date` in their metadata, set to
 
 #### Common Options
 
+`--stripe-key` (alias `--sk`) is now a **global flag** on `atomic-cli migrate`, shared by all subcommands. It can also be set via the `STRIPE_API_KEY` environment variable. It is **required** for `migrate substack` and for any `migrate map` config that uses `stripe.*` expr functions.
+
+```bash
+atomic-cli migrate --sk sk_live_xxx substack ...
+atomic-cli migrate --sk sk_live_xxx map -c config.json -in source.csv
+```
+
 These options apply to all migrate subcommands:
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
-| `--stripe-key` | Stripe API key for the source account (or `$STRIPE_API_KEY`) | *required* |
+| `--stripe-key`, `--sk` | Stripe API key (or `$STRIPE_API_KEY`); set on the parent `migrate` command | |
 | `--dry-run` | Preview what would happen without creating plans | `false` |
 | `--output`, `--out` | Output CSV file path. Each subcommand has its own default: `migrate substack` → `migrate_substack.csv`, `migrate map` → `migrate_map.csv`. When the file already exists and `--append=false`, the command prompts for confirmation before overwriting. | (per-subcommand) |
 | `--subscription-prorate` | Set prorate flag on migrated subscriptions | `false` |
@@ -1479,6 +1486,7 @@ atomic-cli migrate map [options]
 | `--columns`, `--col` | Inline column mappings as `target=expression` pairs (repeatable, or semicolon-separated) | |
 | `--filter` | Expression to filter rows (only matching rows are included) | |
 | `--vars` | Define variables for use in expressions as `NAME=value` (repeatable) | |
+| `--split-error-rows` | Route rows with non-fatal mapping errors (e.g. stripe customer not found) to a separate `<output>_errors.csv` sibling file instead of including them in the main output | `false` |
 
 Either `--config` or `--columns` is required.
 
@@ -1549,6 +1557,7 @@ The config file is a JSON object with the following top-level keys:
 | `source` | string | Import source identifier (same as `--source`) |
 | `limit` | integer | Limit per output file (same as `--limit`) |
 | `skip` | integer | Skip first N records per output file (same as `--skip`) |
+| `filter` | string | Global filter expression — same as the top-level `filter` key. Provided here for ergonomics when you put all your config under `options`. The top-level `filter` wins if both are set. |
 
 CLI flags override config file options when explicitly set.
 
@@ -1560,8 +1569,63 @@ Column values can be:
 
 - **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and variables are available
 - **bool/number** — a static value applied to every row
+- **object `{ "filter": "<expr>", "value": "<expr or static>" }`** — conditional column. The `filter` is evaluated first; the `value` is only computed and applied when the filter is truthy. Useful for expensive lookups (like `stripe.customer_search`) that should only run for some rows.
+
+**Stripe expr functions** (require `--stripe-key` / `--sk` / `$STRIPE_API_KEY`):
+
+- `stripe.customer_search(field, value)` — searches Stripe customers using its [search query language](https://stripe.com/docs/search#search-query-language). Returns the first matching customer's ID, or an empty string if not found. Common field values: `email`, `name`, `phone`, `metadata['key']`. Not-found rows are counted and printed at the end of the run; with `--verbose`, each missing customer is logged. Real Stripe errors (auth, network, rate limit) are fatal — see [Mapping errors](#mapping-errors-1) below.
+
+  ```json
+  "stripe_customer_id": {
+    "filter": "Type != \"Free\"",
+    "value": "stripe.customer_search(\"email\", Email)"
+  }
+  ```
+
+  When any column expression references `stripe.*`, the CLI **fails fast** at startup if `--stripe-key` is not set, instead of erroring per-row.
+
+**Filters and progress:**
+
+Before processing rows, `migrate map` prints every filter currently in effect, e.g.:
+
+```
+filter (global): hasSuffix(Type, "Subscriber")
+filter (output free-users.csv): Type == "Free"
+filter (column stripe_customer_id): Type != "Free"
+```
+
+If the same filter expression text appears in multiple places (global / output / column), a `redundant filter` warning is logged so you can simplify your config.
+
+The progress bar shows live counts as it scans the source CSV:
+
+```
+Mapping (mapped:5234 excluded:2317 ignored:0 errors:12)  18% |███████  | (7551/146577) [22s:6m48s]
+```
+
+| Counter | Meaning |
+|---|---|
+| **mapped** | rows that survived all filters and were routed to at least one output target |
+| **excluded** | rows removed by the global filter |
+| **ignored** | rows with no `login` value (unmappable) |
+| **errors** | rows that picked up at least one non-fatal mapping error (e.g. a stripe customer not found). The error message is written to the row's `map_error` CSV column. |
+
+The total `(N/M)` is the source row scan position; filters apply per-row inside the loop, so the bar always advances through the full source. Counts refresh every 100 rows. The bar's stripe-search warnings (when `--verbose`) are interleaved cleanly above the bar instead of overwriting it.
+
+**Mapping errors:**
+
+Output CSVs always include a `map_error` column. Rows that mapped cleanly leave it empty; rows that hit a soft error (like `stripe customer not found for email=foo@bar.com`) get the message written to that column so you can grep / triage later.
+
+- **`--split-error-rows`** — when set, rows with `map_error` are routed to a separate `<output>_errors.csv` sibling file instead of mixing with the main output. With multi-output configs, each output target gets its own `_errors` sibling. The split file is written only when at least one row had an error.
+- **Fatal stripe errors** — `stripe.customer_search` distinguishes "not found" (soft, captured in `map_error`) from real Stripe errors like authentication, network, or rate-limit failures. Real errors **abort the run immediately** so you don't end up with thousands of empty IDs from a misconfigured key.
+
+Other behaviors:
+
+- **Ctrl+C** — exits cleanly mid-scan; the row loop checks the cancellation context on each iteration.
+- **Existing output files** — when `--append=false`, you'll be prompted to confirm overwrite **before** any rows are processed (including any `_errors` siblings when `--split-error-rows` is set), so you can bail without wasting any stripe lookups.
 
 Supported target fields (matches all CSV columns on `atomic.UserImportRecord`): `created_at`, `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `metadata`, `stripe_customer_id`, `import_stripe_account`, `stripe_customer_metadata`, `subscription_plan_id`, `subscription_currency`, `subscription_quantity`, `subscription_interval`, `subscription_anchor_date`, `subscription_end_at`, `subscription_prorate`, `subscription_payment_method`, `discount_percentage`, `discount_term`, `discount_duration_days`, `is_team_owner`, `team_key`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
+
+The output CSV also includes a `map_error` column (auto-populated by the mapper, not a target you'd set yourself) and audit columns `migrate_stripe_price` / `migrate_stripe_subscription` (only set by `migrate substack`).
 
 The `created_at` field accepts RFC3339, `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`, or unix seconds — values are normalized to UTC. When omitted, the user is created with the timestamp at job runtime.
 

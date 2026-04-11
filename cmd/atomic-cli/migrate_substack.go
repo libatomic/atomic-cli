@@ -232,7 +232,11 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		founders = true
 	}
 
-	sc, err := initStripeClient(cmd.String("stripe-key"))
+	stripeKey := cmd.String("stripe-key")
+	if stripeKey == "" {
+		return fmt.Errorf("--stripe-key is required for migrate substack (set via flag, --sk, or $STRIPE_API_KEY)")
+	}
+	sc, err := initStripeClient(stripeKey)
 	if err != nil {
 		return fmt.Errorf("failed to initialize Stripe client: %w", err)
 	}

@@ -536,7 +536,7 @@ atomic-cli user import migrate_users.csv -i inst_abc123 --wait --verbose
 
 ##### CSV Validation
 
-Before calling the API, the CLI validates the input CSV locally — checking per-record structural validity and uniqueness on `login`, `email`, `phone_number`, and `stripe_customer_id`. If validation fails, the import is aborted with a summary. Run `migrate verify --verbose` for detailed per-row error reporting.
+Before calling the API, the CLI validates the input CSV locally — checking per-record structural validity and uniqueness on `login`, `email`, `phone_number`, and `stripe_customer_id`. If validation fails, the import is aborted with a summary. Run `migrate validate --verbose` for detailed per-row error reporting.
 
 ##### CSV Format
 
@@ -1314,7 +1314,7 @@ Currently supported platforms:
 Additional tools:
 
 - **map** - Map and filter any third-party CSV to Passport user import format using a config file or inline column mappings
-- **verify** - Validate a user import CSV and optionally deduplicate records
+- **validate** - Validate a user import CSV and optionally deduplicate records
 
 #### User Import Record CSV Format
 
@@ -1759,24 +1759,25 @@ atomic-cli migrate map \
 
 Rows without a `login` value after mapping are skipped. Both filtered and skipped counts are reported to stderr.
 
-#### migrate verify
+#### migrate validate
 
-Validates a user import CSV by running per-record validation (`UserImportRecord.Validate()`) and checking uniqueness constraints. Optionally deduplicates the file. Uses the global `--output` flag for the deduplicated output path.
+Validates a user import CSV by running per-record validation (`UserImportRecord.Validate()`) and checking uniqueness constraints. Optionally deduplicates the file, merging empty fields from duplicate rows into the first-seen record.
 
 ```bash
-atomic-cli migrate verify <input.csv> [options]
+atomic-cli migrate validate <input.csv> [options]
 ```
 
-**Verify-specific options** (in addition to [common options](#common-options)):
+**Validate-specific options** (in addition to [common options](#common-options)):
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
 | `--dedupe` | Deduplicate on the specified field; first occurrence wins | |
-| `--verbose`, `-v` | Print each duplicate row with the colliding field and value | `false` |
-
-When `--dedupe` is set, the deduplicated CSV is written to `--output`. If `--output` resolves to the same file as the input, you will be prompted before overwriting.
+| `--merge` | When deduping, merge empty fields from duplicate rows into the first occurrence instead of dropping them outright | `true` |
+| `--verbose`, `-v` | Print per-row validation errors and per-duplicate dedupe actions | `false` |
 
 Valid `--dedupe` fields: `login`, `email`, `phone_number`, `stripe_customer_id`.
+
+When `--dedupe` is set, the deduplicated CSV is written to `--output`. If `--output` is not specified, it defaults to `<input_basename>+deduped<ext>` (e.g., `migrate_map.csv` → `migrate_map+deduped.csv`). If `--output` resolves to the same file as the input, you will be prompted before overwriting.
 
 **Uniqueness checks:**
 
@@ -1791,24 +1792,36 @@ The following fields are checked for duplicates across all rows:
 
 `billing_email` is **not** checked for uniqueness.
 
-When `--dedupe` is not set, duplicates are reported as errors and the command exits with a non-zero status. When `--dedupe` is set, the first occurrence of each duplicate value is kept and later occurrences are removed.
+**Dedupe behavior:**
+
+- Without `--dedupe`, duplicates are reported as errors and the command exits with a non-zero status.
+- With `--dedupe` and `--merge=true` (the default), the first occurrence is retained and later duplicates are merged into it: any field that is empty/nil on the first row is filled from the duplicate. The first row always wins on conflict. `roles`, `metadata`, and `stripe_customer_metadata` are unioned rather than overwritten.
+- With `--dedupe --merge=false`, later duplicates are dropped outright without merging.
 
 **Examples:**
 
 ```bash
 # Validate only — report summary
-atomic-cli migrate verify ./merged-users.csv
+atomic-cli migrate validate ./merged-users.csv
 
-# Validate with verbose duplicate details
-atomic-cli migrate verify ./merged-users.csv --verbose
+# Validate with verbose per-row error details
+atomic-cli migrate validate ./merged-users.csv --verbose
 
-# Deduplicate on login, writing to a separate file
-atomic-cli migrate verify ./merged-users.csv \
+# Deduplicate on login; output defaults to ./merged-users+deduped.csv
+atomic-cli migrate validate ./merged-users.csv --dedupe login
+
+# Deduplicate on login, writing to a specific file
+atomic-cli migrate validate ./merged-users.csv \
   --dedupe login \
   --output ./merged-users-clean.csv
 
+# Drop duplicates without merging
+atomic-cli migrate validate ./merged-users.csv \
+  --dedupe login \
+  --merge=false
+
 # Deduplicate in place (prompts before overwriting)
-atomic-cli migrate verify ./merged-users.csv \
+atomic-cli migrate validate ./merged-users.csv \
   --dedupe login \
   --output ./merged-users.csv
 ```
@@ -1825,6 +1838,7 @@ validation errors: 2
 duplicate errors: 2
   login: 1
   stripe_customer_id: 1
+deduplicated on login: 2 duplicates, 1 merged (3 fields filled), 1 dropped, 1498 remaining → ./merged-users+deduped.csv
 ```
 
 **Example output (with `--verbose`):**
@@ -1844,6 +1858,11 @@ validation errors: 2
 duplicate errors: 2
   login: 1
   stripe_customer_id: 1
+
+dedupe actions:
+  row 315 → row 12: filled [name, phone_number, stripe_customer_id]
+  row 780 → row 200: dropped (no fields to merge)
+deduplicated on login: 2 duplicates, 1 merged (3 fields filled), 1 dropped, 1498 remaining → ./merged-users+deduped.csv
 ```
 
 ### Stripe Management

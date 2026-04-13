@@ -177,7 +177,7 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 		Commands: []*cli.Command{
 			migrateSubstackCmd,
 			migrateConvertCmd,
-			migrateVerifyCmd,
+			migrateValidateCmd,
 		},
 	}
 )

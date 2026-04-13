@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/gocarina/gocsv"
@@ -29,24 +31,29 @@ import (
 )
 
 var (
-	migrateVerifyFlags = append(
+	migrateValidateFlags = append(
 		migrateCommonFlags,
 		&cli.StringFlag{
 			Name:  "dedupe",
 			Usage: "deduplicate records on the specified field; first occurrence wins (valid: login, email, phone_number, stripe_customer_id)",
 		},
+		&cli.BoolFlag{
+			Name:  "merge",
+			Usage: "when deduping, merge empty fields from duplicate rows into the first occurrence instead of dropping them outright",
+			Value: true,
+		},
 	)
 
-	migrateVerifyCmd = &cli.Command{
-		Name:      "verify",
+	migrateValidateCmd = &cli.Command{
+		Name:      "validate",
 		Usage:     "validate a user import CSV and optionally deduplicate records",
 		ArgsUsage: "<input.csv>",
-		Flags:     migrateVerifyFlags,
-		Action:    migrateVerifyAction,
+		Flags:     migrateValidateFlags,
+		Action:    migrateValidateAction,
 	}
 )
 
-type verifyIssue struct {
+type validateIssue struct {
 	Row     int
 	Login   string
 	Field   string
@@ -54,7 +61,7 @@ type verifyIssue struct {
 	Message string
 }
 
-func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
+func migrateValidateAction(ctx context.Context, cmd *cli.Command) error {
 	_, outputPath, _, _, _, _, _, _, err := validateMigrateFlags(cmd, false)
 	if err != nil {
 		return err
@@ -65,7 +72,13 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("input CSV file path is required")
 	}
 	dedupeField := cmd.String("dedupe")
+	mergeDupes := cmd.Bool("merge")
 	verbose := mainCmd.Bool("verbose")
+
+	// default output to <input_basename>+deduped<ext> when user didn't override
+	if outputPath == DefaultMigrateOutputPath {
+		outputPath = dedupedOutputPath(inputPath)
+	}
 
 	if dedupeField != "" {
 		validFields := map[string]bool{"login": true, "email": true, "phone_number": true, "stripe_customer_id": true}
@@ -88,11 +101,11 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 	fmt.Fprintf(os.Stderr, "loaded %d records from %s\n", len(records), inputPath)
 
 	// per-record validation
-	var issues []verifyIssue
+	var issues []validateIssue
 	for i, rec := range records {
 		row := i + 1
 		if err := rec.Validate(); err != nil {
-			issues = append(issues, verifyIssue{
+			issues = append(issues, validateIssue{
 				Row:     row,
 				Login:   rec.Login,
 				Field:   "record",
@@ -146,7 +159,7 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 			if firstRow, exists := seen[val]; exists {
 				// only report if this row hasn't already been flagged as a duplicate
 				if !dupeRows[row] {
-					issues = append(issues, verifyIssue{
+					issues = append(issues, validateIssue{
 						Row:     row,
 						Login:   rec.Login,
 						Field:   uf.name,
@@ -225,20 +238,59 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 			}
 		}
 
-		seen := make(map[string]bool)
+		seen := make(map[string]int) // value -> index in deduped slice
 		deduped := make([]*importRecord, 0, len(records))
 		removed := 0
+		mergedCount := 0
+		totalFieldsFilled := 0
 
-		for _, rec := range records {
+		type mergeEvent struct {
+			dupRow   int
+			baseRow  int
+			fields   []string
+			merged   bool // false = dropped (nothing to fill or merge disabled)
+		}
+		var events []mergeEvent
+		rowOfIdx := make([]int, 0, len(records)) // deduped idx -> original 1-based row
+
+		for i, rec := range records {
+			row := i + 1
 			val := dedupeGetter(rec)
-			if val != "" && seen[val] {
+			if val == "" {
+				deduped = append(deduped, rec)
+				rowOfIdx = append(rowOfIdx, row)
+				continue
+			}
+			if baseIdx, exists := seen[val]; exists {
+				if mergeDupes {
+					filled := mergeInto(deduped[baseIdx], rec)
+					if len(filled) > 0 {
+						mergedCount++
+						totalFieldsFilled += len(filled)
+						events = append(events, mergeEvent{dupRow: row, baseRow: rowOfIdx[baseIdx], fields: filled, merged: true})
+					} else {
+						events = append(events, mergeEvent{dupRow: row, baseRow: rowOfIdx[baseIdx], merged: false})
+					}
+				} else {
+					events = append(events, mergeEvent{dupRow: row, baseRow: rowOfIdx[baseIdx], merged: false})
+				}
 				removed++
 				continue
 			}
-			if val != "" {
-				seen[val] = true
-			}
+			seen[val] = len(deduped)
 			deduped = append(deduped, rec)
+			rowOfIdx = append(rowOfIdx, row)
+		}
+
+		if verbose && len(events) > 0 {
+			fmt.Fprintf(os.Stderr, "\ndedupe actions:\n")
+			for _, ev := range events {
+				if ev.merged {
+					fmt.Fprintf(os.Stderr, "  row %d → row %d: filled [%s]\n", ev.dupRow, ev.baseRow, strings.Join(ev.fields, ", "))
+				} else {
+					fmt.Fprintf(os.Stderr, "  row %d → row %d: dropped (no fields to merge)\n", ev.dupRow, ev.baseRow)
+				}
+			}
 		}
 
 		// check if input and output resolve to the same file
@@ -262,11 +314,16 @@ func migrateVerifyAction(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("failed to write output CSV: %w", err)
 		}
 
-		fmt.Fprintf(os.Stderr, "deduplicated on %s: %d removed, %d remaining → %s\n", dedupeField, removed, len(deduped), outputPath)
+		if mergeDupes {
+			fmt.Fprintf(os.Stderr, "deduplicated on %s: %d duplicates, %d merged (%d fields filled), %d dropped, %d remaining → %s\n",
+				dedupeField, removed, mergedCount, totalFieldsFilled, removed-mergedCount, len(deduped), outputPath)
+		} else {
+			fmt.Fprintf(os.Stderr, "deduplicated on %s: %d removed, %d remaining → %s\n", dedupeField, removed, len(deduped), outputPath)
+		}
 	}
 
 	if validationErrors > 0 || (dupeErrors > 0 && dedupeField == "") {
-		return fmt.Errorf("verification failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
+		return fmt.Errorf("validation failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
 	}
 
 	return nil
@@ -326,10 +383,131 @@ func validateImportCSV(records []*importRecord) error {
 	}
 
 	if validationErrors > 0 || dupeErrors > 0 {
-		return fmt.Errorf("CSV validation failed: %d validation errors, %d duplicate issues; run 'migrate verify' for details", validationErrors, dupeErrors)
+		return fmt.Errorf("CSV validation failed: %d validation errors, %d duplicate issues; run 'migrate validate' for details", validationErrors, dupeErrors)
 	}
 
 	return nil
+}
+
+// mergeInto fills empty fields on dst with values from src. Returns the names
+// of the fields that were modified (CSV tag when available, else Go field name).
+// Rules:
+//   - scalar/pointer/string/numeric: copied only when dst is zero/nil/"".
+//   - slices: src elements not already present in dst are appended (union).
+//   - maps: src entries are added for keys dst doesn't have (union).
+//
+// dst always wins on conflict so the first-occurrence tie-breaker is preserved.
+func mergeInto(dst, src *importRecord) []string {
+	filled := make([]string, 0)
+	mergeValue(reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem(), "", &filled)
+	sort.Strings(filled)
+	return filled
+}
+
+func mergeValue(dst, src reflect.Value, prefix string, filled *[]string) {
+	t := dst.Type()
+	for i := 0; i < dst.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		dv := dst.Field(i)
+		sv := src.Field(i)
+		name := fieldName(field)
+		if prefix != "" && name != "" {
+			// keep top-level name, no nesting prefix needed in practice
+		}
+
+		// recurse into anonymous embedded structs
+		if field.Anonymous && dv.Kind() == reflect.Struct {
+			mergeValue(dv, sv, name, filled)
+			continue
+		}
+
+		switch dv.Kind() {
+		case reflect.Ptr:
+			if dv.IsNil() && !sv.IsNil() {
+				dv.Set(sv)
+				*filled = append(*filled, name)
+			}
+		case reflect.String:
+			if dv.Len() == 0 && sv.Len() > 0 {
+				dv.Set(sv)
+				*filled = append(*filled, name)
+			}
+		case reflect.Slice:
+			// union: append src elements not already present in dst
+			added := false
+			for j := 0; j < sv.Len(); j++ {
+				item := sv.Index(j)
+				if !sliceContains(dv, item) {
+					dv.Set(reflect.Append(dv, item))
+					added = true
+				}
+			}
+			if added {
+				*filled = append(*filled, name)
+			}
+		case reflect.Map:
+			if sv.Len() == 0 {
+				continue
+			}
+			if dv.IsNil() {
+				dv.Set(reflect.MakeMapWithSize(dv.Type(), sv.Len()))
+			}
+			added := false
+			iter := sv.MapRange()
+			for iter.Next() {
+				k := iter.Key()
+				if !dv.MapIndex(k).IsValid() {
+					dv.SetMapIndex(k, iter.Value())
+					added = true
+				}
+			}
+			if added {
+				*filled = append(*filled, name)
+			}
+		case reflect.Struct:
+			// wrapped value types (e.g. util.Timestamp) — only fill if dst is zero
+			if dv.IsZero() && !sv.IsZero() {
+				dv.Set(sv)
+				*filled = append(*filled, name)
+			}
+		default:
+			if dv.IsZero() && !sv.IsZero() {
+				dv.Set(sv)
+				*filled = append(*filled, name)
+			}
+		}
+	}
+}
+
+func fieldName(f reflect.StructField) string {
+	if tag := f.Tag.Get("csv"); tag != "" && tag != "-" {
+		return strings.SplitN(tag, ",", 2)[0]
+	}
+	if tag := f.Tag.Get("json"); tag != "" && tag != "-" {
+		return strings.SplitN(tag, ",", 2)[0]
+	}
+	return f.Name
+}
+
+func sliceContains(s, v reflect.Value) bool {
+	for i := 0; i < s.Len(); i++ {
+		if reflect.DeepEqual(s.Index(i).Interface(), v.Interface()) {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupedOutputPath returns inputPath with "+deduped" inserted before the extension.
+func dedupedOutputPath(inputPath string) string {
+	dir := filepath.Dir(inputPath)
+	base := filepath.Base(inputPath)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	return filepath.Join(dir, stem+"+deduped"+ext)
 }
 
 // isSameFile checks whether two paths resolve to the same file.

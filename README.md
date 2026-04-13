@@ -499,7 +499,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 | `--job_event_options` | Event options for the job completed event: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Controls whether the completion event triggers emails, webhooks, etc. | |
 | `--job_max_workers` | Override the per-job worker concurrency. Clamped to `[1, NumCPU]` and further capped by the server-side `UserImportMaxWorkers` (itself clamped to `[1, NumCPU]`, tunable via `ATOMIC_USER_IMPORT_WORKERS`). Leave unset to use the server default. | |
-| `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. On completion, prints total duration and a per-stage breakdown (duration and items/sec); also prints any `job.Errors` recorded by the handler, even when the queue status is `success`. | `false` |
+| `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. On completion, prints total duration and a per-stage breakdown (duration and items/sec); also prints any `job.Errors` recorded by the handler, even when the queue status is `success`. **Ctrl+C detaches** the tail — the import keeps running on the server; use `atomic-cli job get <id> --wait` or `atomic-cli job cancel <id>` to manage it. | `false` |
 
 **Examples:**
 

@@ -194,7 +194,7 @@ var userImportCmd = &cli.Command{
 		// wait
 		&cli.BoolFlag{
 			Name:  "wait",
-			Usage: "wait for the import job to complete, showing a progress bar; Ctrl+C cancels the job",
+			Usage: "wait for the import job to complete, showing a progress bar; Ctrl+C detaches the tail (the import keeps running, manage it via `atomic-cli job …`)",
 		},
 	},
 }
@@ -285,7 +285,9 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	PrintResult(cmd, []*atomic.Job{job}, WithFields("id", "type", "queue_status", "created_at"))
 
 	if cmd.Bool("wait") {
-		return waitForJob(ctx, job, mainCmd.Bool("verbose"), true)
+		// Ctrl+C detaches the tail; the import keeps running on the server
+		// and can be managed via `atomic-cli job …` commands
+		return waitForJob(ctx, job, mainCmd.Bool("verbose"), false)
 	}
 
 	return nil

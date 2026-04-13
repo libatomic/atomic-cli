@@ -842,6 +842,16 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		filter     *vm.Program
 		records    []*importRecord
 		errRecords []*importRecord // populated when split-error-rows routes a row here
+		skipped    int             // count of rows consumed by --skip for this target
+	}
+
+	allTargetsSaturated := func(ts []outputTarget, limit int) bool {
+		for _, t := range ts {
+			if len(t.records) < limit {
+				return false
+			}
+		}
+		return true
 	}
 
 	splitErrorRows := cmd.Bool("split-error-rows")
@@ -939,10 +949,21 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	if totalRows < 0 {
 		totalRows = 0
 	}
+	var skipLimitNote string
+	if skip > 0 || limit > 0 {
+		switch {
+		case skip > 0 && limit > 0:
+			skipLimitNote = fmt.Sprintf(" (skipping first %d, limit %d)", skip, limit)
+		case skip > 0:
+			skipLimitNote = fmt.Sprintf(" (skipping first %d)", skip)
+		default:
+			skipLimitNote = fmt.Sprintf(" (limit %d)", limit)
+		}
+	}
 	if filterExpr != "" || len(targets) > 1 || len(columnFilterSources) > 0 {
-		fmt.Fprintf(os.Stderr, "scanning %d source rows (filters may reduce the mapped count)\n", totalRows)
+		fmt.Fprintf(os.Stderr, "scanning %d source rows%s (filters may reduce the mapped count)\n", totalRows, skipLimitNote)
 	} else {
-		fmt.Fprintf(os.Stderr, "mapping %d rows\n", totalRows)
+		fmt.Fprintf(os.Stderr, "mapping %d rows%s\n", totalRows, skipLimitNote)
 	}
 
 	bar := newMigrateProgress(totalRows, "Mapping records")
@@ -952,6 +973,7 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	mapped := 0
 	ignored := 0  // rows with no login (or otherwise unmappable)
 	excluded := 0 // rows removed by the global filter
+	limitHit := false
 	errored := 0  // rows that picked up at least one soft error (e.g. stripe not-found)
 
 	updateBarDesc := func() {
@@ -1087,6 +1109,9 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 
 		// route to all matching output targets. With --split-error-rows, error
 		// rows go ONLY to the target's _errors sibling (not the main file).
+		// skip/limit are applied inline, per-target, so we can short-circuit the
+		// outer loop once every target has filled its quota.
+		routed := false
 		for i, t := range targets {
 			if t.filter != nil {
 				result, err := expr.Run(t.filter, rowEnv)
@@ -1099,11 +1124,32 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			}
 			if hasError && splitErrorRows && t.errorPath != "" {
 				targets[i].errRecords = append(targets[i].errRecords, ir)
-			} else {
-				targets[i].records = append(targets[i].records, ir)
+				routed = true
+				continue
 			}
+			// honor --skip on the main record stream
+			if skip > 0 && targets[i].skipped < skip {
+				targets[i].skipped++
+				continue
+			}
+			// honor --limit on the main record stream
+			if limit > 0 && len(targets[i].records) >= limit {
+				continue
+			}
+			targets[i].records = append(targets[i].records, ir)
+			routed = true
 		}
-		mapped++
+		if routed {
+			mapped++
+		}
+
+		// break as soon as every target has reached its limit; nothing further
+		// to collect, so avoid spending more stripe/expr calls on rows that
+		// would be discarded.
+		if limit > 0 && allTargetsSaturated(targets, limit) {
+			limitHit = true
+			break
+		}
 	}
 
 	updateBarDesc()
@@ -1134,23 +1180,14 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	// apply skip/limit (operates on the in-memory main set per target; the
-	// error sibling is written as-is so the user sees every problem row).
-	applySkipLimit := func(recs []*importRecord) []*importRecord {
-		if skip > 0 && len(recs) > skip {
-			recs = recs[skip:]
-		} else if skip > 0 {
-			recs = nil
-		}
-		if limit > 0 && len(recs) > limit {
-			recs = recs[:limit]
-		}
-		return recs
-	}
+	// skip/limit are applied inline during row processing (see the routing
+	// block above) so the main loop can short-circuit once every target is
+	// saturated. The error sibling is written as-is so the user sees every
+	// problem row.
 
 	// write each output target
 	for _, t := range targets {
-		mainRecs := applySkipLimit(t.records)
+		mainRecs := t.records
 		if err := writeRecords(t.path, mainRecs, "mapped"); err != nil {
 			return err
 		}
@@ -1162,10 +1199,22 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	// aggregate per-target skip counts for reporting (max across targets is
+	// representative since skip is the same threshold for all targets)
+	skippedTotal := 0
+	for _, t := range targets {
+		if t.skipped > skippedTotal {
+			skippedTotal = t.skipped
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "mapped %d records\n", mapped)
 
-	if excluded > 0 || ignored > 0 || errored > 0 {
+	if excluded > 0 || ignored > 0 || errored > 0 || skippedTotal > 0 || limitHit {
 		var parts []string
+		if skippedTotal > 0 {
+			parts = append(parts, fmt.Sprintf("%d skipped by --skip", skippedTotal))
+		}
 		if excluded > 0 {
 			parts = append(parts, fmt.Sprintf("%d excluded by filter", excluded))
 		}
@@ -1174,6 +1223,9 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		}
 		if errored > 0 {
 			parts = append(parts, fmt.Sprintf("%d errors (see map_error column)", errored))
+		}
+		if limitHit {
+			parts = append(parts, fmt.Sprintf("stopped early — --limit=%d reached", limit))
 		}
 		fmt.Fprintf(os.Stderr, "(%s)\n", strings.Join(parts, ", "))
 	}

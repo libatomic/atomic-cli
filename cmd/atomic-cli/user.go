@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -837,21 +838,140 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose bool) error {
 		switch updated.Status {
 		case queue.StatusSuccess:
 			bar.Finish()
+			// jobs can finish faster than a poll tick — fetch any remaining
+			// logs so verbose users see the tail, and so we don't miss errors.
+			flushRemainingLogs(ctx, job, &logSinceMs, verbose)
+
+			// queue success only means "the handler returned without a queue
+			// error"; check the job-reported status for internal success/failure
+			reported := reportedJobStatus(updated)
+			if reported == atomic.JobStatusFailed {
+				printJobErrors(updated)
+				printJobSummary(updated)
+				return fmt.Errorf("job %s reported internal failure", job.UUID)
+			}
 			fmt.Fprintf(os.Stderr, "\njob %s completed successfully\n", job.UUID)
+			printJobErrors(updated) // non-fatal errors can coexist with success
+			printJobSummary(updated)
 			return nil
 
 		case queue.StatusError:
 			bar.Finish()
+			flushRemainingLogs(ctx, job, &logSinceMs, verbose)
 			errMsg := "unknown error"
 			if updated.Error != nil {
 				errMsg = *updated.Error
 			}
+			printJobErrors(updated)
 			return fmt.Errorf("job %s failed: %s", job.UUID, errMsg)
 
 		case queue.StatusCanceled:
 			bar.Finish()
+			flushRemainingLogs(ctx, job, &logSinceMs, verbose)
+			printJobErrors(updated)
 			return fmt.Errorf("job %s was canceled", job.UUID)
 		}
+	}
+}
+
+// reportedJobStatus returns the job-handler-reported status from state when
+// present, falling back to "" if the job never published one.
+func reportedJobStatus(job *atomic.Job) atomic.JobStatus {
+	if job.State == nil {
+		return ""
+	}
+	return job.State.Status().Status
+}
+
+// flushRemainingLogs fetches any logs newer than logSinceMs and prints them
+// (verbose only). Used right before reporting a terminal state so short-lived
+// jobs don't drop their log tail.
+func flushRemainingLogs(ctx context.Context, job *atomic.Job, logSinceMs **int64, verbose bool) {
+	if !verbose {
+		return
+	}
+	limit := ptr.Uint64(1000)
+	tail, err := backend.JobGet(ctx, &atomic.JobGetInput{
+		JobID:    &job.UUID,
+		LogLimit: limit,
+		LogSince: *logSinceMs,
+	})
+	if err != nil || len(tail.Logs) == 0 {
+		return
+	}
+	for i := len(tail.Logs) - 1; i >= 0; i-- {
+		e := tail.Logs[i]
+		fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", e.Timestamp.Format("15:04:05"), e.Level, e.Message)
+	}
+	ms := tail.Logs[0].Timestamp.UnixMilli()
+	*logSinceMs = &ms
+}
+
+// printJobErrors prints any per-row errors captured in job.Errors. Safe to
+// call when the job succeeded — many jobs (like user import) treat individual
+// row failures as non-fatal but still want the user to see them.
+func printJobErrors(job *atomic.Job) {
+	if len(job.Errors) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\njob errors (%d):\n", len(job.Errors))
+	for _, e := range job.Errors {
+		fmt.Fprintf(os.Stderr, "  [%s] %s\n", e.CreatedAt.Format("15:04:05"), e.Error)
+	}
+}
+
+// printJobSummary prints total duration and a per-stage breakdown (duration
+// and items/sec) for a completed job. Falls back gracefully when timing or
+// unit counts are missing (e.g. stages that don't track units).
+func printJobSummary(job *atomic.Job) {
+	// total wall time: CompletedAt - CreatedAt (CreatedAt is the enqueue time;
+	// server-side start is approximated with the first stage's StartedAt when
+	// available).
+	if job.CompletedAt != nil {
+		total := job.CompletedAt.Sub(job.CreatedAt)
+		fmt.Fprintf(os.Stderr, "total duration: %s\n", total.Round(time.Millisecond))
+	}
+
+	if job.State == nil {
+		return
+	}
+	status := job.State.Status()
+	if len(status.Stages) == 0 {
+		return
+	}
+
+	stages := make([]*atomic.JobStateStage, 0, len(status.Stages))
+	for _, s := range status.Stages {
+		stages = append(stages, s)
+	}
+	sort.Slice(stages, func(i, j int) bool {
+		if stages[i].Order != stages[j].Order {
+			return stages[i].Order < stages[j].Order
+		}
+		return stages[i].Name < stages[j].Name
+	})
+
+	fmt.Fprintf(os.Stderr, "stages:\n")
+	for _, s := range stages {
+		var (
+			dur     time.Duration
+			durStr  = "—"
+			rateStr = ""
+		)
+		if s.StartedAt != nil && s.CompletedAt != nil {
+			dur = s.CompletedAt.Sub(*s.StartedAt)
+			durStr = dur.Round(time.Millisecond).String()
+		} else if s.StartedAt != nil && !s.Completed {
+			dur = time.Since(*s.StartedAt)
+			durStr = dur.Round(time.Millisecond).String() + " (ongoing)"
+		}
+		if s.UnitsCompleted > 0 && dur > 0 {
+			rate := float64(s.UnitsCompleted) / dur.Seconds()
+			rateStr = fmt.Sprintf(" — %d/%d units @ %.1f/s", s.UnitsCompleted, s.UnitsTotal, rate)
+		} else if s.UnitsCompleted > 0 {
+			rateStr = fmt.Sprintf(" — %d/%d units", s.UnitsCompleted, s.UnitsTotal)
+		}
+		fmt.Fprintf(os.Stderr, "  %-30s %s%s\n", s.Name, durStr, rateStr)
 	}
 }
 

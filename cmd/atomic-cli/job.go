@@ -67,6 +67,10 @@ var (
 				Aliases: []string{"sa"},
 				Usage:   "specify job scheduled at as a timestamp",
 			},
+			&cli.BoolFlag{
+				Name:  "wait",
+				Usage: "wait for the created job to complete, streaming logs with --verbose; Ctrl+C cancels the job",
+			},
 		},
 		Action: jobCreate,
 	}
@@ -75,14 +79,26 @@ var (
 		Name:      "get",
 		Usage:     "get a job",
 		ArgsUsage: "<job_id>",
-		Action:    jobGet,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "wait",
+				Usage: "tail a running job until it terminates, streaming logs with --verbose; Ctrl+C detaches without canceling the job",
+			},
+		},
+		Action: jobGet,
 	}
 
 	jobCancelCmd = &cli.Command{
 		Name:      "cancel",
 		Usage:     "cancel a job",
 		ArgsUsage: "<job_id>",
-		Action:    jobCancel,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "wait",
+				Usage: "wait for the cancel to settle, streaming logs with --verbose; Ctrl+C detaches without re-canceling",
+			},
+		},
+		Action: jobCancel,
 	}
 
 	jobRestartCmd = &cli.Command{
@@ -197,6 +213,11 @@ func jobCreate(ctx context.Context, cmd *cli.Command) error {
 			return job.CompletedAt.Format(time.RFC3339)
 		}))
 
+	if cmd.Bool("wait") {
+		// job create "owns" the job, so Ctrl+C cancels it
+		return waitForJob(ctx, job, mainCmd.Bool("verbose"), true)
+	}
+
 	return nil
 }
 
@@ -238,6 +259,11 @@ func jobGet(ctx context.Context, cmd *cli.Command) error {
 			}
 			return job.CompletedAt.Format(time.RFC3339)
 		}))
+
+	if cmd.Bool("wait") {
+		// job get is read-only: Ctrl+C detaches the tail, never cancels
+		return waitForJob(ctx, job, mainCmd.Bool("verbose"), false)
+	}
 
 	return nil
 }
@@ -297,6 +323,16 @@ func jobCancel(ctx context.Context, cmd *cli.Command) error {
 
 	if err := backend.JobCancel(ctx, &input); err != nil {
 		return err
+	}
+
+	if cmd.Bool("wait") {
+		// fetch the job to wait on; cancel was already requested so Ctrl+C
+		// just detaches (no point re-canceling)
+		job, err := backend.JobGet(ctx, &atomic.JobGetInput{JobID: &jobID})
+		if err != nil {
+			return fmt.Errorf("failed to fetch job for wait: %w", err)
+		}
+		return waitForJob(ctx, job, mainCmd.Bool("verbose"), false)
 	}
 
 	return nil

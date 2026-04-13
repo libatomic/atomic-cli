@@ -498,7 +498,8 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--create_teams` | Enable team import processing | `false` |
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 | `--job_event_options` | Event options for the job completed event: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Controls whether the completion event triggers emails, webhooks, etc. | |
-| `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. | `false` |
+| `--job_max_workers` | Override the per-job worker concurrency. Clamped to `[1, NumCPU]` and further capped by the server-side `UserImportMaxWorkers` (itself clamped to `[1, NumCPU]`, tunable via `ATOMIC_USER_IMPORT_WORKERS`). Leave unset to use the server default. | |
+| `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. On completion, prints total duration and a per-stage breakdown (duration and items/sec); also prints any `job.Errors` recorded by the handler, even when the queue status is `success`. | `false` |
 
 **Examples:**
 
@@ -1054,6 +1055,7 @@ atomic-cli job create <type> [options]
 | `--state` | `-s` | Job state as a JSON string | |
 | `--scheduled_at` | `-sa` | Schedule the job for a future timestamp | |
 | `--file` | | Read job input from a JSON file | `false` |
+| `--wait` | | Wait for the created job to complete, rendering a progress bar and (with `--verbose`) streaming logs. On success, prints total duration, a per-stage breakdown (duration and items/sec), and any non-fatal `job.Errors`. **Ctrl+C cancels the job** (the CLI created it, so it owns it). | `false` |
 
 **Example:**
 ```bash
@@ -1067,6 +1069,12 @@ atomic-cli job create user_import \
 ```bash
 atomic-cli job get <job_id>
 ```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|------------------------|-------|----------------------------------------------|---------|
+| `--wait` | | Tail a running job until it terminates, rendering a progress bar and (with `--verbose`) streaming logs. On terminal state, prints total duration, a per-stage breakdown, and `job.Errors`. **Ctrl+C detaches the tail** without canceling the job — the job keeps running on the server. | `false` |
 
 #### List Jobs
 
@@ -1095,6 +1103,12 @@ atomic-cli job list --type user_import --status completed --limit 10
 ```bash
 atomic-cli job cancel <job_id>
 ```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|------------------------|-------|----------------------------------------------|---------|
+| `--wait` | | After requesting cancel, wait for the server to confirm the job reached a terminal state; streams logs with `--verbose`. **Ctrl+C detaches** without re-canceling (the cancel has already been requested). | `false` |
 
 #### Restart Job
 

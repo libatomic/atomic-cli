@@ -65,7 +65,7 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose, cancelOnInterrupt
 		case <-ctx.Done():
 			bar.Finish()
 			if cancelOnInterrupt {
-				return cancelAndWaitJob(job)
+				return cancelAndWaitJob(job, &logSinceMs, verbose)
 			}
 			fmt.Fprintf(os.Stderr, "\ndetached from job %s (still running on server)\n", job.UUID)
 			return nil
@@ -288,9 +288,13 @@ func printJobSummary(job *atomic.Job) {
 }
 
 // cancelAndWaitJob requests cancellation of the job and polls until it reaches
-// a terminal state, timing out after 90s.  A second interrupt abandons the wait
+// a terminal state, timing out after 90s. A second interrupt abandons the wait
 // and returns immediately (the job may still be running on the server).
-func cancelAndWaitJob(job *atomic.Job) error {
+//
+// On terminal state (including timeout/abandon), dumps any logs emitted after
+// the cancel request (verbose only) and prints job errors + the stage summary
+// so the user sees why the job stopped, not just that it stopped.
+func cancelAndWaitJob(job *atomic.Job, logSinceMs **int64, verbose bool) error {
 	const (
 		cancelTimeout = 90 * time.Second
 		pollInterval  = 2 * time.Second
@@ -315,14 +319,44 @@ func cancelAndWaitJob(job *atomic.Job) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	// dumpTail prints any logs newer than logSinceMs and advances the cursor.
+	// Used while polling so the user sees what the job does *during* the
+	// cancel window (e.g. "finalize stage: rolling back N records").
+	dumpTail := func() {
+		if !verbose {
+			return
+		}
+		limit := ptr.Uint64(200)
+		tail, err := backend.JobGet(cancelCtx, &atomic.JobGetInput{
+			JobID:    &job.UUID,
+			LogLimit: limit,
+			LogSince: *logSinceMs,
+		})
+		if err != nil || len(tail.Logs) == 0 {
+			return
+		}
+		for i := len(tail.Logs) - 1; i >= 0; i-- {
+			e := tail.Logs[i]
+			fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", e.Timestamp.Format("15:04:05"), e.Level, e.Message)
+		}
+		ms := tail.Logs[0].Timestamp.UnixMilli()
+		*logSinceMs = &ms
+	}
+
 	for {
 		select {
 		case <-cancelCtx.Done():
+			dumpTail()
 			return fmt.Errorf("timed out after %s waiting for job %s to cancel (job may still be running)", cancelTimeout, job.UUID)
 		case <-sigCh:
+			dumpTail()
 			return fmt.Errorf("abandoned wait for job %s cancel (job may still be running)", job.UUID)
 		case <-ticker.C:
 		}
+
+		// stream logs while we poll — the handler may still be running
+		// during the cancel grace window
+		dumpTail()
 
 		updated, err := backend.JobGet(cancelCtx, &atomic.JobGetInput{JobID: &job.UUID})
 		if err != nil {
@@ -332,16 +366,25 @@ func cancelAndWaitJob(job *atomic.Job) error {
 
 		switch updated.Status {
 		case queue.StatusCanceled:
+			flushRemainingLogs(cancelCtx, job, logSinceMs, verbose)
 			fmt.Fprintf(os.Stderr, "job %s canceled\n", job.UUID)
+			printJobErrors(updated)
+			printJobSummary(updated)
 			return fmt.Errorf("job %s was canceled", job.UUID)
 		case queue.StatusSuccess:
+			flushRemainingLogs(cancelCtx, job, logSinceMs, verbose)
 			fmt.Fprintf(os.Stderr, "job %s completed before cancel took effect\n", job.UUID)
+			printJobErrors(updated)
+			printJobSummary(updated)
 			return nil
 		case queue.StatusError:
+			flushRemainingLogs(cancelCtx, job, logSinceMs, verbose)
 			errMsg := "unknown error"
 			if updated.Error != nil {
 				errMsg = *updated.Error
 			}
+			printJobErrors(updated)
+			printJobSummary(updated)
 			return fmt.Errorf("job %s failed: %s", job.UUID, errMsg)
 		}
 	}

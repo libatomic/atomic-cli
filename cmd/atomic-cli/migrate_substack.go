@@ -283,9 +283,32 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	// Pass 2: Display price mapping report
+	// Pass 2: Display price mapping report. Resolve actual plan names from
+	// the instance when --subscriber-plan / --founder-plan reference an
+	// existing plan; fall back to the literal names used by --create-plans.
+	subscriberPlanName := ""
+	founderPlanName := ""
+	if createPlans {
+		subscriberPlanName = "Subscriber"
+		founderPlanName = "Founder"
+	}
+	if subscriberPlan != "" {
+		if id, err := atomic.ParseID(subscriberPlan); err == nil {
+			if plan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{InstanceID: inst.UUID, PlanID: &id}); err == nil && plan != nil {
+				subscriberPlanName = plan.Name
+			}
+		}
+	}
+	if founderPlan != "" {
+		if id, err := atomic.ParseID(founderPlan); err == nil {
+			if plan, err := backend.PlanGet(ctx, &atomic.PlanGetInput{InstanceID: inst.UUID, PlanID: &id}); err == nil && plan != nil {
+				founderPlanName = plan.Name
+			}
+		}
+	}
+
 	if verbose {
-		displaySubstackPriceReport(allPrices)
+		displaySubstackPriceReport(allPrices, subscriberPlanName, founderPlanName)
 	}
 
 	// Check founding plan requirement (only when --founders is enabled)
@@ -404,6 +427,10 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	// with is_subscriber=true and no plan ID
 	isJSONLMode := !createPlans && subscriberPlan == ""
 
+	// collect output paths written so they can be run through the shared
+	// validate/dedupe post-pass below
+	var outputPaths []string
+
 	if isJSONLMode {
 		var subscriberRecords, founderRecords []*migrationRecord
 
@@ -437,12 +464,16 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("failed to write subscriber CSV: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %d subscriber records to %s\n", len(subscriberRecords), subscriberOutput)
+		if len(subscriberRecords) > 0 {
+			outputPaths = append(outputPaths, subscriberOutput)
+		}
 
 		if len(founderRecords) > 0 {
 			if err := writeImportCSV(founderRecords, founderOutput, dryRun, prorate, rewriter, appendMode, "substack-stripe", 0, 0, omitCustomerID); err != nil {
 				return fmt.Errorf("failed to write founder CSV: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "wrote %d founder records to %s\n", len(founderRecords), founderOutput)
+			outputPaths = append(outputPaths, founderOutput)
 		}
 	} else {
 		if !dryRun {
@@ -459,11 +490,14 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 			fmt.Fprintf(os.Stderr, "[DRY RUN] wrote %d records to %s\n", len(records), output)
 		} else {
 			fmt.Fprintf(os.Stderr, "wrote %d records to %s\n", len(records), output)
+			if len(records) > 0 {
+				outputPaths = append(outputPaths, output)
+			}
 		}
 	}
 
 	// Print export summary
-	var monthly, yearly, once, withDiscount, withEndAt int
+	var monthly, yearly, once, withDiscount, withCancel int
 	for _, rec := range records {
 		switch rec.Interval {
 		case atomic.SubscriptionIntervalMonth:
@@ -476,8 +510,8 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		if rec.DiscountPct != nil && *rec.DiscountPct > 0 {
 			withDiscount++
 		}
-		if rec.EndAt != nil {
-			withEndAt++
+		if rec.EndAt != nil || rec.CancelAt != nil || rec.CancelAtPeriodEnd {
+			withCancel++
 		}
 	}
 
@@ -491,12 +525,16 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(os.Stderr, "%-20s %10d\n", "One-time", once)
 	}
 	fmt.Fprintf(os.Stderr, "%-20s %10d\n", "With discount", withDiscount)
-	if withEndAt > 0 {
-		fmt.Fprintf(os.Stderr, "%-20s %10d\n", "Canceling", withEndAt)
+	if withCancel > 0 {
+		fmt.Fprintf(os.Stderr, "%-20s %10d\n", "Canceling", withCancel)
 	}
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 35))
 
-	return nil
+	// automatic validate + dedupe post-pass (inherited from `migrate` parent)
+	if dryRun {
+		return nil
+	}
+	return postProcessMigrateOutputs(cmd, outputPaths)
 }
 
 func discoverSubstackPrices(sc *stripeclient.API, bar *progressbar.ProgressBar) ([]*substackPrice, error) {
@@ -550,7 +588,13 @@ func classifySubstackPrice(p *stripe.Price) string {
 	}
 }
 
-func displaySubstackPriceReport(prices []*substackPrice) {
+func displaySubstackPriceReport(prices []*substackPrice, subscriberPlanName, founderPlanName string) {
+	if subscriberPlanName == "" {
+		subscriberPlanName = "Subscriber plan"
+	}
+	if founderPlanName == "" {
+		founderPlanName = "Founder plan"
+	}
 	fmt.Println()
 	fmt.Println("Discovered Substack Prices:")
 	fmt.Println(strings.Repeat("-", 100))
@@ -593,11 +637,11 @@ func displaySubstackPriceReport(prices []*substackPrice) {
 		}
 		switch p.PriceType {
 		case "monthly":
-			fmt.Printf("  Monthly  (%d %s) → Subscriber plan (monthly price)\n", p.StripePrice.UnitAmount, p.StripePrice.Currency)
+			fmt.Printf("  Monthly  (%d %s) → %s (monthly price)\n", p.StripePrice.UnitAmount, p.StripePrice.Currency, subscriberPlanName)
 		case "annual":
-			fmt.Printf("  Annual   (%d %s) → Subscriber plan (annual price)\n", p.StripePrice.UnitAmount, p.StripePrice.Currency)
+			fmt.Printf("  Annual   (%d %s) → %s (annual price)\n", p.StripePrice.UnitAmount, p.StripePrice.Currency, subscriberPlanName)
 		case "founding":
-			fmt.Printf("  Founding (%d %s) → Founder plan (annual price)\n", p.StripePrice.UnitAmount, p.StripePrice.Currency)
+			fmt.Printf("  Founding (%d %s) → %s (annual price)\n", p.StripePrice.UnitAmount, p.StripePrice.Currency, founderPlanName)
 		}
 	}
 	fmt.Println()
@@ -1088,19 +1132,21 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 				}
 			}
 
+			// Translate stripe cancellation state to the import record.
+			// These are scheduled-cancel semantics — the sub stays active
+			// until the cancel date / period end. SubscriptionEndAt is
+			// reserved for subs that have *already* ended (handled below).
 			if sub.CancelAt > 0 {
 				cancelAt := time.Unix(sub.CancelAt, 0).UTC()
 				if shiftAnchor > 0 {
 					cancelAt = cancelAt.Add(shiftAnchor)
 				}
-				rec.EndAt = &cancelAt
-			} else if sub.CancelAtPeriodEnd && sub.CurrentPeriodEnd > 0 {
-				cancelAt := time.Unix(sub.CurrentPeriodEnd, 0).UTC()
-				if shiftAnchor > 0 {
-					cancelAt = cancelAt.Add(shiftAnchor)
-				}
-				rec.EndAt = &cancelAt
-			} else if sub.BillingCycleAnchor > 0 {
+				rec.CancelAt = &cancelAt
+			} else if sub.CancelAtPeriodEnd {
+				rec.CancelAtPeriodEnd = true
+			}
+
+			if sub.BillingCycleAnchor > 0 {
 				anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
 
 				if anchor.Before(time.Now().UTC()) {

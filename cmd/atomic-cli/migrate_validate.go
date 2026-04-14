@@ -30,28 +30,15 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-var (
-	migrateValidateFlags = append(
-		migrateCommonFlags,
-		&cli.StringFlag{
-			Name:  "dedupe",
-			Usage: "deduplicate records on the specified field; first occurrence wins (valid: login, email, phone_number, stripe_customer_id)",
-		},
-		&cli.BoolFlag{
-			Name:  "merge",
-			Usage: "when deduping, merge empty fields from duplicate rows into the first occurrence instead of dropping them outright",
-			Value: true,
-		},
-	)
-
-	migrateValidateCmd = &cli.Command{
-		Name:      "validate",
-		Usage:     "validate a user import CSV and optionally deduplicate records",
-		ArgsUsage: "<input.csv>",
-		Flags:     migrateValidateFlags,
-		Action:    migrateValidateAction,
-	}
-)
+var migrateValidateCmd = &cli.Command{
+	Name:      "validate",
+	Usage:     "validate a user import CSV and optionally deduplicate records",
+	ArgsUsage: "<input.csv>",
+	// inherits --validate / --dedupe / --dedupe-columns / --merge from the
+	// parent `migrate` command, plus the common migrate flags like --output
+	Flags:  migrateCommonFlags,
+	Action: migrateValidateAction,
+}
 
 type validateIssue struct {
 	Row     int
@@ -61,6 +48,10 @@ type validateIssue struct {
 	Message string
 }
 
+// migrateValidateAction is the entry point for `atomic-cli migrate validate`.
+// Reads the options from the parent migrate command flags and dispatches to
+// the shared runValidateAndDedupe helper, which also powers the automatic
+// post-pass run by `migrate map`, `migrate substack`, etc.
 func migrateValidateAction(ctx context.Context, cmd *cli.Command) error {
 	_, outputPath, _, _, _, _, _, _, err := validateMigrateFlags(cmd, false)
 	if err != nil {
@@ -71,19 +62,47 @@ func migrateValidateAction(ctx context.Context, cmd *cli.Command) error {
 	if inputPath == "" {
 		return fmt.Errorf("input CSV file path is required")
 	}
-	dedupeField := cmd.String("dedupe")
-	mergeDupes := cmd.Bool("merge")
-	verbose := mainCmd.Bool("verbose")
 
 	// default output to <input_basename>+deduped<ext> when user didn't override
 	if outputPath == DefaultMigrateOutputPath {
 		outputPath = dedupedOutputPath(inputPath)
 	}
 
-	if dedupeField != "" {
-		validFields := map[string]bool{"login": true, "email": true, "phone_number": true, "stripe_customer_id": true}
-		if !validFields[dedupeField] {
-			return fmt.Errorf("invalid --dedupe field %q; valid values: login, email, phone_number, stripe_customer_id", dedupeField)
+	opts := validateAndDedupeOptions{
+		validate:       cmd.Bool("validate"),
+		dedupe:         cmd.Bool("dedupe"),
+		dedupeColumns:  cmd.StringSlice("dedupe-columns"),
+		merge:          cmd.Bool("merge"),
+		verbose:        mainCmd.Bool("verbose"),
+		promptOverwrite: true, // validate is explicit — ask before stomping input
+	}
+	return runValidateAndDedupe(inputPath, outputPath, opts)
+}
+
+type validateAndDedupeOptions struct {
+	validate        bool
+	dedupe          bool
+	dedupeColumns   []string
+	merge           bool
+	verbose         bool
+	promptOverwrite bool // prompt before overwriting when output == input
+}
+
+// runValidateAndDedupe validates the CSV at inputPath (structural record
+// validation + uniqueness report) and, when opts.dedupe is true, writes a
+// deduplicated copy to outputPath. Columns in opts.dedupeColumns are applied
+// in order so earlier columns act as tie-breakers for later ones (login first
+// wins over email). When outputPath == inputPath the file is overwritten in
+// place (prompted when promptOverwrite is set).
+func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOptions) error {
+	if !opts.validate && !opts.dedupe {
+		return nil
+	}
+
+	validDedupeFields := map[string]bool{"login": true, "email": true, "phone_number": true, "stripe_customer_id": true}
+	for _, c := range opts.dedupeColumns {
+		if !validDedupeFields[c] {
+			return fmt.Errorf("invalid --dedupe-columns value %q; valid values: login, email, phone_number, stripe_customer_id", c)
 		}
 	}
 
@@ -97,6 +116,9 @@ func migrateValidateAction(ctx context.Context, cmd *cli.Command) error {
 	if err := gocsv.UnmarshalFile(inputFile, &records); err != nil {
 		return fmt.Errorf("failed to parse input CSV: %w", err)
 	}
+
+	verbose := opts.verbose
+	mergeDupes := opts.merge
 
 	fmt.Fprintf(os.Stderr, "loaded %d records from %s\n", len(records), inputPath)
 
@@ -228,73 +250,90 @@ func migrateValidateAction(ctx context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(os.Stderr, "all records valid, no duplicates found\n")
 	}
 
-	// dedupe if requested
-	if dedupeField != "" {
-		var dedupeGetter func(rec *importRecord) string
+	// dedupe if requested. When multiple columns are supplied, each column is
+	// collapsed independently and the survivor of one pass is the input to the
+	// next — earlier columns win as tie-breakers (login before email is the
+	// typical case).
+	if opts.dedupe && len(opts.dedupeColumns) > 0 {
+		getterByName := make(map[string]func(rec *importRecord) string, len(uniqueFields))
 		for _, uf := range uniqueFields {
-			if uf.name == dedupeField {
-				dedupeGetter = uf.getter
-				break
-			}
+			getterByName[uf.name] = uf.getter
 		}
-
-		seen := make(map[string]int) // value -> index in deduped slice
-		deduped := make([]*importRecord, 0, len(records))
-		removed := 0
-		mergedCount := 0
-		totalFieldsFilled := 0
 
 		type mergeEvent struct {
-			dupRow   int
-			baseRow  int
-			fields   []string
-			merged   bool // false = dropped (nothing to fill or merge disabled)
+			column  string
+			dupRow  int
+			baseRow int
+			fields  []string
+			merged  bool // false = dropped (nothing to fill or merge disabled)
 		}
-		var events []mergeEvent
-		rowOfIdx := make([]int, 0, len(records)) // deduped idx -> original 1-based row
 
-		for i, rec := range records {
-			row := i + 1
-			val := dedupeGetter(rec)
-			if val == "" {
-				deduped = append(deduped, rec)
-				rowOfIdx = append(rowOfIdx, row)
+		deduped := records
+		rowOfIdx := make([]int, len(records))
+		for i := range records {
+			rowOfIdx[i] = i + 1
+		}
+
+		totalRemoved := 0
+		totalMergedCount := 0
+		totalFieldsFilled := 0
+		perColumnRemoved := make(map[string]int)
+		var events []mergeEvent
+
+		for _, column := range opts.dedupeColumns {
+			dedupeGetter := getterByName[column]
+			if dedupeGetter == nil {
 				continue
 			}
-			if baseIdx, exists := seen[val]; exists {
-				if mergeDupes {
-					filled := mergeInto(deduped[baseIdx], rec)
-					if len(filled) > 0 {
-						mergedCount++
-						totalFieldsFilled += len(filled)
-						events = append(events, mergeEvent{dupRow: row, baseRow: rowOfIdx[baseIdx], fields: filled, merged: true})
-					} else {
-						events = append(events, mergeEvent{dupRow: row, baseRow: rowOfIdx[baseIdx], merged: false})
-					}
-				} else {
-					events = append(events, mergeEvent{dupRow: row, baseRow: rowOfIdx[baseIdx], merged: false})
+			seen := make(map[string]int)
+			next := make([]*importRecord, 0, len(deduped))
+			nextRowOfIdx := make([]int, 0, len(deduped))
+			for i, rec := range deduped {
+				row := rowOfIdx[i]
+				val := dedupeGetter(rec)
+				if val == "" {
+					next = append(next, rec)
+					nextRowOfIdx = append(nextRowOfIdx, row)
+					continue
 				}
-				removed++
-				continue
+				if baseIdx, exists := seen[val]; exists {
+					if mergeDupes {
+						filled := mergeInto(next[baseIdx], rec)
+						if len(filled) > 0 {
+							totalMergedCount++
+							totalFieldsFilled += len(filled)
+							events = append(events, mergeEvent{column: column, dupRow: row, baseRow: nextRowOfIdx[baseIdx], fields: filled, merged: true})
+						} else {
+							events = append(events, mergeEvent{column: column, dupRow: row, baseRow: nextRowOfIdx[baseIdx], merged: false})
+						}
+					} else {
+						events = append(events, mergeEvent{column: column, dupRow: row, baseRow: nextRowOfIdx[baseIdx], merged: false})
+					}
+					totalRemoved++
+					perColumnRemoved[column]++
+					continue
+				}
+				seen[val] = len(next)
+				next = append(next, rec)
+				nextRowOfIdx = append(nextRowOfIdx, row)
 			}
-			seen[val] = len(deduped)
-			deduped = append(deduped, rec)
-			rowOfIdx = append(rowOfIdx, row)
+			deduped = next
+			rowOfIdx = nextRowOfIdx
 		}
 
 		if verbose && len(events) > 0 {
 			fmt.Fprintf(os.Stderr, "\ndedupe actions:\n")
 			for _, ev := range events {
 				if ev.merged {
-					fmt.Fprintf(os.Stderr, "  row %d → row %d: filled [%s]\n", ev.dupRow, ev.baseRow, strings.Join(ev.fields, ", "))
+					fmt.Fprintf(os.Stderr, "  [%s] row %d → row %d: filled [%s]\n", ev.column, ev.dupRow, ev.baseRow, strings.Join(ev.fields, ", "))
 				} else {
-					fmt.Fprintf(os.Stderr, "  row %d → row %d: dropped (no fields to merge)\n", ev.dupRow, ev.baseRow)
+					fmt.Fprintf(os.Stderr, "  [%s] row %d → row %d: dropped (no fields to merge)\n", ev.column, ev.dupRow, ev.baseRow)
 				}
 			}
 		}
 
 		// check if input and output resolve to the same file
-		if isSameFile(inputPath, outputPath) {
+		if isSameFile(inputPath, outputPath) && opts.promptOverwrite {
 			confirmed, err := confirmAction(fmt.Sprintf("Output %s is the same as input; overwrite?", outputPath))
 			if err != nil {
 				return err
@@ -314,15 +353,24 @@ func migrateValidateAction(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("failed to write output CSV: %w", err)
 		}
 
+		cols := strings.Join(opts.dedupeColumns, ",")
 		if mergeDupes {
-			fmt.Fprintf(os.Stderr, "deduplicated on %s: %d duplicates, %d merged (%d fields filled), %d dropped, %d remaining → %s\n",
-				dedupeField, removed, mergedCount, totalFieldsFilled, removed-mergedCount, len(deduped), outputPath)
+			fmt.Fprintf(os.Stderr, "deduplicated on [%s]: %d duplicates, %d merged (%d fields filled), %d dropped, %d remaining → %s\n",
+				cols, totalRemoved, totalMergedCount, totalFieldsFilled, totalRemoved-totalMergedCount, len(deduped), outputPath)
 		} else {
-			fmt.Fprintf(os.Stderr, "deduplicated on %s: %d removed, %d remaining → %s\n", dedupeField, removed, len(deduped), outputPath)
+			fmt.Fprintf(os.Stderr, "deduplicated on [%s]: %d removed, %d remaining → %s\n", cols, totalRemoved, len(deduped), outputPath)
+		}
+		if len(opts.dedupeColumns) > 1 {
+			for _, c := range opts.dedupeColumns {
+				fmt.Fprintf(os.Stderr, "  %s: %d\n", c, perColumnRemoved[c])
+			}
 		}
 	}
 
-	if validationErrors > 0 || (dupeErrors > 0 && dedupeField == "") {
+	if opts.validate && validationErrors > 0 {
+		return fmt.Errorf("validation failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
+	}
+	if opts.validate && dupeErrors > 0 && !opts.dedupe {
 		return fmt.Errorf("validation failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
 	}
 

@@ -108,7 +108,7 @@ func main() {
 			Name:  "db_source",
 			Usage: "specify the db host",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_DB_SOURCE"),
+				cli.EnvVar("PASSPORT_DB_SOURCE"),
 				cli.EnvVar("DB_SOURCE"),
 				NewCredentialsSource("db_source", func() string { return creds }, func() string { return profile }),
 			),
@@ -118,7 +118,7 @@ func main() {
 			Name:  "access_token",
 			Usage: "specify the access token",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_ACCESS_TOKEN"),
+				cli.EnvVar("PASSPORT_ACCESS_TOKEN"),
 				NewCredentialsSource("access_token", func() string { return creds }, func() string { return profile }),
 			),
 		},
@@ -126,7 +126,7 @@ func main() {
 			Name:  "client_id",
 			Usage: "specify the client id",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_CLIENT_ID"),
+				cli.EnvVar("PASSPORT_CLIENT_ID"),
 				NewCredentialsSource("client_id", func() string { return creds }, func() string { return profile }),
 			),
 		},
@@ -134,7 +134,7 @@ func main() {
 			Name:  "client_secret",
 			Usage: "specify the client secret",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_CLIENT_SECRET"),
+				cli.EnvVar("PASSPORT_CLIENT_SECRET"),
 				NewCredentialsSource("client_secret", func() string { return creds }, func() string { return profile }),
 			),
 		},
@@ -143,7 +143,7 @@ func main() {
 			Usage:   "specify the host",
 			Aliases: []string{"h"},
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_API_HOST"),
+				cli.EnvVar("PASSPORT_API_HOST"),
 				NewCredentialsSource("host", func() string { return creds }, func() string { return profile }),
 			),
 			Value: client.DefaultAPIHost,
@@ -153,7 +153,7 @@ func main() {
 			Aliases: []string{"o"},
 			Usage:   "specify the output format",
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_OUT_FORMAT"),
+				cli.EnvVar("PASSPORT_OUT_FORMAT"),
 				NewCredentialsSource("out_format", func() string { return creds }, func() string { return profile }),
 			),
 			Value: "table",
@@ -174,7 +174,7 @@ func main() {
 			Usage:   "set the instance id for the command",
 			Aliases: []string{"i", "instance"},
 			Sources: cli.NewValueSourceChain(
-				cli.EnvVar("ATOMIC_INSTANCE_ID"),
+				cli.EnvVar("PASSPORT_INSTANCE_ID"),
 				NewCredentialsSource("instance_id", func() string { return creds }, func() string { return profile }),
 			),
 		},

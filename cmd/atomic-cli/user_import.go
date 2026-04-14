@@ -191,6 +191,16 @@ var userImportCmd = &cli.Command{
 			Name:  "job_max_workers",
 			Usage: "override the per-job worker concurrency; capped by the server's UserImportMaxWorkers and [1, NumCPU]",
 		},
+		// record window — primarily a testing knob so a smaller slice of a
+		// large CSV can be processed without trimming the file
+		&cli.UintFlag{
+			Name:  "user_import_skip",
+			Usage: "skip the first N records of the parsed CSV; must not exceed the parsed record count",
+		},
+		&cli.UintFlag{
+			Name:  "user_import_limit",
+			Usage: "process at most N records (after skip); 0 = no limit. Silently capped at the remaining record count.",
+		},
 		// wait
 		&cli.BoolFlag{
 			Name:  "wait",

@@ -40,25 +40,32 @@ import (
 
 type (
 	migrationRecord struct {
-		CustomerID    string
-		Email         string
-		BillingEmail  string
-		Name          string
-		PlanID        string
-		IsTeamOwner   bool
-		TeamKey       string
-		Interval      atomicpkg.SubscriptionInterval
-		Currency      string
-		Quantity      int
-		CreatedAt     *time.Time // user created_at; sourced from stripe customer.created
-		AnchorDate    *time.Time
-		EndAt         *time.Time
-		UserAmount    int64
-		DiscountPct   *float64
-		DiscountTerm  *atomicpkg.CreditTerm
-		PaymentMethod string
-		StripePriceID string
-		StripeSubID   string
+		CustomerID        string
+		Email             string
+		BillingEmail      string
+		Name              string
+		PlanID            string
+		IsTeamOwner       bool
+		TeamKey           string
+		Interval          atomicpkg.SubscriptionInterval
+		Currency          string
+		Quantity          int
+		CreatedAt         *time.Time // user created_at; sourced from stripe customer.created
+		AnchorDate        *time.Time
+		EndAt             *time.Time // terminal end date — for subs that have already ended
+		// CancelAt is a future scheduled cancellation date. The subscription
+		// stays active until then. Sourced from stripe subscription.cancel_at.
+		CancelAt *time.Time
+		// CancelAtPeriodEnd indicates the subscription should cancel at the
+		// end of the current billing period. Sourced from stripe
+		// subscription.cancel_at_period_end.
+		CancelAtPeriodEnd bool
+		UserAmount        int64
+		DiscountPct       *float64
+		DiscountTerm      *atomicpkg.CreditTerm
+		PaymentMethod     string
+		StripePriceID     string
+		StripeSubID       string
 	}
 
 	importRecord struct {
@@ -164,6 +171,9 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 	migrateCmd = &cli.Command{
 		Name:  "migrate",
 		Usage: "migrate users from external platforms",
+		// these flags live on the parent command so every migrate subcommand
+		// (map, substack, validate, and anything added later) shares the same
+		// post-processing behavior without each one redeclaring the flags
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "stripe-key",
@@ -172,6 +182,26 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 				Sources: cli.NewValueSourceChain(
 					cli.EnvVar("STRIPE_API_KEY"),
 				),
+			},
+			&cli.BoolFlag{
+				Name:  "validate",
+				Usage: "validate the output CSV after mapping (structural checks + uniqueness report)",
+				Value: true,
+			},
+			&cli.BoolFlag{
+				Name:  "dedupe",
+				Usage: "deduplicate the output CSV on --dedupe-columns after mapping; first occurrence wins",
+				Value: true,
+			},
+			&cli.StringSliceFlag{
+				Name:  "dedupe-columns",
+				Usage: "columns used to detect duplicates when --dedupe is set (valid: login, email, phone_number, stripe_customer_id); repeatable, earlier columns act as tie-breakers",
+				Value: []string{"login"},
+			},
+			&cli.BoolFlag{
+				Name:  "merge",
+				Usage: "when deduping, merge empty fields from duplicate rows into the first occurrence instead of dropping them outright",
+				Value: true,
 			},
 		},
 		Commands: []*cli.Command{
@@ -418,6 +448,16 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 			ir.SubscriptionEndAt = &util.Timestamp{Time: rec.EndAt.UTC()}
 		} else if rec.AnchorDate != nil {
 			ir.SubscriptionAnchorDate = &util.Timestamp{Time: rec.AnchorDate.UTC()}
+		}
+
+		// scheduled cancellation state — distinct from EndAt; the sub stays
+		// active until the cancel date / period end fires
+		if rec.CancelAt != nil {
+			ir.SubscriptionCancelAt = &util.Timestamp{Time: rec.CancelAt.UTC()}
+		}
+		if rec.CancelAtPeriodEnd {
+			t := true
+			ir.SubscriptionCancelAtPeriodEnd = &t
 		}
 
 		if rec.CreatedAt != nil {

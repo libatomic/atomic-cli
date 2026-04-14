@@ -1241,6 +1241,44 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	// automatic validate + dedupe post-pass (inherited from `migrate` parent
+	// command). Runs in-place against each target's main output — the user
+	// can disable via --validate=false and --dedupe=false.
+	outputPaths := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if len(t.records) > 0 {
+			outputPaths = append(outputPaths, t.path)
+		}
+	}
+	if err := postProcessMigrateOutputs(cmd, outputPaths); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// postProcessMigrateOutputs runs the validate/dedupe pass on every main
+// output path written by a migrate subcommand. Writes in place so the final
+// file on disk is ready for `user import`.
+func postProcessMigrateOutputs(cmd *cli.Command, paths []string) error {
+	opts := validateAndDedupeOptions{
+		validate:      cmd.Bool("validate"),
+		dedupe:        cmd.Bool("dedupe"),
+		dedupeColumns: cmd.StringSlice("dedupe-columns"),
+		merge:         cmd.Bool("merge"),
+		verbose:       mainCmd.Bool("verbose"),
+		// no prompt: the file was just written by this same run, so
+		// overwriting it with the deduped version is expected
+		promptOverwrite: false,
+	}
+	if !opts.validate && !opts.dedupe {
+		return nil
+	}
+	for _, p := range paths {
+		if err := runValidateAndDedupe(p, p, opts); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

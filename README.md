@@ -85,11 +85,11 @@ The CLI supports configuration through environment variables or command-line fla
 
 ### Environment Variables
 
-- `ATOMIC_ACCESS_TOKEN` - Your access token for authentication
-- `ATOMIC_CLIENT_ID` - Your client ID for OAuth2 client credentials flow
-- `ATOMIC_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
-- `ATOMIC_API_HOST` - The Atomic API host (defaults to the client default)
-- `ATOMIC_DB_SOURCE` - Used for direct connection to the atomic db rather than API
+- `PASSPORT_ACCESS_TOKEN` - Your access token for authentication
+- `PASSPORT_CLIENT_ID` - Your client ID for OAuth2 client credentials flow
+- `PASSPORT_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
+- `PASSPORT_API_HOST` - The Passport API host (defaults to the client default)
+- `PASSPORT_DB_SOURCE` - Used for direct connection to the Passport db rather than API
 
 ### Credentials file (TOML or YAML)
 
@@ -166,7 +166,7 @@ atomic-cli --credentials /path/to/credentials instance list
 
 The CLI supports two authentication methods:
 
-1. **Access Token**: Use `--access-token` flag or `ATOMIC_ACCESS_TOKEN` environment variable
+1. **Access Token**: Use `--access-token` flag or `PASSPORT_ACCESS_TOKEN` environment variable
 2. **Client Credentials**: Use `--client-id` and `--client-secret` flags or environment variables
 
 ## Global Options
@@ -499,6 +499,8 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 | `--job_event_options` | Event options for the job completed event: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Controls whether the completion event triggers emails, webhooks, etc. | |
 | `--job_max_workers` | Override the per-job worker concurrency. Clamped to `[1, NumCPU]` and further capped by the server-side `UserImportMaxWorkers` (itself clamped to `[1, NumCPU]`, tunable via `ATOMIC_USER_IMPORT_WORKERS`). Leave unset to use the server default. | |
+| `--user_import_skip` | Skip the first N records of the parsed CSV before importing. Must not exceed the parsed record count (the job fails if it does). Primarily a testing knob. | `0` |
+| `--user_import_limit` | Process at most N records (applied after `--user_import_skip`). `0` means no limit; values larger than the remaining record count are silently capped. Primarily a testing knob. | `0` |
 | `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. On completion, prints total duration and a per-stage breakdown (duration and items/sec); also prints any `job.Errors` recorded by the handler, even when the queue status is `success`. **Ctrl+C detaches** the tail — the import keeps running on the server; use `atomic-cli job get <id> --wait` or `atomic-cli job cancel <id>` to manage it. | `false` |
 
 **Examples:**
@@ -1353,7 +1355,9 @@ All migrate subcommands output a CSV file with the following columns. This is th
 | `subscription_quantity` | integer | No | `1` | The quantity for the subscription. |
 | `subscription_interval` | string | No | — | Billing interval: `month`, `year`, `once`. |
 | `subscription_anchor_date` | date-time | No | today | Billing cycle anchor. Format: RFC 3339 (e.g. `2026-05-08T21:29:00Z`). |
-| `subscription_end_at` | date-time | No | — | Subscription end date. Format: RFC 3339. |
+| `subscription_end_at` | date-time | No | — | Subscription end date for subs that have already ended (terminal). Format: RFC 3339. |
+| `subscription_cancel_at` | date-time | No | — | Future scheduled cancellation date. The subscription stays active until this date, then cancels. Format: RFC 3339. Mirrors Stripe `subscription.cancel_at`. |
+| `subscription_cancel_at_period_end` | boolean | No | `false` | If true, the subscription will cancel automatically at the end of the current billing period. Mirrors Stripe `subscription.cancel_at_period_end`. |
 | `subscription_prorate` | boolean | No | `false` | If true, prorate the period between creation and anchor date. |
 | `subscription_payment_method` | string | No | — | Stripe payment method ID or test card token (e.g. `pm_card_visa`) for the subscription. |
 | `metadata` | string | No | — | User metadata as pipe-delimited key=value pairs (e.g. `key1=val1\|key2=val2`). Supports nested values when type is `any`. |
@@ -1463,7 +1467,7 @@ atomic-cli migrate substack [options]
    - **`created_at`** sourced from the Stripe customer's `created` timestamp (UTC), so imported users preserve their original signup date
    - Subscription currency, quantity, billing cycle anchor
    - The Stripe price and subscription IDs (written as `migrate_stripe_price` and `migrate_stripe_subscription` in the CSV for audit purposes)
-   - Cancellation handling: if `cancel_at` or `cancel_at_period_end` is set, the subscription end date is recorded and the billing anchor is omitted. Otherwise, the billing cycle anchor is advanced by one interval if it falls in the past.
+   - Cancellation state: if Stripe `subscription.cancel_at` is set (future scheduled cancel), it's recorded as `subscription_cancel_at`. If `subscription.cancel_at_period_end` is true, `subscription_cancel_at_period_end=true` is recorded. The billing cycle anchor is still computed (and advanced one interval if it would fall in the past).
 
    After collection, records are sorted ascending by `created_at` so the resulting CSV reflects the order users originally signed up. This is also the cutoff used by `--diff`.
 
@@ -1773,29 +1777,24 @@ atomic-cli migrate map \
 
 Rows without a `login` value after mapping are skipped. Both filtered and skipped counts are reported to stderr.
 
-#### migrate validate
+#### Global migrate post-processing
 
-Validates a user import CSV by running per-record validation (`UserImportRecord.Validate()`) and checking uniqueness constraints. Optionally deduplicates the file, merging empty fields from duplicate rows into the first-seen record.
-
-```bash
-atomic-cli migrate validate <input.csv> [options]
-```
-
-**Validate-specific options** (in addition to [common options](#common-options)):
+Every `migrate` subcommand (`map`, `substack`, `validate`, and anything added later) runs an automatic **validate + dedupe** pass against its written output(s) before exiting. The behavior is controlled by flags on the parent `migrate` command:
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
-| `--dedupe` | Deduplicate on the specified field; first occurrence wins | |
-| `--merge` | When deduping, merge empty fields from duplicate rows into the first occurrence instead of dropping them outright | `true` |
-| `--verbose`, `-v` | Print per-row validation errors and per-duplicate dedupe actions | `false` |
+| `--validate` | Run per-record structural validation and uniqueness reporting on each output CSV | `true` |
+| `--dedupe` | Drop or merge duplicate records in each output CSV | `true` |
+| `--dedupe-columns` | Columns used to detect duplicates, repeatable; applied in order so earlier columns act as tie-breakers (valid: `login`, `email`, `phone_number`, `stripe_customer_id`) | `login` |
+| `--merge` | When deduping, merge empty fields from duplicate rows into the first occurrence instead of dropping them | `true` |
 
-Valid `--dedupe` fields: `login`, `email`, `phone_number`, `stripe_customer_id`.
+For `migrate map` and `migrate substack` the pass runs in place — the same file written by the mapper is read back, deduped, and rewritten. No separate output file is produced.
 
-When `--dedupe` is set, the deduplicated CSV is written to `--output`. If `--output` is not specified, it defaults to `<input_basename>+deduped<ext>` (e.g., `migrate_map.csv` → `migrate_map+deduped.csv`). If `--output` resolves to the same file as the input, you will be prompted before overwriting.
+For `migrate validate`, the pass runs against the positional `<input.csv>` and writes to `--output`, defaulting to `<input_basename>+deduped<ext>` (e.g., `migrate_map.csv` → `migrate_map+deduped.csv`). If `--output` resolves to the same file as the input, you will be prompted before overwriting.
 
-**Uniqueness checks:**
+Disable either phase with `--validate=false` or `--dedupe=false`. The two flags are independent — you can validate without deduping, or dedupe without emitting validation errors.
 
-The following fields are checked for duplicates across all rows:
+**Uniqueness checks** (used by both validation report and deduplication):
 
 | Field | Description |
 |---|---|
@@ -1806,37 +1805,43 @@ The following fields are checked for duplicates across all rows:
 
 `billing_email` is **not** checked for uniqueness.
 
-**Dedupe behavior:**
+**Multi-column dedupe:** each column in `--dedupe-columns` is collapsed in order. After the `login` pass, surviving records feed into the `email` pass, and so on. This means the first column is the authoritative tie-breaker — two rows with the same `login` collapse before either can conflict on `email`.
 
-- Without `--dedupe`, duplicates are reported as errors and the command exits with a non-zero status.
-- With `--dedupe` and `--merge=true` (the default), the first occurrence is retained and later duplicates are merged into it: any field that is empty/nil on the first row is filled from the duplicate. The first row always wins on conflict. `roles`, `metadata`, and `stripe_customer_metadata` are unioned rather than overwritten.
-- With `--dedupe --merge=false`, later duplicates are dropped outright without merging.
+**Merge semantics** (when `--merge=true`):
+
+- First occurrence is retained; later duplicates are merged into it.
+- Empty/nil fields on the first row get filled from the duplicate. The first row wins on any conflict.
+- `roles`, `metadata`, and `stripe_customer_metadata` are unioned rather than overwritten.
+- With `--merge=false`, later duplicates are dropped outright without merging.
+
+#### migrate validate
+
+Explicit entry point for the validate + dedupe pass — useful when you want to run it against a CSV that wasn't produced by a migrate subcommand.
+
+```bash
+atomic-cli migrate validate <input.csv> [options]
+```
+
+Accepts the parent migrate flags above (`--validate`, `--dedupe`, `--dedupe-columns`, `--merge`) plus the common migrate flags (`--output`, `--verbose`, etc.).
 
 **Examples:**
 
 ```bash
-# Validate only — report summary
+# Validate only — report summary, no output file
+atomic-cli migrate validate ./merged-users.csv --dedupe=false
+
+# Default behavior: validate + dedupe by login → ./merged-users+deduped.csv
 atomic-cli migrate validate ./merged-users.csv
 
-# Validate with verbose per-row error details
-atomic-cli migrate validate ./merged-users.csv --verbose
-
-# Deduplicate on login; output defaults to ./merged-users+deduped.csv
-atomic-cli migrate validate ./merged-users.csv --dedupe login
-
-# Deduplicate on login, writing to a specific file
+# Dedupe by login AND stripe_customer_id (login wins as tie-breaker)
 atomic-cli migrate validate ./merged-users.csv \
-  --dedupe login \
-  --output ./merged-users-clean.csv
+  --dedupe-columns login --dedupe-columns stripe_customer_id
 
 # Drop duplicates without merging
-atomic-cli migrate validate ./merged-users.csv \
-  --dedupe login \
-  --merge=false
+atomic-cli migrate validate ./merged-users.csv --merge=false
 
 # Deduplicate in place (prompts before overwriting)
 atomic-cli migrate validate ./merged-users.csv \
-  --dedupe login \
   --output ./merged-users.csv
 ```
 

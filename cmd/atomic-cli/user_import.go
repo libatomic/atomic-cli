@@ -60,7 +60,7 @@ var userImportCmd = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:  "existing_user_behavior",
-			Usage: "behavior for existing users: skip, merge, recreate",
+			Usage: "behavior for existing users: skip, merge, recreate, retain",
 		},
 		&cli.BoolFlag{
 			Name:  "validate_user_email",

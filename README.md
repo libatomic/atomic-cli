@@ -471,7 +471,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
 | `--dry_run` | Preview import without creating or updating users | `false` |
 | `--ignore_created_at` | Ignore the `created_at` column from the CSV; users are created with the current timestamp at job runtime | `false` |
-| `--existing_user_behavior` | Behavior for existing users: `skip`, `merge` (update and process subscriptions), `recreate` (delete and re-create) | `merge` |
+| `--existing_user_behavior` | Behavior for existing users: `skip` (leave the user alone and skip the record entirely), `merge` (update profile/roles/stripe **and** process subscriptions, plans, trials, and category opt-outs), `recreate` (delete and re-create from the import record), `retain` (leave the existing user untouched but still process the record's subscriptions, default plans, trial, and category opt-outs like `merge` would) | `merge` |
 | `--validate_user_email` | Validate user email addresses | `false` |
 | `--verify_user_email` | Override `email_verified` on all records (overrides each record's field when set) | `true` |
 | `--user_event_options` | User event options: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Default is log-only for imports. Set to `LOG\|EMIT\|CONTEXT` for full event processing, or `SUPPRESS` to suppress all. | `LOG` |

@@ -22,6 +22,9 @@
 *.xml
 *.yaml
 *.yml
+!.goreleaser.yaml
+!.github/**/*.yml
+!.github/**/*.yaml
 *.jsonl
 *.jsonl.gz
 *.jsonl.bz2

@@ -62,7 +62,7 @@ brews:
     repository:
       owner: libatomic
       name: homebrew-tap
-      branch: main
+      branch: master
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     custom_require: "../custom_download_strategy"

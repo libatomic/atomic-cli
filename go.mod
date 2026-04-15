@@ -218,5 +218,10 @@ require (
 replace (
 	github.com/libatomic/atomic => ../atomic
 	github.com/libatomic/atomic-go => ../atomic-go
+	// vanng822/css v1.0.x is an API-breaking release (Value became *CSSValue,
+	// Important became bool, SelectorText removed) and the replaced
+	// libatomic/go-premailer v1.9.2-atomic only compiles against v0.1.0. Pin
+	// it hard so `go get -u` cannot silently re-break the build.
+	github.com/vanng822/css => github.com/vanng822/css v0.1.0
 	github.com/vanng822/go-premailer => github.com/libatomic/go-premailer v1.9.2-atomic
 )

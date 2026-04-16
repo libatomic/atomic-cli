@@ -53,7 +53,16 @@ var (
 					},
 					&cli.BoolFlag{
 						Name:  "apply",
-						Usage: "do not execute migrations",
+						Usage: "apply the migrations (default: dry-run)",
+					},
+					&cli.BoolFlag{
+						Name:  "auto-approve",
+						Usage: "auto-approve migrations",
+						Value: true,
+					},
+					&cli.BoolFlag{
+						Name:  "fallback",
+						Usage: "attempt migrations using a fallback script if atlas sdk fails",
 					},
 				},
 			},
@@ -115,23 +124,33 @@ func dbMigrate(ctx context.Context, c *cli.Command) error {
 	}
 
 	if c.Bool("create") {
+		dbName := dsn.DBName
+		// connect to the server without a database selected so CREATE DATABASE
+		// can run even when the target database does not exist yet.
+		dsn.DBName = ""
+
 		db, err := sql.Open("mysql", dsn.FormatDSN())
 		if err != nil {
 			return fmt.Errorf("cannot connect to MySQL server: %w", err)
 		}
-		defer db.Close()
 
-		_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dsn.DBName))
+		_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName))
+		db.Close()
 		if err != nil {
-			return fmt.Errorf("cannot create database %s: %w", dsn.DBName, err)
+			return fmt.Errorf("cannot create database %s: %w", dbName, err)
 		}
 
-		log.Infof("Database %s created successfully", dsn.DBName)
+		log.Infof("Database %s created successfully", dbName)
+
+		dsn.DBName = dbName
 	}
 
 	log.Debugf("migrating database %s", dsn.FormatDSN())
 
 	dburl := fmt.Sprintf("mysql://%s:%s@%s/%s", dsn.User, dsn.Passwd, dsn.Addr, dsn.DBName)
+	if dsn.TLS != nil {
+		dburl = fmt.Sprintf("mysql://%s:%s@%s/%s?tls=skip-verify", dsn.User, dsn.Passwd, dsn.Addr, dsn.DBName)
+	}
 	dbname := filepath.Base(dsn.DBName)
 	devurl := "docker://mysql/8/dev"
 
@@ -140,13 +159,18 @@ func dbMigrate(ctx context.Context, c *cli.Command) error {
 		ConfigURL: fmt.Sprintf("file://%s", cfg.Name()),
 		To:        fmt.Sprintf("file://%s", hclfile.Name()),
 		DryRun:    !c.Bool("apply"),
-		Vars: atlasexec.Vars{
+		Vars: atlasexec.Vars2{
 			"dbname": dbname,
 		},
-		DevURL: devurl,
+		AutoApprove: c.Bool("auto-approve"),
+		DevURL:      devurl,
 	})
 	if err != nil {
-		log.Errorf("cannot apply migrations directly: %s", err)
+		if !c.Bool("fallback") {
+			return fmt.Errorf("cannot apply migrations: %w", err)
+		}
+
+		log.Errorf("cannot apply migrations directly, attempting fallback to script: %s", err)
 
 		// fallback to the script which is more reliable, but less efficient
 		schapply, err := os.Create(fmt.Sprintf("%s/schema-apply.sh", tmpdir))

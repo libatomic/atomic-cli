@@ -248,6 +248,15 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	if shiftAnchor > 0 {
+		if shiftAnchorWindow > 0 {
+			cutoff := time.Now().UTC().Add(shiftAnchorWindow).Format(time.RFC3339)
+			fmt.Fprintf(os.Stderr, "anchor shift: +%s for subs renewing by %s\n", shiftAnchorStr, cutoff)
+		} else {
+			fmt.Fprintf(os.Stderr, "anchor shift: +%s (all subs)\n", shiftAnchorStr)
+		}
+	}
+
 	if founderPlan != "" {
 		founders = true
 	}
@@ -276,8 +285,6 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("failed to discover Substack prices: %w", err)
 	}
-
-	fmt.Fprintf(os.Stderr, "found %d Substack prices\n", len(allPrices))
 
 	if len(allPrices) == 0 {
 		return fmt.Errorf("no Substack prices found in Stripe (looking for metadata substack=yes)")
@@ -392,13 +399,17 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		bar = newMigrateSpinner("Collecting subscriptions")
 	}
-	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, shiftAnchorWindow, diffSince, bar)
+	records, shiftSummary, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, shiftAnchorWindow, diffSince, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "collected %d subscriptions\n", len(records))
+
+	if shiftAnchorWindow > 0 {
+		reportShiftSummary(shiftSummary, len(records), shiftAnchor, shiftAnchorWindow)
+	}
 
 	if len(records) == 0 {
 		log.Warn("no active subscriptions found")
@@ -615,39 +626,38 @@ func displaySubstackPriceReport(prices []*substackPrice, subscriberPlanName, fou
 	if founderPlanName == "" {
 		founderPlanName = "Founder plan"
 	}
-	fmt.Println()
-	fmt.Println("Discovered Substack Prices:")
-	fmt.Println(strings.Repeat("-", 100))
-	fmt.Printf("%-20s %-30s %-10s %-10s %-12s %-10s\n", "Type", "Price ID", "Amount", "Currency", "Active", "Founding")
-	fmt.Println(strings.Repeat("-", 100))
-
+	var monthlyActive, monthlyInactive int
+	var annualActive, annualInactive int
+	var foundingActive, foundingInactive int
 	for _, p := range prices {
-		active := "yes"
-		if !p.Active {
-			active = "no"
-		}
-		founding := "no"
-		if p.StripePrice.Metadata["founding"] == "yes" {
-			founding = "yes"
-		}
-
-		fmt.Printf("%-20s %-30s %-10d %-10s %-12s %-10s\n",
-			p.PriceType,
-			p.StripePrice.ID,
-			p.StripePrice.UnitAmount,
-			string(p.StripePrice.Currency),
-			active,
-			founding,
-		)
-
-		if len(p.StripePrice.CurrencyOptions) > 0 {
-			for cur, opt := range p.StripePrice.CurrencyOptions {
-				fmt.Printf("  └─ %-18s %-28s %-10d %-10s\n", "", cur, opt.UnitAmount, cur)
+		switch p.PriceType {
+		case "monthly":
+			if p.Active {
+				monthlyActive++
+			} else {
+				monthlyInactive++
+			}
+		case "annual":
+			if p.Active {
+				annualActive++
+			} else {
+				annualInactive++
+			}
+		case "founding":
+			if p.Active {
+				foundingActive++
+			} else {
+				foundingInactive++
 			}
 		}
 	}
 
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Println()
+	fmt.Printf("Discovered Substack prices: monthly=%d (%d inactive), annual=%d (%d inactive), founding=%d (%d inactive)\n",
+		monthlyActive+monthlyInactive, monthlyInactive,
+		annualActive+annualInactive, annualInactive,
+		foundingActive+foundingInactive, foundingInactive,
+	)
 	fmt.Println()
 
 	fmt.Println("Price Mapping:")
@@ -1013,13 +1023,19 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 	}
 
 	bar.Finish()
-	fmt.Fprintf(os.Stderr, "plans loaded\n")
 
 	return mapping, nil
 }
 
-func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, shiftAnchorWindow time.Duration, since *time.Time, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
+type shiftSummary struct {
+	MonthlyShifted        int
+	YearlyShifted         int
+	SkippedCancelInWindow int
+}
+
+func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, shiftAnchorWindow time.Duration, since *time.Time, bar *progressbar.ProgressBar) ([]*migrationRecord, shiftSummary, error) {
 	var records []*migrationRecord
+	var summary shiftSummary
 	seen := make(map[string]bool)
 	startTime := time.Now()
 	var sinceUnix int64
@@ -1030,7 +1046,7 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 	for _, sp := range prices {
 		// check for cancellation
 		if ctx.Err() != nil {
-			return records, ctx.Err()
+			return records, summary, ctx.Err()
 		}
 
 		// skip founding prices when --founders is not set
@@ -1058,7 +1074,7 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 			sub := iter.Subscription()
 
 			if ctx.Err() != nil {
-				return records, ctx.Err()
+				return records, summary, ctx.Err()
 			}
 
 			if sub.Customer == nil {
@@ -1156,8 +1172,10 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 			// These are scheduled-cancel semantics — the sub stays active
 			// until the cancel date / period end. SubscriptionEndAt is
 			// reserved for subs that have *already* ended (handled below).
+			var origCancelAt time.Time
 			if sub.CancelAt > 0 {
-				cancelAt := time.Unix(sub.CancelAt, 0).UTC()
+				origCancelAt = time.Unix(sub.CancelAt, 0).UTC()
+				cancelAt := origCancelAt
 				if shiftAnchor > 0 {
 					cancelAt = cancelAt.Add(shiftAnchor)
 				}
@@ -1168,13 +1186,17 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 
 			if sub.BillingCycleAnchor > 0 {
 				anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
+				now := time.Now().UTC()
 
-				if anchor.Before(time.Now().UTC()) {
+				// Roll forward past dates by full intervals until the anchor
+				// is >= now. Mirrors the user-import-job's anchor normalization
+				// so the CSV never emits a historical anchor.
+				for anchor.Before(now) {
 					switch interval {
-					case atomic.SubscriptionIntervalMonth:
-						anchor = anchor.AddDate(0, 1, 0)
 					case atomic.SubscriptionIntervalYear:
 						anchor = anchor.AddDate(1, 0, 0)
+					default:
+						anchor = anchor.AddDate(0, 1, 0)
 					}
 				}
 
@@ -1183,9 +1205,31 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 					// next renewal falls inside the window from now;
 					// renewals past the window keep their natural anchor.
 					inWindow := shiftAnchorWindow == 0 ||
-						!anchor.After(time.Now().UTC().Add(shiftAnchorWindow))
-					if inWindow {
+						!anchor.After(now.Add(shiftAnchorWindow))
+
+					// If the sub cancels before its next renewal there is no
+					// double-bill risk — substack will cancel before invoicing,
+					// so we leave the anchor alone.
+					cancelsFirst := !origCancelAt.IsZero() && origCancelAt.Before(anchor)
+
+					switch {
+					case inWindow && cancelsFirst:
+						summary.SkippedCancelInWindow++
+					case inWindow:
+						original := anchor
 						anchor = anchor.Add(shiftAnchor)
+						switch interval {
+						case atomic.SubscriptionIntervalYear:
+							summary.YearlyShifted++
+						default:
+							summary.MonthlyShifted++
+						}
+						marker := fmt.Sprintf("atomic_migrate:anchor_shifted_from=%s", original.Format(time.RFC3339))
+						if rec.ImportComment != "" {
+							rec.ImportComment += "|" + marker
+						} else {
+							rec.ImportComment = marker
+						}
 					}
 				}
 
@@ -1202,7 +1246,7 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 		}
 
 		if err := iter.Err(); err != nil {
-			return nil, fmt.Errorf("failed to list subscriptions for price %s: %w", sp.StripePrice.ID, err)
+			return nil, summary, fmt.Errorf("failed to list subscriptions for price %s: %w", sp.StripePrice.ID, err)
 		}
 
 		if limit > 0 && len(records) >= limit {
@@ -1223,7 +1267,25 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 		return ti.Before(tj)
 	})
 
-	return records, nil
+	return records, summary, nil
+}
+
+// reportShiftSummary writes a compact shift summary to stderr when
+// --shift-anchor-window is active. Shifted subscriptions carry a marker in
+// their import_comment column (atomic_migrate:anchor_shifted_from=<ts>) so
+// per-row detail lives in the output CSV, not the terminal.
+func reportShiftSummary(s shiftSummary, totalRecords int, shift, window time.Duration) {
+	total := s.MonthlyShifted + s.YearlyShifted
+	fmt.Fprintf(os.Stderr,
+		"\nshift-anchor-window summary (shift=%s, window=%s):\n",
+		shift, window,
+	)
+	fmt.Fprintf(os.Stderr, "  monthly shifted: %d\n", s.MonthlyShifted)
+	fmt.Fprintf(os.Stderr, "  yearly shifted:  %d\n", s.YearlyShifted)
+	fmt.Fprintf(os.Stderr, "  total shifted:   %d of %d subscriptions\n", total, totalRecords)
+	if s.SkippedCancelInWindow > 0 {
+		fmt.Fprintf(os.Stderr, "  skipped (cancel before renewal): %d\n", s.SkippedCancelInWindow)
+	}
 }
 
 // resolveDiffPaths returns the source path to read for the diff cutoff (the

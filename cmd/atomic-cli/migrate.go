@@ -66,6 +66,7 @@ type (
 		PaymentMethod     string
 		StripePriceID     string
 		StripeSubID       string
+		ImportComment     string
 	}
 
 	importRecord struct {
@@ -462,6 +463,11 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 
 		if rec.CreatedAt != nil {
 			ir.CreatedAt = &util.Timestamp{Time: rec.CreatedAt.UTC()}
+		}
+
+		if rec.ImportComment != "" {
+			comment := rec.ImportComment
+			ir.ImportComment = &comment
 		}
 
 		if rec.DiscountPct != nil {

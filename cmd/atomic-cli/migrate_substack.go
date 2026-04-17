@@ -140,7 +140,11 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  "shift-anchor-dates",
-			Usage: "shift all billing cycle anchor dates forward by a duration (e.g. 24h, 7d, 30d) for testing",
+			Usage: "shift all billing cycle anchor dates forward by a duration (e.g. 24h, 7d, 30d). See --shift-anchor-window to restrict the set of subscriptions that get shifted.",
+		},
+		&cli.StringFlag{
+			Name:  "shift-anchor-window",
+			Usage: "only shift subscriptions whose next renewal falls within now + this duration (e.g. 24h, 7d). Requires --shift-anchor-dates. Subscriptions renewing later keep their natural anchor.",
 		},
 		&cli.IntFlag{
 			Name:  "estimated-total",
@@ -209,6 +213,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	omitPaymentMethods := cmd.Bool("omit-payment-methods")
 	migrateTestCard := cmd.Bool("migrate-test-cards")
 	shiftAnchorStr := cmd.String("shift-anchor-dates")
+	shiftAnchorWindowStr := cmd.String("shift-anchor-window")
 	verbose := mainCmd.Bool("verbose")
 
 	if subscriberPlan != "" && createPlans {
@@ -225,6 +230,21 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 		shiftAnchor, err = parseDuration(shiftAnchorStr)
 		if err != nil {
 			return fmt.Errorf("invalid --shift-anchor-dates value %q: %w", shiftAnchorStr, err)
+		}
+	}
+
+	var shiftAnchorWindow time.Duration
+	if shiftAnchorWindowStr != "" {
+		if shiftAnchorStr == "" {
+			return fmt.Errorf("--shift-anchor-window requires --shift-anchor-dates")
+		}
+		var err error
+		shiftAnchorWindow, err = parseDuration(shiftAnchorWindowStr)
+		if err != nil {
+			return fmt.Errorf("invalid --shift-anchor-window value %q: %w", shiftAnchorWindowStr, err)
+		}
+		if shiftAnchorWindow <= 0 {
+			return fmt.Errorf("--shift-anchor-window must be positive, got %s", shiftAnchorWindow)
 		}
 	}
 
@@ -372,7 +392,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		bar = newMigrateSpinner("Collecting subscriptions")
 	}
-	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, diffSince, bar)
+	records, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, shiftAnchorWindow, diffSince, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
@@ -998,7 +1018,7 @@ func handleExistingPlans(ctx context.Context, subscriberPlanStr, founderPlanStr 
 	return mapping, nil
 }
 
-func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, since *time.Time, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
+func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, shiftAnchorWindow time.Duration, since *time.Time, bar *progressbar.ProgressBar) ([]*migrationRecord, error) {
 	var records []*migrationRecord
 	seen := make(map[string]bool)
 	startTime := time.Now()
@@ -1159,7 +1179,14 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 				}
 
 				if shiftAnchor > 0 {
-					anchor = anchor.Add(shiftAnchor)
+					// --shift-anchor-window confines the shift to subs whose
+					// next renewal falls inside the window from now;
+					// renewals past the window keep their natural anchor.
+					inWindow := shiftAnchorWindow == 0 ||
+						!anchor.After(time.Now().UTC().Add(shiftAnchorWindow))
+					if inWindow {
+						anchor = anchor.Add(shiftAnchor)
+					}
 				}
 
 				rec.AnchorDate = &anchor

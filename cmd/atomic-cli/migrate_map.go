@@ -178,10 +178,6 @@ var (
 			v := strings.TrimSpace(val)
 			rec.StripeCustomerID = &v
 		},
-		"import_stripe_account": func(rec *atomic.UserImportRecord, val string) {
-			b := parseBool(val)
-			rec.ImportStripeAccount = &b
-		},
 		"channel_opt_in": func(rec *atomic.UserImportRecord, val string) {
 			parts := strings.Split(val, "|")
 			for i := range parts {

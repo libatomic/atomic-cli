@@ -163,14 +163,6 @@ var (
 			b := parseBool(val)
 			rec.PhoneNumberOptIn = &b
 		},
-		"billing_email": func(rec *atomic.UserImportRecord, val string) {
-			v := strings.TrimSpace(val)
-			rec.BillingEmail = &v
-		},
-		"billing_phone_number": func(rec *atomic.UserImportRecord, val string) {
-			v := strings.TrimSpace(val)
-			rec.BillingPhoneNumber = &v
-		},
 		"name": func(rec *atomic.UserImportRecord, val string) {
 			v := strings.TrimSpace(val)
 			rec.Name = &v
@@ -1078,10 +1070,6 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			if rec.Email != nil && *rec.Email != "" {
 				rewritten := rewriter.Rewrite(*rec.Email)
 				rec.Email = &rewritten
-			}
-			if rec.BillingEmail != nil && *rec.BillingEmail != "" {
-				rewritten := rewriter.Rewrite(*rec.BillingEmail)
-				rec.BillingEmail = &rewritten
 			}
 		}
 

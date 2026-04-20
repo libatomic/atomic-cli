@@ -1345,8 +1345,6 @@ All migrate subcommands output a CSV file with the following columns. This is th
 | `phone_number` | string | No | — | The user's phone number in E.164 format (e.g., `+15551234567`). |
 | `phone_number_verified` | boolean | No | `false` | Whether the phone number should be marked as verified. |
 | `phone_number_opt_in` | boolean | No | `false` | Whether the user has opted in to phone/SMS communications. |
-| `billing_email` | string | No | same as `email` | Billing email address. |
-| `billing_phone_number` | string | No | same as `phone_number` | Billing phone number in E.164 format. |
 | `name` | string | No | — | The user's display name. |
 | `roles` | string | No | `member` | Pipe-delimited roles (e.g., `member\|admin`). |
 | `stripe_customer_id` | string | No | — | An existing Stripe customer ID to link to the user's account. |
@@ -1687,7 +1685,7 @@ Other behaviors:
 - **Ctrl+C** — exits cleanly mid-scan; the row loop checks the cancellation context on each iteration.
 - **Existing output files** — when `--append=false`, you'll be prompted to confirm overwrite **before** any rows are processed (including any `_errors` siblings when `--split-error-rows` is set), so you can bail without wasting any stripe lookups.
 
-Supported target fields (matches all CSV columns on `atomic.UserImportRecord`): `created_at`, `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `billing_email`, `billing_phone_number`, `name`, `roles`, `metadata`, `stripe_customer_id`, `import_stripe_account`, `stripe_customer_metadata`, `subscription_plan_id`, `subscription_currency`, `subscription_quantity`, `subscription_interval`, `subscription_anchor_date`, `subscription_end_at`, `subscription_prorate`, `subscription_payment_method`, `discount_percentage`, `discount_term`, `discount_duration_days`, `is_team_owner`, `team_key`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
+Supported target fields (matches all CSV columns on `atomic.UserImportRecord`): `created_at`, `login`, `email`, `email_verified`, `email_opt_in`, `phone_number`, `phone_number_verified`, `phone_number_opt_in`, `name`, `roles`, `metadata`, `stripe_customer_id`, `import_stripe_account`, `stripe_customer_metadata`, `subscription_plan_id`, `subscription_currency`, `subscription_quantity`, `subscription_interval`, `subscription_anchor_date`, `subscription_end_at`, `subscription_prorate`, `subscription_payment_method`, `discount_percentage`, `discount_term`, `discount_duration_days`, `is_team_owner`, `team_key`, `channel_opt_in`, `category_opt_out`, `import_comment`, `import_source`.
 
 The output CSV also includes a `map_error` column (auto-populated by the mapper, not a target you'd set yourself) and audit columns `migrate_stripe_price` / `migrate_stripe_subscription` (only set by `migrate substack`).
 
@@ -1803,8 +1801,6 @@ Disable either phase with `--validate=false` or `--dedupe=false`. The two flags 
 | `email` | Must be unique when present |
 | `phone_number` | Must be unique when present |
 | `stripe_customer_id` | Must be unique when present |
-
-`billing_email` is **not** checked for uniqueness.
 
 **Multi-column dedupe:** each column in `--dedupe-columns` is collapsed in order. After the `login` pass, surviving records feed into the `email` pass, and so on. This means the first column is the authoritative tie-breaker — two rows with the same `login` collapse before either can conflict on `email`.
 

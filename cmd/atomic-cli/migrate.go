@@ -42,7 +42,6 @@ type (
 	migrationRecord struct {
 		CustomerID        string
 		Email             string
-		BillingEmail      string
 		Name              string
 		PlanID            string
 		IsTeamOwner       bool
@@ -438,11 +437,6 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 				continue
 			}
 			ir.SubscriptionPlanID = &planID
-		}
-
-		if rec.BillingEmail != "" {
-			billingEmail := rewriter.Rewrite(rec.BillingEmail)
-			ir.BillingEmail = &billingEmail
 		}
 
 		if rec.EndAt != nil {

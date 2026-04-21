@@ -168,6 +168,11 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose, cancelOnInterrupt
 				printJobSummary(updated)
 				return fmt.Errorf("job %s reported internal failure", job.UUID)
 			}
+			if reported == atomic.JobStatusAborted {
+				printJobErrors(updated)
+				printJobSummary(updated)
+				return fmt.Errorf("job %s aborted: %s", job.UUID, jobStateMessage(updated))
+			}
 			fmt.Fprintf(os.Stderr, "\njob %s completed successfully\n", job.UUID)
 			printJobErrors(updated) // non-fatal errors can coexist with success
 			printJobSummary(updated)
@@ -181,6 +186,13 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose, cancelOnInterrupt
 				errMsg = *updated.Error
 			}
 			printJobErrors(updated)
+			// distinguish operator-triggered aborts (e.g. the user import
+			// error-threshold safety net) from opaque handler failures —
+			// both land here because ErrJobAborted flips queue_status=error
+			if reportedJobStatus(updated) == atomic.JobStatusAborted {
+				printJobSummary(updated)
+				return fmt.Errorf("job %s aborted: %s", job.UUID, errMsg)
+			}
 			return fmt.Errorf("job %s failed: %s", job.UUID, errMsg)
 
 		case queue.StatusCanceled:
@@ -199,6 +211,16 @@ func reportedJobStatus(job *atomic.Job) atomic.JobStatus {
 		return ""
 	}
 	return job.State.Status().Status
+}
+
+// jobStateMessage returns the terminal status message from the job's
+// state report (e.g. the abort reason), falling back to "" when the job
+// never published a state update.
+func jobStateMessage(job *atomic.Job) string {
+	if job.State == nil {
+		return ""
+	}
+	return job.State.Status().Message
 }
 
 // flushRemainingLogs fetches any logs newer than logSinceMs and prints them

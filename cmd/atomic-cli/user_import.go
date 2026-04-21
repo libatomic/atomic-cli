@@ -191,6 +191,13 @@ var userImportCmd = &cli.Command{
 			Name:  "job_max_workers",
 			Usage: "override the per-job worker concurrency; capped by the server's UserImportMaxWorkers and [1, NumCPU]",
 		},
+		// abort-on-error safety net: stops the import when a threshold share
+		// of processed records have errored, so a pathological run (bad CSV,
+		// downstream outage) doesn't burn through 100k records silently
+		&cli.Float64Flag{
+			Name:  "abort_on_error_threshold",
+			Usage: "ratio of errored / processed records at which the import aborts (0.0 = abort on any error, 1.0 = never abort). Default 0.01 (1%). The check only fires after at least 100 records have been processed, so a single early failure won't trip it.",
+		},
 		// record window — primarily a testing knob so a smaller slice of a
 		// large CSV can be processed without trimming the file
 		&cli.UintFlag{

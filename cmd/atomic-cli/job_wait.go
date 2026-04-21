@@ -54,6 +54,7 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose, cancelOnInterrupt
 		progressbar.OptionSetWriter(os.Stderr),
 		progressbar.OptionSpinnerType(14),
 		progressbar.OptionClearOnFinish(),
+		progressbar.OptionUseANSICodes(true),
 	)
 
 	var logSinceMs *int64
@@ -120,6 +121,7 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose, cancelOnInterrupt
 						progressbar.OptionShowCount(),
 						progressbar.OptionClearOnFinish(),
 						progressbar.OptionSetPredictTime(true),
+						progressbar.OptionUseANSICodes(true),
 					)
 				}
 				bar.Set(int(currentStage.UnitsCompleted))
@@ -133,6 +135,7 @@ func waitForJob(ctx context.Context, job *atomic.Job, verbose, cancelOnInterrupt
 						progressbar.OptionSetWriter(os.Stderr),
 						progressbar.OptionShowCount(),
 						progressbar.OptionClearOnFinish(),
+						progressbar.OptionUseANSICodes(true),
 					)
 				}
 				if barTotal > 0 {

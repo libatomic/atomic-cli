@@ -1549,6 +1549,7 @@ atomic-cli migrate map [options]
 | `--filter` | Expression to filter rows (only matching rows are included) | |
 | `--vars` | Define variables for use in expressions as `NAME=value` (repeatable) | |
 | `--split-error-rows` | Route rows with non-fatal mapping errors (e.g. stripe customer not found) to a separate `<output>_errors.csv` sibling file instead of including them in the main output | `false` |
+| `--map-errors` | Track soft mapping errors (stripe customer not found, etc.) in the `map_error` column and summary. Set to `false` when soft errors represent the desired outcome — e.g. using `stripe.customer_search` inside a `--filter` to select rows where the customer does NOT exist in Stripe | `true` |
 
 Either `--config` or `--columns` is required.
 
@@ -1620,6 +1621,8 @@ The config file is a JSON object with the following top-level keys:
 | `limit` | integer | Limit per output file (same as `--limit`) |
 | `skip` | integer | Skip first N records per output file (same as `--skip`) |
 | `filter` | string | Global filter expression — same as the top-level `filter` key. Provided here for ergonomics when you put all your config under `options`. The top-level `filter` wins if both are set. |
+| `map_errors` | boolean | Track soft mapping errors in the `map_error` column and summary (same as `--map-errors`). Default `true`. |
+| `split_error_rows` | boolean | Route rows with soft mapping errors to a `<output>_errors.csv` sibling (same as `--split-error-rows`). Default `false`. No effect when `map_errors` is `false`. |
 
 CLI flags override config file options when explicitly set.
 
@@ -1678,6 +1681,14 @@ The total `(N/M)` is the source row scan position; filters apply per-row inside 
 Output CSVs always include a `map_error` column. Rows that mapped cleanly leave it empty; rows that hit a soft error (like `stripe customer not found for email=foo@bar.com`) get the message written to that column so you can grep / triage later.
 
 - **`--split-error-rows`** — when set, rows with `map_error` are routed to a separate `<output>_errors.csv` sibling file instead of mixing with the main output. With multi-output configs, each output target gets its own `_errors` sibling. The split file is written only when at least one row had an error.
+- **`--map-errors=false`** — disables soft-error tracking entirely: the `map_error` column stays empty, the `errors:N` counter drops from the progress bar and summary, and the end-of-run `stripe.customer_search: N not found` line is suppressed. Use this when a soft error represents the desired outcome — for example, filtering for rows where a customer does NOT exist in Stripe:
+
+  ```bash
+  --filter 'hasSuffix(Type, "Subscriber") && stripe.customer_search("email", Email) == ""' \
+  --map-errors=false
+  ```
+
+  Without `--map-errors=false`, every kept row would still carry a `stripe customer not found` message in its `map_error` column and be counted as an "error" in the summary — misleading framing when the absence is actually what you're selecting for. Combining `--map-errors=false` with `--split-error-rows` logs a warning and disables the split, since no row gets classified as errored.
 - **Fatal stripe errors** — `stripe.customer_search` distinguishes "not found" (soft, captured in `map_error`) from real Stripe errors like authentication, network, or rate-limit failures. Real errors **abort the run immediately** so you don't end up with thousands of empty IDs from a misconfigured key.
 
 Other behaviors:

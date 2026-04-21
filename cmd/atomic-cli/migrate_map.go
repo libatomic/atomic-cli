@@ -71,6 +71,11 @@ type (
 		// Filter mirrors the top-level filter field for ergonomics; both forms work.
 		// If both are set, top-level wins.
 		Filter string `json:"filter,omitempty"`
+		// MapErrors controls whether soft mapping errors (e.g. stripe customer
+		// not found) populate the map_error column and the summary. Default true.
+		MapErrors *bool `json:"map_errors,omitempty"`
+		// SplitErrorRows mirrors --split-error-rows for config-file use.
+		SplitErrorRows *bool `json:"split_error_rows,omitempty"`
 	}
 
 	convertMappingOutput struct {
@@ -112,6 +117,11 @@ var (
 		&cli.BoolFlag{
 			Name:  "split-error-rows",
 			Usage: "route rows with non-fatal mapping errors (e.g. stripe customer not found) to a separate <output>_errors.csv file instead of the main output",
+		},
+		&cli.BoolFlag{
+			Name:  "map-errors",
+			Usage: "track soft mapping errors (e.g. stripe customer not found) in the map_error column and summary; set to false when soft errors represent the desired outcome (default true)",
+			Value: true,
 		},
 	)
 
@@ -407,6 +417,11 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		outputs    []convertMappingOutput
 	)
 
+	// defaults come from the CLI; config-file options may override when the
+	// user did not explicitly pass the flag
+	trackMapErrors := cmd.Bool("map-errors")
+	splitErrorRows := cmd.Bool("split-error-rows")
+
 	if mappingFilePath != "" {
 		// load from JSON config file
 		mappingData, err := os.ReadFile(mappingFilePath)
@@ -450,6 +465,12 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			}
 			if mf.Options.Skip != nil && !cmd.IsSet("skip") {
 				skip = *mf.Options.Skip
+			}
+			if mf.Options.MapErrors != nil && !cmd.IsSet("map-errors") {
+				trackMapErrors = *mf.Options.MapErrors
+			}
+			if mf.Options.SplitErrorRows != nil && !cmd.IsSet("split-error-rows") {
+				splitErrorRows = *mf.Options.SplitErrorRows
 			}
 		}
 
@@ -628,9 +649,14 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// per-row soft error accumulator. Reset at the top of each row iteration;
-	// after column evaluation, joined into rec.MapError.
+	// after column evaluation, joined into rec.MapError. When --map-errors=false
+	// this is a no-op — rowSoftErrors stays empty, so the map_error column, the
+	// errored count, and --split-error-rows routing all quietly drop out.
 	var rowSoftErrors []string
 	addRowError := func(msg string) {
+		if !trackMapErrors {
+			return
+		}
 		rowSoftErrors = append(rowSoftErrors, msg)
 	}
 
@@ -680,12 +706,15 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 			return "", fmt.Errorf("stripe.customer_search %s=%s: %w", field, val, iterErr)
 		}
 
-		// soft error: customer not found
-		stripeMu.Lock()
-		stripeNotFound++
-		stripeMu.Unlock()
-		msg := fmt.Sprintf("stripe customer not found for %s=%s", field, val)
-		addRowError(msg)
+		// soft error: customer not found. Bookkeeping (counter + row error)
+		// is skipped when --map-errors=false so the lookup behaves like an
+		// ordinary "empty result" outcome.
+		if trackMapErrors {
+			stripeMu.Lock()
+			stripeNotFound++
+			stripeMu.Unlock()
+			addRowError(fmt.Sprintf("stripe customer not found for %s=%s", field, val))
+		}
 		if mainCmd.Bool("verbose") {
 			stripeLogf("stripe.customer_search: no customer found for %s=%s", field, val)
 		}
@@ -842,7 +871,13 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		return true
 	}
 
-	splitErrorRows := cmd.Bool("split-error-rows")
+	// when map-errors is off, no row is classified as errored, so split-error-rows
+	// has nothing to route — warn so the user isn't surprised by a missing _errors file
+	if !trackMapErrors && splitErrorRows {
+		log.Warnf("--split-error-rows has no effect when --map-errors=false (no rows will be classified as errored)")
+		splitErrorRows = false
+	}
+
 	addErrorPath := func(p string) string {
 		ext := filepath.Ext(p)
 		base := strings.TrimSuffix(p, ext)
@@ -965,7 +1000,11 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	errored := 0  // rows that picked up at least one soft error (e.g. stripe not-found)
 
 	updateBarDesc := func() {
-		bar.Describe(fmt.Sprintf("Mapping (mapped:%d excluded:%d ignored:%d errors:%d)", mapped, excluded, ignored, errored))
+		if trackMapErrors {
+			bar.Describe(fmt.Sprintf("Mapping (mapped:%d excluded:%d ignored:%d errors:%d)", mapped, excluded, ignored, errored))
+		} else {
+			bar.Describe(fmt.Sprintf("Mapping (mapped:%d excluded:%d ignored:%d)", mapped, excluded, ignored))
+		}
 	}
 	updateBarDesc()
 
@@ -1214,7 +1253,7 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(os.Stderr, "(%s)\n", strings.Join(parts, ", "))
 	}
 
-	if stripeUsed {
+	if stripeUsed && trackMapErrors {
 		stripeMu.Lock()
 		nf := stripeNotFound
 		stripeMu.Unlock()

@@ -219,6 +219,7 @@ func newMigrateSpinner(description string) *progressbar.ProgressBar {
 		progressbar.OptionSpinnerType(14),
 		progressbar.OptionShowCount(),
 		progressbar.OptionClearOnFinish(),
+		progressbar.OptionUseANSICodes(true),
 	)
 }
 
@@ -228,6 +229,7 @@ func newMigrateProgress(total int, description string) *progressbar.ProgressBar 
 		progressbar.OptionSetWriter(os.Stderr),
 		progressbar.OptionShowCount(),
 		progressbar.OptionClearOnFinish(),
+		progressbar.OptionUseANSICodes(true),
 	)
 }
 

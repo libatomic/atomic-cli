@@ -122,8 +122,12 @@ func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOp
 
 	fmt.Fprintf(os.Stderr, "loaded %d records from %s\n", len(records), inputPath)
 
-	// per-record validation
-	var issues []validateIssue
+	// per-record validation. Invalid rows are recorded so they can be dropped
+	// from the output below — they're logged in the report but never fatal.
+	var (
+		issues      []validateIssue
+		invalidRows = make(map[int]bool) // 1-based row → invalid
+	)
 	for i, rec := range records {
 		row := i + 1
 		if err := rec.Validate(); err != nil {
@@ -133,6 +137,7 @@ func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOp
 				Field:   "record",
 				Message: err.Error(),
 			})
+			invalidRows[row] = true
 		}
 	}
 
@@ -250,6 +255,28 @@ func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOp
 		fmt.Fprintf(os.Stderr, "all records valid, no duplicates found\n")
 	}
 
+	// drop invalid records from output. originalRowOf maps the surviving
+	// records (post-filter) back to their original 1-based CSV row so dedupe
+	// events still reference the source row.
+	originalRowOf := make([]int, 0, len(records))
+	if len(invalidRows) > 0 {
+		filtered := make([]*importRecord, 0, len(records)-len(invalidRows))
+		for i, rec := range records {
+			row := i + 1
+			if invalidRows[row] {
+				continue
+			}
+			filtered = append(filtered, rec)
+			originalRowOf = append(originalRowOf, row)
+		}
+		fmt.Fprintf(os.Stderr, "dropped %d invalid records from output\n", len(invalidRows))
+		records = filtered
+	} else {
+		for i := range records {
+			originalRowOf = append(originalRowOf, i+1)
+		}
+	}
+
 	// dedupe if requested. When multiple columns are supplied, each column is
 	// collapsed independently and the survivor of one pass is the input to the
 	// next — earlier columns win as tie-breakers (login before email is the
@@ -269,10 +296,7 @@ func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOp
 		}
 
 		deduped := records
-		rowOfIdx := make([]int, len(records))
-		for i := range records {
-			rowOfIdx[i] = i + 1
-		}
+		rowOfIdx := append([]int(nil), originalRowOf...)
 
 		totalRemoved := 0
 		totalMergedCount := 0
@@ -367,9 +391,10 @@ func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOp
 		}
 	}
 
-	if opts.validate && validationErrors > 0 {
-		return fmt.Errorf("validation failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
-	}
+	// validation errors are reported and the offending rows are dropped from
+	// the output above — not fatal. Only fail when duplicates exist and
+	// dedupe is disabled, since in that case the caller asked us to validate
+	// without a way to resolve the conflict.
 	if opts.validate && dupeErrors > 0 && !opts.dedupe {
 		return fmt.Errorf("validation failed with %d validation errors and %d duplicate issues", validationErrors, dupeErrors)
 	}

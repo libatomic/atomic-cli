@@ -130,12 +130,18 @@ func runValidateAndDedupe(inputPath, outputPath string, opts validateAndDedupeOp
 	)
 	for i, rec := range records {
 		row := i + 1
+		var msg string
 		if err := rec.Validate(); err != nil {
+			msg = err.Error()
+		} else if reason := suspectEmailReason(rec); reason != "" {
+			msg = reason
+		}
+		if msg != "" {
 			issues = append(issues, validateIssue{
 				Row:     row,
 				Login:   rec.Login,
 				Field:   "record",
-				Message: err.Error(),
+				Message: msg,
 			})
 			invalidRows[row] = true
 		}
@@ -572,6 +578,40 @@ func sliceContains(s, v reflect.Value) bool {
 		}
 	}
 	return false
+}
+
+// suspectEmailReason returns a human-readable reason if rec's login or email
+// has a domain label with consecutive hyphens outside the xn-- (IDN ACE)
+// prefix. Per RFC 5891 / ICANN policy, "--" at positions 3-4 of a label is
+// reserved for punycode; double-hyphens elsewhere indicate a malformed or
+// non-deliverable domain that registrars won't issue.
+func suspectEmailReason(rec *importRecord) string {
+	if d := suspectHyphenDomain(rec.Login); d != "" {
+		return fmt.Sprintf("login: domain %q has consecutive hyphens outside xn-- punycode prefix", d)
+	}
+	if rec.Email != nil {
+		if d := suspectHyphenDomain(*rec.Email); d != "" {
+			return fmt.Sprintf("email: domain %q has consecutive hyphens outside xn-- punycode prefix", d)
+		}
+	}
+	return ""
+}
+
+// suspectHyphenDomain returns the domain portion of email when it contains a
+// label with consecutive hyphens outside the xn-- ACE prefix, else "".
+func suspectHyphenDomain(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	domain := email[at+1:]
+	for label := range strings.SplitSeq(domain, ".") {
+		l := strings.TrimPrefix(strings.ToLower(label), "xn--")
+		if strings.Contains(l, "--") {
+			return domain
+		}
+	}
+	return ""
 }
 
 // dedupedOutputPath returns inputPath with "+deduped" inserted before the extension.

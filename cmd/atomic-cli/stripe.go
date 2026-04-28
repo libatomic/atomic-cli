@@ -33,16 +33,22 @@ var (
 		Usage: "stripe management",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "stripe-key",
-				Aliases:  []string{"k"},
-				Usage:    "stripe api key",
-				Sources:  cli.NewValueSourceChain(cli.EnvVar("STRIPE_API_KEY")),
+				Name:    "stripe-key",
+				Aliases: []string{"k"},
+				Usage:   "stripe api key",
+				Sources: cli.NewValueSourceChain(
+					cli.EnvVar("STRIPE_API_KEY"),
+					NewCredentialsSource("stripe_key", func() string { return creds }, func() string { return profile }),
+				),
 				Required: true,
 			},
 			&cli.BoolFlag{
 				Name:    "live-mode",
 				Aliases: []string{"livemode"},
 				Usage:   "allow live stripe keys; without this flag only test keys (sk_test_) are accepted",
+				Sources: cli.NewValueSourceChain(
+					NewCredentialsSource("stripe_livemode", func() string { return creds }, func() string { return profile }),
+				),
 			},
 		},
 		Before: func(_ context.Context, cmd *cli.Command) (context.Context, error) {

@@ -18,10 +18,17 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/libatomic/atomic/pkg/atomic"
@@ -78,8 +85,8 @@ var (
 
 	jobGetCmd = &cli.Command{
 		Name:      "get",
-		Usage:     "get a job",
-		ArgsUsage: "<job_id>",
+		Usage:     "get one or more jobs",
+		ArgsUsage: "<job_id>...",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "wait",
@@ -92,6 +99,18 @@ var (
 			&cli.BoolFlag{
 				Name:  "logs",
 				Usage: "write the job's full log history to <job_id>-logs.jsonl (one log entry per line, chronological order)",
+			},
+			&cli.BoolFlag{
+				Name:  "export",
+				Usage: "write the job record to <job_id>-export.json (no expansion unless --expand is set)",
+			},
+			&cli.BoolFlag{
+				Name:  "compress",
+				Usage: "bundle any --state/--logs/--export output into <job_id>-export.tar.gz and remove the originals",
+			},
+			&cli.StringSliceFlag{
+				Name:  "expand",
+				Usage: "expand related fields on each job (one or more of: logs, state). default: none",
 			},
 		},
 		Action: jobGet,
@@ -130,7 +149,7 @@ var (
 			&cli.StringFlag{
 				Name:    "status",
 				Aliases: []string{"s"},
-				Usage:   "job status",
+				Usage:   "job status (one of: pending, scheduled, active, queued, dispatching, dispatched, paused, success, error, canceled, expired)",
 				Value:   "scheduled",
 			},
 			&cli.StringFlag{
@@ -157,7 +176,7 @@ var (
 			},
 			&cli.StringSliceFlag{
 				Name:  "expand",
-				Usage: "expand",
+				Usage: "expand related fields on each job (one or more of: logs, state). default: none",
 			},
 		},
 	}
@@ -231,25 +250,76 @@ func jobCreate(ctx context.Context, cmd *cli.Command) error {
 }
 
 func jobGet(ctx context.Context, cmd *cli.Command) error {
-	var input atomic.JobGetInput
-
 	if cmd.Args().Len() == 0 {
 		return cli.Exit("job id is required", 1)
 	}
 
-	jobID, err := atomic.ParseID(cmd.Args().First())
-	if err != nil {
-		return cli.Exit(err.Error(), 1)
+	if cmd.Bool("compress") && !cmd.Bool("state") && !cmd.Bool("logs") && !cmd.Bool("export") {
+		return cli.Exit("--compress requires at least one of --state, --logs, or --export", 1)
 	}
 
-	input.JobID = &jobID
-
-	job, err := backend.JobGet(ctx, &input)
-	if err != nil {
-		return err
+	args := cmd.Args().Slice()
+	jobIDs := make([]atomic.ID, 0, len(args))
+	for _, arg := range args {
+		id, err := atomic.ParseID(arg)
+		if err != nil {
+			return cli.Exit(fmt.Sprintf("invalid job id %q: %s", arg, err), 1)
+		}
+		jobIDs = append(jobIDs, id)
 	}
 
-	PrintResult(cmd, []*atomic.Job{job}, WithFields("id", "type", "status", "scheduled_at", "completed_at"),
+	var (
+		jobs      []*atomic.Job
+		artifacts []string
+	)
+
+	expand := atomic.ExpandFields(cmd.StringSlice("expand"))
+
+	for _, jobID := range jobIDs {
+		jobID := jobID
+
+		job, err := backend.JobGet(ctx, &atomic.JobGetInput{
+			JobID:  &jobID,
+			Expand: expand,
+		})
+		if err != nil {
+			return err
+		}
+		jobs = append(jobs, job)
+
+		if cmd.Bool("wait") {
+			// job get is read-only: Ctrl+C detaches the tail, never cancels
+			if err := waitForJob(ctx, job, mainCmd.Bool("verbose"), false); err != nil {
+				return err
+			}
+		}
+
+		if cmd.Bool("state") {
+			path, err := writeJobState(jobID, job)
+			if err != nil {
+				return err
+			}
+			artifacts = append(artifacts, path)
+		}
+
+		if cmd.Bool("logs") {
+			path, err := writeJobLogs(ctx, jobID)
+			if err != nil {
+				return err
+			}
+			artifacts = append(artifacts, path)
+		}
+
+		if cmd.Bool("export") {
+			path, err := writeJobExport(jobID, job)
+			if err != nil {
+				return err
+			}
+			artifacts = append(artifacts, path)
+		}
+	}
+
+	PrintResult(cmd, jobs, WithFields("id", "type", "status", "scheduled_at", "completed_at", "params"),
 		WithVirtualField("status", func(v any) string {
 			job := v.(atomic.Job)
 			return string(job.Status)
@@ -267,23 +337,18 @@ func jobGet(ctx context.Context, cmd *cli.Command) error {
 				return ""
 			}
 			return job.CompletedAt.Format(time.RFC3339)
+		}),
+		WithVirtualField("params", func(v any) string {
+			job := v.(atomic.Job)
+			return formatJobParams(job.Params)
 		}))
 
-	if cmd.Bool("wait") {
-		// job get is read-only: Ctrl+C detaches the tail, never cancels
-		if err := waitForJob(ctx, job, mainCmd.Bool("verbose"), false); err != nil {
-			return err
+	if cmd.Bool("compress") && len(artifacts) > 0 {
+		bundle := jobIDs[0].String() + "-export.tar.gz"
+		if len(jobIDs) > 1 {
+			bundle = "job-export-" + time.Now().UTC().Format("20060102-150405") + ".tar.gz"
 		}
-	}
-
-	if cmd.Bool("state") {
-		if err := writeJobState(jobID, job); err != nil {
-			return err
-		}
-	}
-
-	if cmd.Bool("logs") {
-		if err := writeJobLogs(ctx, jobID); err != nil {
+		if err := bundleJobArtifacts(bundle, artifacts); err != nil {
 			return err
 		}
 	}
@@ -291,21 +356,92 @@ func jobGet(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+// formatJobParams renders a job's params as one "key: value" per line so a
+// table cell stays narrow. Non-scalar values are kept as compact JSON.
+func formatJobParams(p atomic.JobParams) string {
+	if len(p) == 0 {
+		return ""
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(p, &fields); err != nil {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, p); err != nil {
+			return string(p)
+		}
+		return buf.String()
+	}
+
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(k)
+		b.WriteString(": ")
+		b.WriteString(scalarFromJSON(fields[k]))
+	}
+	return b.String()
+}
+
+// scalarFromJSON unquotes string values and compacts everything else so the
+// rendered line is the cleanest representation of a JSON value.
+func scalarFromJSON(raw json.RawMessage) string {
+	v := bytes.TrimSpace(raw)
+	if len(v) == 0 {
+		return ""
+	}
+	if v[0] == '"' {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			return s
+		}
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, v); err != nil {
+		return string(v)
+	}
+	return buf.String()
+}
+
 // writeJobState writes the job's state object to <job_id>-state.json.
-func writeJobState(jobID atomic.ID, job *atomic.Job) error {
+func writeJobState(jobID atomic.ID, job *atomic.Job) (string, error) {
 	path := jobID.String() + "-state.json"
 	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("failed to create state file: %w", err)
+		return "", fmt.Errorf("failed to create state file: %w", err)
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(job.State); err != nil {
-		return fmt.Errorf("failed to write state: %w", err)
+		return "", fmt.Errorf("failed to write state: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote job state → %s\n", path)
-	return nil
+	return path, nil
+}
+
+// writeJobExport writes the unexpanded job record to <job_id>-export.json.
+func writeJobExport(jobID atomic.ID, job *atomic.Job) (string, error) {
+	path := jobID.String() + "-export.json"
+	f, err := os.Create(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to create export file: %w", err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(job); err != nil {
+		return "", fmt.Errorf("failed to write export: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "wrote job export → %s\n", path)
+	return path, nil
 }
 
 // writeJobLogs fetches the job's full log history and writes it to
@@ -313,19 +449,19 @@ func writeJobState(jobID atomic.ID, job *atomic.Job) error {
 // The default JobGet log limit is 100; we re-fetch with a high cap so the
 // dump is complete in one shot. (The job_logs API only supports a "since"
 // filter and orders DESC, so true backward pagination isn't available.)
-func writeJobLogs(ctx context.Context, jobID atomic.ID) error {
+func writeJobLogs(ctx context.Context, jobID atomic.ID) (string, error) {
 	full, err := backend.JobGet(ctx, &atomic.JobGetInput{
 		JobID:    &jobID,
 		LogLimit: ptr.Uint64(10_000_000),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to fetch logs: %w", err)
+		return "", fmt.Errorf("failed to fetch logs: %w", err)
 	}
 
 	path := jobID.String() + "-logs.jsonl"
 	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("failed to create logs file: %w", err)
+		return "", fmt.Errorf("failed to create logs file: %w", err)
 	}
 	defer f.Close()
 
@@ -333,10 +469,69 @@ func writeJobLogs(ctx context.Context, jobID atomic.ID) error {
 	// API returns DESC (newest first); reverse for chronological order on disk.
 	for i := len(full.Logs) - 1; i >= 0; i-- {
 		if err := enc.Encode(full.Logs[i]); err != nil {
-			return fmt.Errorf("failed to write log entry: %w", err)
+			return "", fmt.Errorf("failed to write log entry: %w", err)
 		}
 	}
 	fmt.Fprintf(os.Stderr, "wrote %d log entries → %s\n", len(full.Logs), path)
+	return path, nil
+}
+
+// bundleJobArtifacts gzip-tars the given files into bundle and removes the
+// originals on success.
+func bundleJobArtifacts(bundle string, paths []string) error {
+	out, err := os.Create(bundle)
+	if err != nil {
+		return fmt.Errorf("failed to create archive: %w", err)
+	}
+	defer out.Close()
+
+	gz := gzip.NewWriter(out)
+	defer gz.Close()
+
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("failed to stat %s: %w", p, err)
+		}
+
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return fmt.Errorf("failed to build header for %s: %w", p, err)
+		}
+		hdr.Name = filepath.Base(p)
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("failed to write header for %s: %w", p, err)
+		}
+
+		f, err := os.Open(p)
+		if err != nil {
+			return fmt.Errorf("failed to open %s: %w", p, err)
+		}
+		if _, err := io.Copy(tw, f); err != nil {
+			f.Close()
+			return fmt.Errorf("failed to write %s: %w", p, err)
+		}
+		f.Close()
+	}
+
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("failed to finalize tar: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		return fmt.Errorf("failed to finalize gzip: %w", err)
+	}
+
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %s\n", p, err)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "bundled %d file(s) → %s\n", len(paths), bundle)
 	return nil
 }
 

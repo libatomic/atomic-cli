@@ -64,6 +64,13 @@ var (
 	mainCmd *cli.Command
 	inst    *atomic.Instance
 
+	// profile and creds are exposed at package scope so subcommand flag
+	// definitions in other files can reference them via NewCredentialsSource.
+	// The mainCmd flags below bind these via Destination so the live values
+	// reflect what the user passed on the command line.
+	profile = DefaultProfile
+	creds   string
+
 	Version = "dev"
 	Commit  = "dev"
 	Date    = time.Now().Format(time.RFC3339)
@@ -74,12 +81,12 @@ const (
 )
 
 func main() {
-	profile := DefaultProfile
+	profile = DefaultProfile
 
 	usr, _ := user.Current()
 	dir := usr.HomeDir
 
-	creds := dir + "/.atomic/credentials"
+	creds = dir + "/.atomic/credentials"
 
 	mainCmd = &cli.Command{
 		Name:               "atomic-cli",
@@ -230,30 +237,41 @@ func main() {
 			backend = client.New(opts...)
 		}
 
-		if cmd.IsSet("instance_id") {
-			if id, err := atomic.ParseID(cmd.String("instance_id")); err == nil {
+		instanceLookup := cmd.String("instance_id")
+		instanceExplicit := cmd.IsSet("instance_id")
+		if !instanceExplicit {
+			instanceLookup = cmd.String("host")
+		}
+
+		if instanceLookup != "" {
+			if id, err := atomic.ParseID(instanceLookup); err == nil {
 				inst, err = backend.InstanceGet(ctx, &atomic.InstanceGetInput{
 					InstanceID: &id,
 				})
 				if err != nil {
-					return nil, fmt.Errorf("failed to get instance %s: %w", cmd.String("instance_id"), err)
+					if instanceExplicit {
+						return nil, fmt.Errorf("failed to get instance %s: %w", instanceLookup, err)
+					}
+					inst = nil
 				}
 			} else {
 				insts, err := backend.InstanceList(ctx, &atomic.InstanceListInput{
-					Name: ptr.String(cmd.String("instance_id")),
+					Name: ptr.String(instanceLookup),
 				})
 				if err != nil {
-					return nil, fmt.Errorf("failed to list instances: %w", err)
-				}
-
-				if len(insts) == 0 {
+					if instanceExplicit {
+						return nil, fmt.Errorf("failed to list instances: %w", err)
+					}
+				} else if len(insts) > 0 {
+					inst = insts[0]
+				} else if instanceExplicit {
 					return nil, fmt.Errorf("instance not found")
 				}
-
-				inst = insts[0]
 			}
 
-			log.Infof("using instance %s", inst.Name)
+			if inst != nil {
+				log.Infof("using instance %s", inst.Name)
+			}
 		}
 
 		return ctx, nil

@@ -59,7 +59,14 @@ type (
 		// end of the current billing period. Sourced from stripe
 		// subscription.cancel_at_period_end.
 		CancelAtPeriodEnd bool
-		UserAmount        int64
+		// TrialEndAt is the moment the trial converts to paid. Sourced from
+		// stripe subscription.trial_end (when > 0).
+		TrialEndAt *time.Time
+		// TrialEndBehavior controls what happens when the trial ends without
+		// a payment method. Sourced from
+		// subscription.trial_settings.end_behavior.missing_payment_method.
+		TrialEndBehavior *atomicpkg.PriceTrialEndBehavior
+		UserAmount       int64
 		DiscountPct       *float64
 		DiscountTerm      *atomicpkg.CreditTerm
 		PaymentMethod     string
@@ -119,51 +126,44 @@ var (
 	migrateCommonFlags = []cli.Flag{
 		&cli.BoolFlag{
 			Name:  "dry-run",
-			Usage: "preview what would happen without making changes",
+			Usage: "preview without writing changes",
 		},
 		&cli.StringFlag{
 			Name:    "output",
 			Aliases: []string{"out", "o"},
-			Usage:   "output CSV file path",
+			Usage:   "output CSV path",
 			Value:   DefaultMigrateOutputPath,
 		},
 		&cli.BoolFlag{
 			Name:  "subscription-prorate",
-			Usage: "prorate subscriptions when migrating",
+			Usage: "prorate subscriptions",
 			Value: false,
 		},
 		&cli.StringFlag{
 			Name:  "email-domain-overwrite",
-			Usage: "rewrite all email addresses to use this domain (e.g. passport.xyz); mutually exclusive with --email-template",
+			Usage: "rewrite email domains (mutually exclusive with --email-template)",
 		},
 		&cli.StringFlag{
-			Name: "email-template",
-			Usage: `generate email addresses from a template; mutually exclusive with --email-domain-overwrite.
-Supported functions:
-  {{seq}}            sequential number (1, 2, 3, ...)
-  {{seq "user"}}     prefixed sequential number (user1, user2, ...)
-  {{hash}}           short hash of the original email
-  {{hash "u"}}       prefixed hash (u3f2a1b, ...)
-  {{sanitize}}       sanitized original email (bob+test@hot.com → bob_test_hot_com)
-Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox.mailtrap.io, sandbox-12ab34+user2@inbox.mailtrap.io, ...`,
+			Name:  "email-template",
+			Usage: "rewrite emails from template (see docs); mutually exclusive with --email-domain-overwrite",
 		},
 		&cli.BoolFlag{
 			Name:  "append",
-			Usage: "append to the output CSV instead of overwriting; deduplicates on login (existing rows win)",
+			Usage: "append to output CSV; dedupe on login",
 			Value: true,
 		},
 		&cli.StringFlag{
 			Name:  "source",
-			Usage: "import source identifier set on each record's import_source field",
+			Usage: "value for import_source on each record",
 		},
 		&cli.IntFlag{
 			Name:  "limit",
-			Usage: "limit the number of records in each output CSV; 0 = no limit",
+			Usage: "max records per CSV (0 = no limit)",
 			Value: 0,
 		},
 		&cli.IntFlag{
 			Name:  "skip",
-			Usage: "skip the first N records in each output CSV; 0 = no skip",
+			Usage: "skip first N records (0 = none)",
 			Value: 0,
 		},
 	}
@@ -181,6 +181,7 @@ Example: "sandbox+{{seq "user"}}@inbox.mailtrap.io -> sandbox-12ab34+user1@inbox
 				Usage:   "Stripe API key (sk_...) shared by all migrate subcommands; required by `migrate substack` and by stripe.* expr functions in `migrate map`",
 				Sources: cli.NewValueSourceChain(
 					cli.EnvVar("STRIPE_API_KEY"),
+					NewCredentialsSource("stripe_key", func() string { return creds }, func() string { return profile }),
 				),
 			},
 			&cli.BoolFlag{
@@ -455,6 +456,13 @@ func writeImportCSV(records []*migrationRecord, outputPath string, dryRun bool, 
 		if rec.CancelAtPeriodEnd {
 			t := true
 			ir.SubscriptionCancelAtPeriodEnd = &t
+		}
+
+		if rec.TrialEndAt != nil {
+			ir.SubscriptionTrialEndAt = &util.Timestamp{Time: rec.TrialEndAt.UTC()}
+		}
+		if rec.TrialEndBehavior != nil {
+			ir.SubscriptionTrialEndBehavior = rec.TrialEndBehavior
 		}
 
 		if rec.CreatedAt != nil {

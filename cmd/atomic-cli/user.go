@@ -149,7 +149,7 @@ var (
 					},
 					&cli.StringFlag{
 						Name:  "status",
-						Usage: "list by status",
+						Usage: "list by subscription status (one of: active, canceled, past_due, unpaid, incomplete, incomplete_expired, trialing, pending, deleted, paused, deferred)",
 					},
 					&cli.StringFlag{
 						Name:  "login",

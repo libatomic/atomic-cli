@@ -286,6 +286,25 @@ var (
 			}
 			rec.SubscriptionEndAt = &util.Timestamp{Time: t.UTC()}
 		},
+		"subscription_trial_end_at": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			t, err := parseFlexibleTime(v)
+			if err != nil {
+				return
+			}
+			rec.SubscriptionTrialEndAt = &util.Timestamp{Time: t.UTC()}
+		},
+		"subscription_trial_end_behavior": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(strings.ToLower(val))
+			if v == "" {
+				return
+			}
+			behavior := atomic.PriceTrialEndBehavior(v)
+			rec.SubscriptionTrialEndBehavior = &behavior
+		},
 		"subscription_prorate": func(rec *atomic.UserImportRecord, val string) {
 			b := parseBool(val)
 			rec.SubscriptionProrate = &b

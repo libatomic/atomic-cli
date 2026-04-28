@@ -88,71 +88,100 @@ var (
 		migrateCommonFlags,
 		&cli.StringFlag{
 			Name:  "subscriber-plan",
-			Usage: "Passport plan ID for regular subscribers (mutually exclusive with --create-plans)",
+			Usage: "Passport plan ID for subscribers (excl. --create-plans)",
 		},
 		&cli.StringFlag{
 			Name:  "founder-plan",
-			Usage: "Passport plan ID for founding members (requires --founders)",
+			Usage: "Passport plan ID for founders (requires --founders)",
 		},
 		&cli.BoolFlag{
 			Name:  "founders",
-			Usage: "include founding member subscriptions in the migration",
+			Usage: "include founder subs",
 			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "create-plans",
-			Usage: "auto-create Subscriber and Founder plans in Passport from Stripe data",
+			Usage: "auto-create Subscriber/Founder plans from Stripe data",
 			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "legacy-pricing",
-			Usage: "calculate forever discounts for users on grandfathered prices (price difference between source and target plan)",
+			Usage: "discount grandfathered prices to target plan price",
 			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "apply-discounts",
-			Usage: "carry over existing Stripe subscription coupons/discounts to the import CSV",
+			Usage: "carry over existing Stripe coupons",
 			Value: true,
 		},
 		&cli.Float64Flag{
 			Name:  "discount-threshold",
-			Usage: "minimum discount percentage to include (discounts below this are ignored)",
+			Usage: "min discount % to include",
 			Value: 1,
 		},
 		&cli.StringFlag{
 			Name:  "discount-term",
-			Usage: "override the discount term for all applied discounts (once, repeating, forever); when not set, uses the coupon's original term",
+			Usage: "override discount term (once|repeating|forever)",
 		},
 		&cli.BoolFlag{
 			Name:  "omit-customer-id",
-			Usage: "omit stripe_customer_id from the output CSV (for sandbox testing with a different Stripe account)",
+			Usage: "drop stripe_customer_id from output",
 			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "omit-payment-methods",
-			Usage: "omit subscription_payment_method from the output CSV",
+			Usage: "drop subscription_payment_method from output",
 			Value: false,
 		},
 		&cli.BoolFlag{
 			Name:  "migrate-test-cards",
-			Usage: "use Stripe test cards for subscription_payment_method based on currency (mutually exclusive with --omit-payment-methods)",
+			Usage: "use Stripe test cards by currency (excl. --omit-payment-methods)",
 			Value: false,
 		},
 		&cli.StringFlag{
 			Name:  "shift-anchor-dates",
-			Usage: "shift all billing cycle anchor dates forward by a duration (e.g. 24h, 7d, 30d). See --shift-anchor-window to restrict the set of subscriptions that get shifted.",
+			Usage: "shift anchor dates forward by duration (e.g. 24h, 7d)",
 		},
 		&cli.StringFlag{
 			Name:  "shift-anchor-window",
-			Usage: "only shift subscriptions whose next renewal falls within now + this duration (e.g. 24h, 7d). Requires --shift-anchor-dates. Subscriptions renewing later keep their natural anchor.",
+			Usage: "limit anchor shift to subs renewing within now+duration",
 		},
 		&cli.IntFlag{
 			Name:  "estimated-total",
-			Usage: "estimated total subscriptions (enables a progress bar instead of a spinner)",
+			Usage: "estimated sub count (enables progress bar)",
 		},
 		&cli.BoolFlag{
 			Name:  "diff",
-			Usage: "produce an incremental diff CSV containing only subscribers created after the latest created_at in the existing output (or last -diff-NN.csv); writes to <base>-diff-NN.csv with auto-incrementing suffix",
+			Usage: "write incremental diff CSV (<base>-diff-NN.csv)",
+		},
+		&cli.StringSliceFlag{
+			Name:  "status",
+			Usage: "stripe sub statuses to include (see docs); repeatable",
+			Value: []string{"active", "trialing"},
+		},
+		&cli.StringSliceFlag{
+			Name:  "created",
+			Usage: "filter sub.created, e.g. '>= now-30d'; repeatable",
+		},
+		&cli.StringSliceFlag{
+			Name:  "current-period-start",
+			Usage: "filter sub.current_period_start (see --created)",
+		},
+		&cli.StringSliceFlag{
+			Name:  "current-period-end",
+			Usage: "filter sub.current_period_end (see --created)",
+		},
+		&cli.StringFlag{
+			Name:  "canceled-before",
+			Usage: "filter sub.canceled_at < time (default: now when --canceled-after is set)",
+		},
+		&cli.StringFlag{
+			Name:  "canceled-after",
+			Usage: "filter sub.canceled_at >= time (no default)",
+		},
+		&cli.BoolFlag{
+			Name:  "canceled-trials",
+			Usage: "include only canceled subs whose trial_end is still in the future",
 		},
 	)
 
@@ -222,6 +251,11 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 
 	if omitPaymentMethods && migrateTestCard {
 		return fmt.Errorf("--omit-payment-methods and --migrate-test-cards are mutually exclusive")
+	}
+
+	subFilters, err := buildSubscriptionFilters(cmd)
+	if err != nil {
+		return err
 	}
 
 	var shiftAnchor time.Duration
@@ -399,7 +433,7 @@ func migrateSubstackAction(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		bar = newMigrateSpinner("Collecting subscriptions")
 	}
-	records, shiftSummary, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, shiftAnchorWindow, diffSince, bar)
+	records, shiftSummary, err := collectSubstackSubscriptions(ctx, sc, allPrices, mapping, founders, legacyPricing, limit, omitPaymentMethods, migrateTestCard, shiftAnchor, shiftAnchorWindow, diffSince, subFilters, bar)
 	bar.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to collect subscriptions: %w", err)
@@ -1033,7 +1067,7 @@ type shiftSummary struct {
 	SkippedCancelInWindow int
 }
 
-func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, shiftAnchorWindow time.Duration, since *time.Time, bar *progressbar.ProgressBar) ([]*migrationRecord, shiftSummary, error) {
+func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, prices []*substackPrice, mapping *passportPlanMapping, founders bool, legacyPricing bool, limit int, omitPaymentMethods bool, migrateTestCard bool, shiftAnchor time.Duration, shiftAnchorWindow time.Duration, since *time.Time, subFilters *subscriptionFilters, bar *progressbar.ProgressBar) ([]*migrationRecord, shiftSummary, error) {
 	var records []*migrationRecord
 	var summary shiftSummary
 	seen := make(map[string]bool)
@@ -1041,6 +1075,15 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 	var sinceUnix int64
 	if since != nil {
 		sinceUnix = since.Unix()
+	}
+
+	// stripe's subscriptions.list takes a single status at a time, so we
+	// loop over the requested statuses for each price. Customer dedup
+	// (via `seen`) keeps the first match — so order matters: prefer
+	// "active" over "canceled" when a customer has both.
+	statuses := subFilters.Statuses
+	if len(statuses) == 0 {
+		statuses = []string{"active"}
 	}
 
 	for _, sp := range prices {
@@ -1059,194 +1102,236 @@ func collectSubstackSubscriptions(ctx context.Context, sc *stripeclient.API, pri
 			continue
 		}
 
-		bar.Describe(collectingSubsStatus(len(records), startTime))
+	statusLoop:
+		for _, status := range statuses {
+			bar.Describe(collectingSubsStatus(len(records), startTime, status))
 
-		params := &stripe.SubscriptionListParams{}
-		params.Filters.AddFilter("price", "", sp.StripePrice.ID)
-		params.Filters.AddFilter("status", "", "active")
-		params.AddExpand("data.customer")
-		params.AddExpand("data.default_payment_method")
-		params.AddExpand("data.discount")
-		params.AddExpand("data.discount.coupon")
-
-		iter := sc.Subscriptions.List(params)
-		for iter.Next() {
-			sub := iter.Subscription()
-
-			if ctx.Err() != nil {
-				return records, summary, ctx.Err()
+			params := &stripe.SubscriptionListParams{
+				CreatedRange:            subFilters.CreatedRange,
+				CurrentPeriodStartRange: subFilters.CurrentPeriodStartRange,
+				CurrentPeriodEndRange:   subFilters.CurrentPeriodEndRange,
 			}
+			params.Filters.AddFilter("price", "", sp.StripePrice.ID)
+			params.Filters.AddFilter("status", "", status)
+			params.AddExpand("data.customer")
+			params.AddExpand("data.default_payment_method")
+			params.AddExpand("data.discount")
+			params.AddExpand("data.discount.coupon")
 
-			if sub.Customer == nil {
-				continue
-			}
+			iter := sc.Subscriptions.List(params)
+			for iter.Next() {
+				sub := iter.Subscription()
 
-			// diff mode: skip customers created at-or-before the cutoff
-			if sinceUnix > 0 && sub.Customer.Created <= sinceUnix {
-				continue
-			}
-
-			if seen[sub.Customer.ID] {
-				continue
-			}
-			seen[sub.Customer.ID] = true
-
-			email := sub.Customer.Email
-			if email == "" {
-				log.Warnf("skipping customer %s: no email address", sub.Customer.ID)
-				continue
-			}
-
-			currency := string(sub.Currency)
-			var userAmount int64
-			if legacyPricing {
-				userAmount = getUserAmount(sp.StripePrice, currency)
-			}
-
-			quantity := 1
-			if sub.Items != nil {
-				for _, item := range sub.Items.Data {
-					if item.Price != nil && item.Price.ID == sp.StripePrice.ID && item.Quantity > 0 {
-						quantity = int(item.Quantity)
-						break
-					}
+				if ctx.Err() != nil {
+					return records, summary, ctx.Err()
 				}
-			}
 
-			rec := &migrationRecord{
-				CustomerID:    sub.Customer.ID,
-				Email:         email,
-				Name:          sub.Customer.Name,
-				PlanID:        planID,
-				Interval:      interval,
-				Currency:      currency,
-				Quantity:      quantity,
-				UserAmount:    userAmount,
-				StripePriceID: sp.StripePrice.ID,
-				StripeSubID:   sub.ID,
-			}
-
-			// derive user created_at from the stripe customer's created date (UTC)
-			if sub.Customer.Created > 0 {
-				t := time.Unix(sub.Customer.Created, 0).UTC()
-				rec.CreatedAt = &t
-			}
-
-			// capture payment method
-			if !omitPaymentMethods {
-				if migrateTestCard {
-					rec.PaymentMethod = stripeTestCardForCurrency(currency)
-				} else if sub.DefaultPaymentMethod != nil {
-					rec.PaymentMethod = sub.DefaultPaymentMethod.ID
+				if sub.Customer == nil {
+					continue
 				}
-			}
 
-			// detect group/team subscriptions
-			if sub.Metadata["is_group"] == "true" {
-				rec.IsTeamOwner = true
-				rec.TeamKey = sub.ID // use the subscription ID as the team key
-			}
-
-			// extract discount from subscription
-			if sub.Discount != nil && sub.Discount.Coupon != nil {
-				coupon := sub.Discount.Coupon
-				if coupon.PercentOff > 0 {
-					pct := coupon.PercentOff
-					rec.DiscountPct = &pct
-
-					switch coupon.Duration {
-					case stripe.CouponDurationForever:
-						term := atomic.CreditTermForever
-						rec.DiscountTerm = &term
-					case stripe.CouponDurationOnce:
-						term := atomic.CreditTermOnce
-						rec.DiscountTerm = &term
-					case stripe.CouponDurationRepeating:
-						term := atomic.CreditTermRepeating
-						rec.DiscountTerm = &term
-					}
+				// diff mode: skip customers created at-or-before the cutoff
+				if sinceUnix > 0 && sub.Customer.Created <= sinceUnix {
+					continue
 				}
-			}
 
-			// Translate stripe cancellation state to the import record.
-			// These are scheduled-cancel semantics — the sub stays active
-			// until the cancel date / period end. SubscriptionEndAt is
-			// reserved for subs that have *already* ended (handled below).
-			var origCancelAt time.Time
-			if sub.CancelAt > 0 {
-				origCancelAt = time.Unix(sub.CancelAt, 0).UTC()
-				cancelAt := origCancelAt
-				if shiftAnchor > 0 {
-					cancelAt = cancelAt.Add(shiftAnchor)
-				}
-				rec.CancelAt = &cancelAt
-			} else if sub.CancelAtPeriodEnd {
-				rec.CancelAtPeriodEnd = true
-			}
-
-			if sub.BillingCycleAnchor > 0 {
-				anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
-				now := time.Now().UTC()
-
-				// Roll forward past dates by full intervals until the anchor
-				// is >= now. Mirrors the user-import-job's anchor normalization
-				// so the CSV never emits a historical anchor.
-				for anchor.Before(now) {
-					switch interval {
-					case atomic.SubscriptionIntervalYear:
-						anchor = anchor.AddDate(1, 0, 0)
-					default:
-						anchor = anchor.AddDate(0, 1, 0)
+				// canceled_at filter is enforced client-side because stripe's
+				// list api doesn't accept it. A canceled_at of 0 means the
+				// sub isn't canceled, which never matches any bound.
+				if subFilters.CanceledAtRange != nil {
+					if sub.CanceledAt == 0 || !matchesRange(sub.CanceledAt, subFilters.CanceledAtRange) {
+						continue
 					}
 				}
 
-				if shiftAnchor > 0 {
-					// --shift-anchor-window confines the shift to subs whose
-					// next renewal falls inside the window from now;
-					// renewals past the window keep their natural anchor.
-					inWindow := shiftAnchorWindow == 0 ||
-						!anchor.After(now.Add(shiftAnchorWindow))
+				// canceled-trials: only canceled subs whose trial_end is
+				// still in the future (i.e. user canceled mid-trial).
+				if subFilters.CanceledTrials {
+					if sub.TrialEnd == 0 || sub.TrialEnd <= time.Now().Unix() {
+						continue
+					}
+				}
 
-					// If the sub cancels before its next renewal there is no
-					// double-bill risk — substack will cancel before invoicing,
-					// so we leave the anchor alone.
-					cancelsFirst := !origCancelAt.IsZero() && origCancelAt.Before(anchor)
+				if seen[sub.Customer.ID] {
+					continue
+				}
+				seen[sub.Customer.ID] = true
 
-					switch {
-					case inWindow && cancelsFirst:
-						summary.SkippedCancelInWindow++
-					case inWindow:
-						original := anchor
-						anchor = anchor.Add(shiftAnchor)
+				email := sub.Customer.Email
+				if email == "" {
+					log.Warnf("skipping customer %s: no email address", sub.Customer.ID)
+					continue
+				}
+
+				currency := string(sub.Currency)
+				var userAmount int64
+				if legacyPricing {
+					userAmount = getUserAmount(sp.StripePrice, currency)
+				}
+
+				quantity := 1
+				if sub.Items != nil {
+					for _, item := range sub.Items.Data {
+						if item.Price != nil && item.Price.ID == sp.StripePrice.ID && item.Quantity > 0 {
+							quantity = int(item.Quantity)
+							break
+						}
+					}
+				}
+
+				rec := &migrationRecord{
+					CustomerID:    sub.Customer.ID,
+					Email:         email,
+					Name:          sub.Customer.Name,
+					PlanID:        planID,
+					Interval:      interval,
+					Currency:      currency,
+					Quantity:      quantity,
+					UserAmount:    userAmount,
+					StripePriceID: sp.StripePrice.ID,
+					StripeSubID:   sub.ID,
+				}
+
+				// derive user created_at from the stripe customer's created date (UTC)
+				if sub.Customer.Created > 0 {
+					t := time.Unix(sub.Customer.Created, 0).UTC()
+					rec.CreatedAt = &t
+				}
+
+				// capture payment method
+				if !omitPaymentMethods {
+					if migrateTestCard {
+						rec.PaymentMethod = stripeTestCardForCurrency(currency)
+					} else if sub.DefaultPaymentMethod != nil {
+						rec.PaymentMethod = sub.DefaultPaymentMethod.ID
+					}
+				}
+
+				// detect group/team subscriptions
+				if sub.Metadata["is_group"] == "true" {
+					rec.IsTeamOwner = true
+					rec.TeamKey = sub.ID // use the subscription ID as the team key
+				}
+
+				// extract discount from subscription
+				if sub.Discount != nil && sub.Discount.Coupon != nil {
+					coupon := sub.Discount.Coupon
+					if coupon.PercentOff > 0 {
+						pct := coupon.PercentOff
+						rec.DiscountPct = &pct
+
+						switch coupon.Duration {
+						case stripe.CouponDurationForever:
+							term := atomic.CreditTermForever
+							rec.DiscountTerm = &term
+						case stripe.CouponDurationOnce:
+							term := atomic.CreditTermOnce
+							rec.DiscountTerm = &term
+						case stripe.CouponDurationRepeating:
+							term := atomic.CreditTermRepeating
+							rec.DiscountTerm = &term
+						}
+					}
+				}
+
+				// Translate stripe cancellation state to the import record.
+				// These are scheduled-cancel semantics — the sub stays active
+				// until the cancel date / period end. SubscriptionEndAt is
+				// reserved for subs that have *already* ended (handled below).
+				var origCancelAt time.Time
+				if sub.CancelAt > 0 {
+					origCancelAt = time.Unix(sub.CancelAt, 0).UTC()
+					cancelAt := origCancelAt
+					if shiftAnchor > 0 {
+						cancelAt = cancelAt.Add(shiftAnchor)
+					}
+					rec.CancelAt = &cancelAt
+				} else if sub.CancelAtPeriodEnd {
+					rec.CancelAtPeriodEnd = true
+				}
+
+				// Preserve trial state from stripe so the imported subscription
+				// resumes the trial in atomic. Stripe's missing-payment-method
+				// behavior values match atomic's PriceTrialEndBehavior 1:1.
+				if sub.TrialEnd > 0 {
+					trialEnd := time.Unix(sub.TrialEnd, 0).UTC()
+					rec.TrialEndAt = &trialEnd
+				}
+				if sub.TrialSettings != nil && sub.TrialSettings.EndBehavior != nil {
+					if mpm := sub.TrialSettings.EndBehavior.MissingPaymentMethod; mpm != "" {
+						behavior := atomic.PriceTrialEndBehavior(mpm)
+						rec.TrialEndBehavior = &behavior
+					}
+				}
+
+				if sub.BillingCycleAnchor > 0 {
+					anchor := time.Unix(sub.BillingCycleAnchor, 0).UTC()
+					now := time.Now().UTC()
+
+					// Roll forward past dates by full intervals until the anchor
+					// is >= now. Mirrors the user-import-job's anchor normalization
+					// so the CSV never emits a historical anchor.
+					for anchor.Before(now) {
 						switch interval {
 						case atomic.SubscriptionIntervalYear:
-							summary.YearlyShifted++
+							anchor = anchor.AddDate(1, 0, 0)
 						default:
-							summary.MonthlyShifted++
-						}
-						marker := fmt.Sprintf("atomic_migrate:anchor_shifted_from=%s", original.Format(time.RFC3339))
-						if rec.ImportComment != "" {
-							rec.ImportComment += "|" + marker
-						} else {
-							rec.ImportComment = marker
+							anchor = anchor.AddDate(0, 1, 0)
 						}
 					}
+
+					if shiftAnchor > 0 {
+						// --shift-anchor-window confines the shift to subs whose
+						// next renewal falls inside the window from now;
+						// renewals past the window keep their natural anchor.
+						inWindow := shiftAnchorWindow == 0 ||
+							!anchor.After(now.Add(shiftAnchorWindow))
+
+						// If the sub cancels before its next renewal there is no
+						// double-bill risk — substack will cancel before invoicing,
+						// so we leave the anchor alone.
+						cancelsFirst := !origCancelAt.IsZero() && origCancelAt.Before(anchor)
+
+						switch {
+						case inWindow && cancelsFirst:
+							summary.SkippedCancelInWindow++
+						case inWindow:
+							original := anchor
+							anchor = anchor.Add(shiftAnchor)
+							switch interval {
+							case atomic.SubscriptionIntervalYear:
+								summary.YearlyShifted++
+							default:
+								summary.MonthlyShifted++
+							}
+							marker := fmt.Sprintf("atomic_migrate:anchor_shifted_from=%s", original.Format(time.RFC3339))
+							if rec.ImportComment != "" {
+								rec.ImportComment += "|" + marker
+							} else {
+								rec.ImportComment = marker
+							}
+						}
+					}
+
+					rec.AnchorDate = &anchor
 				}
 
-				rec.AnchorDate = &anchor
+				records = append(records, rec)
+				bar.Add(1)
+				bar.Describe(collectingSubsStatus(len(records), startTime, status))
+
+				if limit > 0 && len(records) >= limit {
+					break
+				}
 			}
 
-			records = append(records, rec)
-			bar.Add(1)
-			bar.Describe(collectingSubsStatus(len(records), startTime))
+			if err := iter.Err(); err != nil {
+				return nil, summary, fmt.Errorf("failed to list subscriptions for price %s status %s: %w", sp.StripePrice.ID, status, err)
+			}
 
 			if limit > 0 && len(records) >= limit {
-				break
+				break statusLoop
 			}
-		}
-
-		if err := iter.Err(); err != nil {
-			return nil, summary, fmt.Errorf("failed to list subscriptions for price %s: %w", sp.StripePrice.ID, err)
 		}
 
 		if limit > 0 && len(records) >= limit {
@@ -1394,13 +1479,17 @@ func readMaxCreatedAt(path string) (*time.Time, error) {
 	return maxTime, nil
 }
 
-func collectingSubsStatus(count int, start time.Time) string {
+func collectingSubsStatus(count int, start time.Time, status string) string {
+	prefix := "Collecting subscriptions"
+	if status != "" {
+		prefix = fmt.Sprintf("Collecting [%s] subscriptions", status)
+	}
 	elapsed := time.Since(start).Seconds()
 	if elapsed < 1 || count == 0 {
-		return fmt.Sprintf("Collecting subscriptions (%d found)", count)
+		return fmt.Sprintf("%s (%d found)", prefix, count)
 	}
 	rate := float64(count) / elapsed
-	return fmt.Sprintf("Collecting subscriptions (%d found, %.1f/s)", count, rate)
+	return fmt.Sprintf("%s (%d found, %.1f/s)", prefix, count, rate)
 }
 
 func mapSubstackPriceToPassportPlan(sp *substackPrice, mapping *passportPlanMapping) (string, atomic.SubscriptionInterval) {
@@ -1478,6 +1567,207 @@ func setPriceAmountsFromPassport(mapping *passportPlanMapping, planID string, in
 			mapping.priceAmounts[priceAmountKey(planID, interval, cur)] = *opt.UnitAmount
 		}
 	}
+}
+
+type (
+	subscriptionFilters struct {
+		Statuses                []string
+		CreatedRange            *stripe.RangeQueryParams
+		CurrentPeriodStartRange *stripe.RangeQueryParams
+		CurrentPeriodEndRange   *stripe.RangeQueryParams
+		// CanceledAtRange is applied client-side; stripe's list api doesn't
+		// take canceled_at as a query param.
+		CanceledAtRange *stripe.RangeQueryParams
+		// CanceledTrials keeps only canceled subs whose trial_end is still
+		// in the future at collection time.
+		CanceledTrials bool
+	}
+)
+
+var (
+	// validStripeSubStatuses is the set of values stripe accepts for the
+	// status filter on subscriptions.list. "all" and "ended" are list-only
+	// pseudo-statuses; the rest match SubscriptionStatus.
+	validStripeSubStatuses = map[string]bool{
+		"active":             true,
+		"past_due":           true,
+		"unpaid":             true,
+		"canceled":           true,
+		"incomplete":         true,
+		"incomplete_expired": true,
+		"trialing":           true,
+		"paused":             true,
+		"ended":              true,
+		"all":                true,
+	}
+)
+
+// buildSubscriptionFilters validates the flag inputs and assembles them into
+// the struct passed down to the collector.
+func buildSubscriptionFilters(cmd *cli.Command) (*subscriptionFilters, error) {
+	statuses := cmd.StringSlice("status")
+	for _, s := range statuses {
+		if !validStripeSubStatuses[s] {
+			return nil, fmt.Errorf("invalid --status %q (valid: active, past_due, unpaid, canceled, incomplete, incomplete_expired, trialing, paused, ended, all)", s)
+		}
+	}
+
+	f := &subscriptionFilters{Statuses: statuses}
+
+	for _, expr := range cmd.StringSlice("created") {
+		r, err := mergeTimeFilterExpr(f.CreatedRange, expr)
+		if err != nil {
+			return nil, fmt.Errorf("--created: %w", err)
+		}
+		f.CreatedRange = r
+	}
+	for _, expr := range cmd.StringSlice("current-period-start") {
+		r, err := mergeTimeFilterExpr(f.CurrentPeriodStartRange, expr)
+		if err != nil {
+			return nil, fmt.Errorf("--current-period-start: %w", err)
+		}
+		f.CurrentPeriodStartRange = r
+	}
+	for _, expr := range cmd.StringSlice("current-period-end") {
+		r, err := mergeTimeFilterExpr(f.CurrentPeriodEndRange, expr)
+		if err != nil {
+			return nil, fmt.Errorf("--current-period-end: %w", err)
+		}
+		f.CurrentPeriodEndRange = r
+	}
+	canceledBefore := cmd.String("canceled-before")
+	canceledAfter := cmd.String("canceled-after")
+	if canceledBefore != "" || canceledAfter != "" {
+		r := &stripe.RangeQueryParams{}
+
+		// --canceled-before defaults to now whenever the filter is active,
+		// so passing only --canceled-after still yields a closed range.
+		var before time.Time
+		if canceledBefore != "" {
+			t, err := parseFlexibleTimeOrRelative(canceledBefore)
+			if err != nil {
+				return nil, fmt.Errorf("--canceled-before: %w", err)
+			}
+			before = t
+		} else {
+			before = time.Now().UTC()
+		}
+		r.LesserThan = before.Unix()
+
+		if canceledAfter != "" {
+			t, err := parseFlexibleTimeOrRelative(canceledAfter)
+			if err != nil {
+				return nil, fmt.Errorf("--canceled-after: %w", err)
+			}
+			r.GreaterThanOrEqual = t.Unix()
+		}
+
+		f.CanceledAtRange = r
+	}
+
+	f.CanceledTrials = cmd.Bool("canceled-trials")
+
+	return f, nil
+}
+
+// matchesRange reports whether secs satisfies every bound in r. A nil r
+// matches anything.
+func matchesRange(secs int64, r *stripe.RangeQueryParams) bool {
+	if r == nil {
+		return true
+	}
+	if r.GreaterThan != 0 && !(secs > r.GreaterThan) {
+		return false
+	}
+	if r.GreaterThanOrEqual != 0 && !(secs >= r.GreaterThanOrEqual) {
+		return false
+	}
+	if r.LesserThan != 0 && !(secs < r.LesserThan) {
+		return false
+	}
+	if r.LesserThanOrEqual != 0 && !(secs <= r.LesserThanOrEqual) {
+		return false
+	}
+	return true
+}
+
+// mergeTimeFilterExpr parses an expression like ">= now-30d" or "< 2024-01-01"
+// and merges it into the given RangeQueryParams (creating one when nil), so
+// repeated flag uses can set both bounds.
+func mergeTimeFilterExpr(into *stripe.RangeQueryParams, expr string) (*stripe.RangeQueryParams, error) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return into, nil
+	}
+
+	var op, rest string
+	switch {
+	case strings.HasPrefix(expr, ">="):
+		op, rest = ">=", strings.TrimSpace(expr[2:])
+	case strings.HasPrefix(expr, "<="):
+		op, rest = "<=", strings.TrimSpace(expr[2:])
+	case strings.HasPrefix(expr, ">"):
+		op, rest = ">", strings.TrimSpace(expr[1:])
+	case strings.HasPrefix(expr, "<"):
+		op, rest = "<", strings.TrimSpace(expr[1:])
+	default:
+		return nil, fmt.Errorf("expression must start with >, >=, <, or <=: %q", expr)
+	}
+
+	t, err := parseFlexibleTimeOrRelative(rest)
+	if err != nil {
+		return nil, fmt.Errorf("invalid time %q: %w", rest, err)
+	}
+
+	if into == nil {
+		into = &stripe.RangeQueryParams{}
+	}
+	secs := t.Unix()
+	switch op {
+	case ">":
+		into.GreaterThan = secs
+	case ">=":
+		into.GreaterThanOrEqual = secs
+	case "<":
+		into.LesserThan = secs
+	case "<=":
+		into.LesserThanOrEqual = secs
+	}
+	return into, nil
+}
+
+// parseFlexibleTimeOrRelative accepts everything parseFlexibleTime accepts,
+// plus "now", "now+<duration>", "now-<duration>". Naked time strings (no
+// zone info) are parsed as UTC; zoned strings keep their offset. The result
+// is normalized to UTC so the caller's .Unix() is unambiguous.
+func parseFlexibleTimeOrRelative(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(strings.ToLower(s), "now") {
+		rest := strings.TrimSpace(s[3:])
+		if rest == "" {
+			return time.Now().UTC(), nil
+		}
+		var sign time.Duration = 1
+		switch rest[0] {
+		case '+':
+			rest = strings.TrimSpace(rest[1:])
+		case '-':
+			sign = -1
+			rest = strings.TrimSpace(rest[1:])
+		default:
+			return time.Time{}, fmt.Errorf("expected + or - after 'now', got %q", rest)
+		}
+		d, err := parseDuration(rest)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return time.Now().UTC().Add(time.Duration(sign) * d), nil
+	}
+	t, err := parseFlexibleTime(s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.UTC(), nil
 }
 
 // parseDuration parses a duration string supporting Go duration syntax plus

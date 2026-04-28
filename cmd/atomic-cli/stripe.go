@@ -40,8 +40,9 @@ var (
 				Required: true,
 			},
 			&cli.BoolFlag{
-				Name:  "live-mode",
-				Usage: "allow live stripe keys; without this flag only test keys (sk_test_) are accepted",
+				Name:    "live-mode",
+				Aliases: []string{"livemode"},
+				Usage:   "allow live stripe keys; without this flag only test keys (sk_test_) are accepted",
 			},
 		},
 		Before: func(_ context.Context, cmd *cli.Command) (context.Context, error) {
@@ -80,6 +81,7 @@ var (
 			stripeConnectCmd,
 			stripeWebhookCmd,
 			stripeRepairCmd,
+			stripeCustomerCmd,
 		},
 	}
 )

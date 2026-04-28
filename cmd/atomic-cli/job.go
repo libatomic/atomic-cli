@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
 
@@ -83,6 +84,14 @@ var (
 			&cli.BoolFlag{
 				Name:  "wait",
 				Usage: "tail a running job until it terminates, streaming logs with --verbose; Ctrl+C detaches without canceling the job",
+			},
+			&cli.BoolFlag{
+				Name:  "state",
+				Usage: "write the job's full state to <job_id>-state.json",
+			},
+			&cli.BoolFlag{
+				Name:  "logs",
+				Usage: "write the job's full log history to <job_id>-logs.jsonl (one log entry per line, chronological order)",
 			},
 		},
 		Action: jobGet,
@@ -262,9 +271,72 @@ func jobGet(ctx context.Context, cmd *cli.Command) error {
 
 	if cmd.Bool("wait") {
 		// job get is read-only: Ctrl+C detaches the tail, never cancels
-		return waitForJob(ctx, job, mainCmd.Bool("verbose"), false)
+		if err := waitForJob(ctx, job, mainCmd.Bool("verbose"), false); err != nil {
+			return err
+		}
 	}
 
+	if cmd.Bool("state") {
+		if err := writeJobState(jobID, job); err != nil {
+			return err
+		}
+	}
+
+	if cmd.Bool("logs") {
+		if err := writeJobLogs(ctx, jobID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// writeJobState writes the job's state object to <job_id>-state.json.
+func writeJobState(jobID atomic.ID, job *atomic.Job) error {
+	path := jobID.String() + "-state.json"
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create state file: %w", err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(job.State); err != nil {
+		return fmt.Errorf("failed to write state: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "wrote job state → %s\n", path)
+	return nil
+}
+
+// writeJobLogs fetches the job's full log history and writes it to
+// <job_id>-logs.jsonl in chronological order, one JSON object per line.
+// The default JobGet log limit is 100; we re-fetch with a high cap so the
+// dump is complete in one shot. (The job_logs API only supports a "since"
+// filter and orders DESC, so true backward pagination isn't available.)
+func writeJobLogs(ctx context.Context, jobID atomic.ID) error {
+	full, err := backend.JobGet(ctx, &atomic.JobGetInput{
+		JobID:    &jobID,
+		LogLimit: ptr.Uint64(10_000_000),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch logs: %w", err)
+	}
+
+	path := jobID.String() + "-logs.jsonl"
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create logs file: %w", err)
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	// API returns DESC (newest first); reverse for chronological order on disk.
+	for i := len(full.Logs) - 1; i >= 0; i-- {
+		if err := enc.Encode(full.Logs[i]); err != nil {
+			return fmt.Errorf("failed to write log entry: %w", err)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "wrote %d log entries → %s\n", len(full.Logs), path)
 	return nil
 }
 

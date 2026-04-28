@@ -1902,7 +1902,7 @@ Manage Stripe data with the `stripe` command. All subcommands require a Stripe A
 | Option | Alias | Description | Default |
 |------------------------|-------|----------------------------------------------|---------|
 | `--stripe-key` | `-k` | Stripe API key (or `$STRIPE_API_KEY`) | *required* |
-| `--live-mode` | | Allow live stripe keys; without this flag only test keys are accepted | `false` |
+| `--live-mode` | `--livemode` | Allow live stripe keys; without this flag only test keys are accepted | `false` |
 
 #### Export
 
@@ -2356,6 +2356,75 @@ atomic-cli stripe repair -k sk_test_xxx -i inst_abc -t prices
 
 # Repair only credits (coupons)
 atomic-cli stripe repair -k sk_test_xxx -i inst_abc -t credits --verbose
+```
+
+#### Customer
+
+`stripe customer` (aliases: `customers`, `cust`) groups commands that operate on individual Stripe customers.
+
+##### Cleanup
+
+Delete disconnected Stripe customers that were created in error: customers with no associated Passport user, only atomic-imported subscriptions, and no payment methods anywhere on the customer or its subscriptions. Use this to clean up orphaned Stripe records left behind by aborted or partial imports.
+
+```bash
+atomic-cli -i <instance_id> stripe customer cleanup [options] <input.csv>
+```
+
+The CSV must include a column with Stripe customer IDs. By default the column is named `id`; use `--stripe_customer_id_col` to point at a different column. Other columns are ignored, so the same CSV can carry email/name/etc.
+
+**Options:**
+
+| Option                       | Description                                                                                  | Default |
+|------------------------------|----------------------------------------------------------------------------------------------|---------|
+| `--stripe_customer_id_col`   | Name of the CSV column containing the Stripe customer id                                     | `id`    |
+| `--dry-run`                  | Preview what would be deleted without making changes (every check still runs; only the delete API call is skipped) | `false` |
+| `--skip`                     | Skip the first N customer ids in the input CSV; `0` = no skip                                | `0`     |
+| `--limit`                    | Limit the number of customer ids processed (applied after `--skip`); `0` = no limit          | `0`     |
+
+`--instance_id` (the global atomic-cli flag) is required so the Passport user lookup is scoped to the right instance.
+
+**Eligibility — a customer is deleted only when ALL of the following hold:**
+
+1. No Passport user references the customer (`UserList` with `stripe_customer=<id>` returns nothing).
+2. The customer has no `default_source`.
+3. The customer has no `invoice_settings.default_payment_method`.
+4. Every non-canceled / non-incomplete-expired subscription on the customer:
+   - has `metadata["atomic:import"] = "true"`, AND
+   - has no `default_payment_method`, AND
+   - has no `default_source`.
+5. At least one such atomic-imported subscription exists (a customer with no qualifying subs is skipped, never deleted).
+
+If any check fails, the customer is **skipped** (with the reason printed in `--verbose` mode).
+
+**Outcomes per row:** `deleted` (or `would-delete` under `--dry-run`), `skipped`, `not found` (Stripe returned 404 for the customer), `errors`. The progress bar shows running counts in its description, e.g.:
+
+```
+Cleaning up customers [would-delete=14 skipped=2 not-found=0 errors=0]   1% | ... | (16/1079)
+```
+
+A final summary line is always printed:
+
+```
+customers: 14 deleted, 2 skipped, 0 not found, 0 errors
+```
+
+With `--verbose`, every row prints its outcome (and skip reason) above the live progress bar.
+
+**Examples:**
+
+```bash
+# Preview using a CSV whose id column is named "id" (the default)
+atomic-cli -i inst_abc stripe customer cleanup -k sk_test_xxx --dry-run active_no_payment.csv
+
+# Verbose preview to inspect why each customer would be deleted or skipped
+atomic-cli -i inst_abc -v stripe customer cleanup -k sk_test_xxx --dry-run active_no_payment.csv
+
+# Use a CSV whose id lives in a different column
+atomic-cli -i inst_abc stripe customer cleanup -k sk_test_xxx \
+  --stripe_customer_id_col=stripe_customer_id customers.csv
+
+# Live mode (real deletes against a live Stripe account)
+atomic-cli -i inst_abc stripe customer cleanup -k sk_live_xxx --live-mode active_no_payment.csv
 ```
 
 ## Output Formats

@@ -6,6 +6,7 @@ require (
 	ariga.io/atlas-go-sdk v0.7.2
 	github.com/BurntSushi/toml v1.5.0
 	github.com/apex/log v1.9.0
+	github.com/biter777/countries v1.7.5
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -14,7 +15,7 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
-	github.com/libatomic/atomic v1.2.0
+	github.com/libatomic/atomic v1.2.2
 	github.com/libatomic/atomic-go v1.2.0-beta.9
 	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/spf13/cast v1.10.0
@@ -70,7 +71,6 @@ require (
 	github.com/aws/smithy-go v1.24.3 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/biter777/countries v1.7.5 // indirect
 	github.com/bmatcuk/doublestar v1.3.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect

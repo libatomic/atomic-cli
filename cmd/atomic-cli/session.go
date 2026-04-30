@@ -38,8 +38,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lensesio/tableprinter"
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/oauth"
+	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
 
@@ -84,6 +86,18 @@ var (
 				Name:  "name",
 				Usage: "cookie name used for MAC verification; defaults to the instance's session_cookie when --instance_id is set, else _atomic_session",
 				Value: defaultSessionCookieName,
+			},
+			&cli.BoolFlag{
+				Name:  "session",
+				Usage: "include the decoded session values block in the report. when none of --session/--user/--application are set, all three are included (default).",
+			},
+			&cli.BoolFlag{
+				Name:  "user",
+				Usage: "include the resolved user block (id, login, roles, ...). same default behavior as --session.",
+			},
+			&cli.BoolFlag{
+				Name:  "application",
+				Usage: "include the resolved application block (id, name, client_id, ...). same default behavior as --session.",
 			},
 		},
 		Action: sessionCookieAction,
@@ -349,6 +363,17 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 		out["key_source"] = keySource
 	}
 
+	// Section selection: when none of --session/--user/--application are
+	// set the report includes all three; otherwise only the requested
+	// blocks are returned. The cookie envelope is always included as it
+	// contains the metadata that identifies the cookie itself.
+	wantSession := cmd.Bool("session")
+	wantUser := cmd.Bool("user")
+	wantApp := cmd.Bool("application")
+	if !wantSession && !wantUser && !wantApp {
+		wantSession, wantUser, wantApp = true, true, true
+	}
+
 	macOK := false
 	if hashKey != nil {
 		macOK = env.verifyMAC(cookieName, hashKey)
@@ -371,17 +396,23 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 					out["value_plaintext_hex"] = fmt.Sprintf("%x", plaintext)
 				} else {
 					rendered := renderSessionValues(values)
-					out["values"] = rendered
+					if wantSession {
+						out["values"] = rendered
+					}
 					// when -i is set, we have a backend client and the
 					// instance UUID; resolve subject → user and
 					// client_id → application so the report shows the
 					// real principal/app rather than just opaque ids.
 					if inst != nil && backend != nil {
-						if u := lookupSessionUser(ctx, rendered); u != nil {
-							out["user"] = u
+						if wantUser {
+							if u := lookupSessionUser(ctx, rendered); u != nil {
+								out["user"] = u
+							}
 						}
-						if app := lookupSessionApplication(ctx, rendered); app != nil {
-							out["application"] = app
+						if wantApp {
+							if app := lookupSessionApplication(ctx, rendered); app != nil {
+								out["application"] = app
+							}
 						}
 					}
 				}
@@ -389,12 +420,131 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	pretty, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return err
+	switch cmd.String("out-format") {
+	case "json":
+		b, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+	case "json-pretty", "jsonl", "ndjson":
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+	default:
+		renderSessionCookieTables(os.Stdout, out)
 	}
-	fmt.Println(string(pretty))
 	return nil
+}
+
+// renderSessionCookieTables prints a clean per-section terminal table
+// view of the decoded session cookie using lensesio/tableprinter (same
+// renderer the rest of the cli uses). Inline error/skip notes appear
+// between sections so they're impossible to miss. The global -o json /
+// json-pretty flags still emit JSON for tooling.
+func renderSessionCookieTables(w *os.File, out map[string]any) {
+	// Cookie envelope — fixed column order so the most-relevant fields
+	// (format, timestamp, mac state) sort to the top instead of being
+	// alphabetized with low-signal entries.
+	envelope := [][2]string{}
+	add := func(k string) {
+		if v, ok := out[k]; ok && v != nil && fmt.Sprintf("%v", v) != "" {
+			envelope = append(envelope, [2]string{k, fmt.Sprintf("%v", v)})
+		}
+	}
+	for _, k := range []string{
+		"format", "cookie_name", "timestamp", "timestamp_human",
+		"value_decoded_len", "mac_len_bytes", "mac_base64", "key_source",
+	} {
+		add(k)
+	}
+	if v, ok := out["mac_verified"]; ok {
+		envelope = append(envelope, [2]string{"mac_verified", fmt.Sprintf("%v", v)})
+	}
+
+	fmt.Fprintln(w, "Cookie envelope")
+	printKVTable(w, envelope)
+
+	// Skip / error notes between sections.
+	for _, k := range []string{"values_skipped", "decrypt_error", "decode_error", "hash_key_error", "block_key_error"} {
+		if v, ok := out[k]; ok && v != "" {
+			fmt.Fprintf(w, "\n%s: %v\n", k, v)
+		}
+	}
+
+	if values, ok := out["values"].(map[string]any); ok && len(values) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Session values")
+		printKVTable(w, sortedKVRows(values))
+	}
+
+	if user, ok := out["user"].(map[string]any); ok && len(user) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "User")
+		printKVTable(w, sortedKVRows(user))
+	}
+
+	if app, ok := out["application"].(map[string]any); ok && len(app) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Application")
+		printKVTable(w, sortedKVRows(app))
+	}
+}
+
+// sortedKVRows turns a flat map[string]any into [field, value] rows in
+// alphabetical order. Composite values (slices, nested maps) are JSON-
+// encoded so they fit in a single cell.
+func sortedKVRows(m map[string]any) [][2]string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	rows := make([][2]string, 0, len(keys))
+	for _, k := range keys {
+		var cell string
+		switch x := m[k].(type) {
+		case nil:
+			cell = ""
+		case string:
+			cell = x
+		case []any, map[string]any, oauth.Permissions, []string:
+			b, err := json.Marshal(x)
+			if err != nil {
+				cell = fmt.Sprintf("%v", x)
+			} else {
+				cell = string(b)
+			}
+		default:
+			cell = fmt.Sprintf("%v", x)
+		}
+		rows = append(rows, [2]string{k, cell})
+	}
+	return rows
+}
+
+// printKVTable renders a 2-column table (FIELD | VALUE) with the same
+// borders/style the rest of the cli uses for consistency.
+func printKVTable(w *os.File, rows [][2]string) {
+	if len(rows) == 0 {
+		return
+	}
+	stringRows := make([][]string, len(rows))
+	for i, r := range rows {
+		stringRows[i] = []string{r[0], r[1]}
+	}
+	p := tableprinter.New(w)
+	p.BorderTop = true
+	p.BorderBottom = true
+	p.BorderLeft = true
+	p.BorderRight = true
+	p.ColumnSeparator = "|"
+	p.HeaderAlignment = tableprinter.AlignCenter
+	p.RowLine = true
+	p.Render([]string{"FIELD", "VALUE"}, stringRows, nil, true)
 }
 
 // resolveSessionKeys produces the (hash, block) key pair used to decode an
@@ -486,26 +636,33 @@ func renderSessionValues(in map[any]any) map[string]any {
 // lookupSessionUser resolves the user behind a decoded session by its
 // stored "subject" (a UUID-string the cookie carries through Principal.
 // Subject()). Falls back to the "login" claim if a subject lookup fails.
-// Returns nil when neither path produces a user — never an error, since
-// failures here are diagnostic-only and shouldn't block the report.
+// Uses UserList with filters because atomic-go's UserGet only supports
+// path-based lookup by UserID — and the session stores SubjectVal, not
+// the UUID. Returns nil on any miss (failures are diagnostic-only).
 func lookupSessionUser(ctx context.Context, values map[string]any) map[string]any {
 	subject, _ := values["subject"].(string)
 	login, _ := values["login"].(string)
 
 	var u *atomic.User
 	if subject != "" {
-		if id, err := atomic.ParseID(subject); err == nil {
-			u, _ = backend.UserGet(ctx, &atomic.UserGetInput{
-				InstanceID: inst.UUID,
-				Subject:    &id,
-			})
+		users, _ := backend.UserList(ctx, &atomic.UserListInput{
+			InstanceID: &inst.UUID,
+			Subject:    &subject,
+			Limit:      ptr.Uint64(1),
+		})
+		if len(users) > 0 {
+			u = users[0]
 		}
 	}
 	if u == nil && login != "" {
-		u, _ = backend.UserGet(ctx, &atomic.UserGetInput{
-			InstanceID: inst.UUID,
+		users, _ := backend.UserList(ctx, &atomic.UserListInput{
+			InstanceID: &inst.UUID,
 			Login:      &login,
+			Limit:      ptr.Uint64(1),
 		})
+		if len(users) > 0 {
+			u = users[0]
+		}
 	}
 	if u == nil {
 		return nil
@@ -529,17 +686,29 @@ func lookupSessionUser(ctx context.Context, values map[string]any) map[string]an
 }
 
 // lookupSessionApplication resolves the OAuth client (atomic Application)
-// that issued the session by its client_id. Returns nil on any miss.
+// that issued the session by its client_id. atomic-go's ApplicationGet
+// only supports path-based lookup by ApplicationID (not client_id), so
+// we list all apps in the instance and match locally. Reasonable for a
+// diagnostic command — instances rarely have hundreds of apps.
 func lookupSessionApplication(ctx context.Context, values map[string]any) map[string]any {
 	clientID, _ := values["client_id"].(string)
 	if clientID == "" {
 		return nil
 	}
-	app, err := backend.ApplicationGet(ctx, &atomic.ApplicationGetInput{
-		InstanceID: &inst.UUID,
-		ClientID:   &clientID,
+	apps, err := backend.ApplicationList(ctx, &atomic.ApplicationListInput{
+		InstanceID: inst.UUID,
 	})
-	if err != nil || app == nil {
+	if err != nil {
+		return nil
+	}
+	var app *atomic.Application
+	for _, a := range apps {
+		if a.ClientIDVal == clientID {
+			app = a
+			break
+		}
+	}
+	if app == nil {
 		return nil
 	}
 	out := map[string]any{

@@ -2589,6 +2589,24 @@ Both lookups are best-effort — failures are silent so the rest of the report s
 | `--hash-key <k>` | Explicit HMAC key (base64 / hex / raw bytes). Overrides the derivation. |
 | `--block-key <k>` | Explicit AES-CTR key (same accepted forms). Overrides the derivation. |
 | `--name <name>` | Cookie name used for MAC verification. Defaults to the instance's `session_cookie` when `-i` is set, else `_atomic_session`. |
+| `--session` | Include the **Session values** block in the report. |
+| `--user` | Include the **User** block (resolved from the session's `subject` / `login`). |
+| `--application` | Include the **Application** block (resolved from the session's `client_id`). |
+
+**Section selection:** when none of `--session` / `--user` / `--application` are passed, the report includes all three (the default). Pass any combination to narrow the output — e.g. `--user` alone returns only the cookie envelope plus the user block. The cookie envelope is always shown since it carries the metadata that identifies the cookie itself.
+
+```bash
+# default — envelope + values + user + application
+atomic-cli -i my-instance session cookie '<value>'
+
+# just envelope + user
+atomic-cli -i my-instance session cookie '<value>' --user
+
+# envelope + user + application (no raw session values)
+atomic-cli -i my-instance session cookie '<value>' --user --application
+```
+
+**Output formats:** the default is bordered terminal tables (one section per `Cookie envelope` / `Session values` / `User` / `Application`). Use the global `-o json` / `-o json-pretty` for the raw object — useful when piping into `jq`.
 
 Tolerated input forms: bare cookie value, `name=value` (the `name=` is stripped), URL-encoded values. JWT-shaped values are decoded as JWT (header + claims printed) instead of as a gorilla envelope.
 

@@ -1578,6 +1578,12 @@ In addition to [expr built-in functions](https://expr-lang.org/docs/language-def
 | `splitTrim(s [, sep])` | Splits a string by `sep` (default: `,`), trims whitespace from each element, and removes empty entries. Returns an array. | `join(splitTrim(Sections), "\|")` → `"News\|Sports\|Opinion"` |
 | `without(a, b)` | Returns elements in array `a` that are not in array `b` (set difference). | `without(splitTrim(ALL, ","), splitTrim(Sections))` → categories not in user's sections |
 | `sprintf(format, args...)` | Formats a string using Go `fmt.Sprintf` syntax. | `sprintf("Substack subscriber type, %s", Type)` |
+| `atoi(s)` | Parses a string into an integer; empty strings return `0`. | `atoi(Quantity) > 1` |
+| `date(s [, layout [, location]])` | Parses a date/time string (overrides expr's builtin with a more flexible version). With no `layout`, auto-detects from common formats: RFC3339, `YYYY-MM-DD[ T]HH:MM[:SS[.fff]]`, `YYYY-MM-DD`, `MM/DD/YYYY[ HH:MM[:SS]]`, RFC1123/822/850, unix seconds. With an explicit `layout`, tries it first and falls back to auto-detect on mismatch. Returns `time.Time`. | `date(LastSeen)` or `date(LastSeen, "2006-01-02 15:04", "UTC")` |
+| `since(unit, when)` | Whole `unit`s elapsed from `when` until now. `unit` ∈ `seconds`/`s`, `minutes`/`m`, `hours`/`h`, `days`/`d`, `months`/`M`, `years`/`y` (singular forms accepted). Short forms are case-sensitive so `M` (month) doesn't collide with `m` (minute). `when` is a `time.Time` or any RFC3339, `YYYY-MM-DD`, or unix-seconds string (column values qualify). Months/years use anniversary semantics. Negative when `when` is in the future. | `since("days", LastSeen) > 30` |
+| `until(unit, when)` | Whole `unit`s from now until `when`; same units as `since`. Negative when `when` is in the past. | `until("d", TrialEnd) > 0` (trial still active) |
+| `currencyForCountry(country [, fallback])` | Maps a country (Alpha-2, Alpha-3, or name; case-insensitive) to a lowercased ISO 4217 currency code. Returns the country's native currency only if it's in `atomic.LocalizedCurrencies` (`gbp, eur, cad, aud, brl, mxn, nzd, chf, dkk, nok, sek, pln`). Otherwise returns the optional `fallback` — which must itself be one of the localized currencies — or `usd` when no fallback is given. Unknown country values fall back the same way. | `currencyForCountry(Country, "eur")` → `gbp` for `"GB"`, `eur` for `"DE"`, `eur` (fallback) for `"US"`, `eur` for `"unknown"` |
+| `shiftAnchorDate(date [, interval])` | Rolls a past `date` forward by whole intervals until it's in the future. Mirrors the anchor-date normalization the user-import job applies before sending to Stripe (Stripe rejects past anchor dates). `date` may be a column value, a string, or a `time.Time`. `interval` ∈ `year`/`y`, `month`/`M`, `week`/`w`, `day`/`d` (long forms case-insensitive; defaults to `month`). Future dates are returned unchanged; zero/empty dates return the zero time. | `shiftAnchorDate(Paid_upgrade_date, Interval)` |
 
 **Variables (`--vars`):**
 
@@ -1636,6 +1642,15 @@ Column values can be:
 - **string** — an [expr](https://github.com/expr-lang/expr) expression; CSV column names and variables are available
 - **bool/number** — a static value applied to every row
 - **object `{ "filter": "<expr>", "value": "<expr or static>" }`** — conditional column. The `filter` is evaluated first; the `value` is only computed and applied when the filter is truthy. Useful for expensive lookups (like `stripe.customer_search`) that should only run for some rows.
+- **array of `{filter, value}` objects** — a list of conditional alternatives. Each entry is evaluated in order; the **first** entry whose filter matches wins and its `value` is used. If no entry matches, the column is left empty. A filter of `"default"` (or an entry with no `filter`) always matches, so it can be placed at the end of the array as a fallback.
+
+  ```json
+  "subscription_plan_id": [
+    { "filter": "Tier == \"vip\"",   "value": "\"plan_vip\"" },
+    { "filter": "Tier == \"basic\"", "value": "\"plan_basic\"" },
+    { "filter": "default",            "value": "\"plan_free\"" }
+  ]
+  ```
 
 **Stripe expr functions** (require `--stripe-key` / `--sk` / `$STRIPE_API_KEY`):
 

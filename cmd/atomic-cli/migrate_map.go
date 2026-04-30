@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/apex/log"
+	"github.com/biter777/countries"
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 	"github.com/gocarina/gocsv"
@@ -55,8 +56,14 @@ type (
 		// Outputs defines multiple output files with per-output filters;
 		// mutually exclusive with the --output CLI flag
 		Outputs []convertMappingOutput `json:"outputs,omitempty"`
-		// Columns maps UserImportRecord field names to expr expressions, static
-		// values, or a {filter, value} struct that only sets the value if filter matches
+		// Columns maps UserImportRecord field names to one of:
+		//   - an expr expression or static value
+		//   - a {"filter": <expr>, "value": <expr>} struct that only sets the
+		//     value when the filter is truthy
+		//   - an array of {filter, value} structs evaluated in order; the
+		//     first matching filter wins. A filter of "default" (or an
+		//     omitted filter) always matches, so it can be used as a final
+		//     fallback. When no entry matches the column is left empty.
 		Columns map[string]any `json:"columns"`
 	}
 
@@ -309,6 +316,21 @@ var (
 			b := parseBool(val)
 			rec.SubscriptionProrate = &b
 		},
+		"subscription_cancel_at": func(rec *atomic.UserImportRecord, val string) {
+			v := strings.TrimSpace(val)
+			if v == "" {
+				return
+			}
+			t, err := parseFlexibleTime(v)
+			if err != nil {
+				return
+			}
+			rec.SubscriptionCancelAt = &util.Timestamp{Time: t.UTC()}
+		},
+		"subscription_cancel_at_period_end": func(rec *atomic.UserImportRecord, val string) {
+			b := parseBool(val)
+			rec.SubscriptionCancelAtPeriodEnd = &b
+		},
 		"subscription_payment_method": func(rec *atomic.UserImportRecord, val string) {
 			v := strings.TrimSpace(val)
 			rec.SubscriptionPaymentMethod = &v
@@ -391,9 +413,25 @@ func parseFlexibleTime(val string) (time.Time, error) {
 	formats := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02 15:04:05.999999999",
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04",
 		"2006-01-02",
+		"01/02/2006 15:04:05",
+		"01/02/2006 15:04",
+		"01/02/2006",
+		"1/2/2006 15:04:05",
+		"1/2/2006 15:04",
+		"1/2/2006",
+		time.RFC1123,
+		time.RFC1123Z,
+		time.RFC822,
+		time.RFC822Z,
+		time.RFC850,
+		"15:04:05",
 	}
 	for _, f := range formats {
 		if t, err := time.Parse(f, val); err == nil {
@@ -745,7 +783,7 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	exprEnv["stripe"] = stripeNS{CustomerSearch: stripeCustomerSearch}
 
-	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn, atoiFn()}
+	exprOpts := []expr.Option{expr.Env(exprEnv), splitTrimFn, withoutFn, sprintfFn, atoiFn(), sinceFn(), untilFn(), dateFn(), currencyForCountryFn(), shiftAnchorDateFn()}
 
 	// add consts from file first, then CLI flags (CLI wins on conflict)
 	for name, value := range fileVars {
@@ -773,11 +811,15 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		exprEnv[name] = value
 	}
 
-	// build the resolved mapping: target field -> compiled expr program or static value
+	// build the resolved mapping: target field -> ordered list of compiled
+	// alternatives. The row loop walks each list in order and uses the first
+	// alternative whose filter evaluates truthy (an unset filter — or one
+	// literally set to "default" — always matches).
 	type fieldSource struct {
-		program *vm.Program // non-nil for expr-based mappings
-		static  string      // used when program is nil
-		filter  *vm.Program // optional per-column filter; value is only set when truthy
+		program   *vm.Program // non-nil for expr-based mappings
+		static    string      // used when program is nil
+		filter    *vm.Program // optional per-column filter; value is only set when truthy
+		filterSrc string      // raw filter source (for reporting)
 	}
 
 	// helper to compile a single value (string → expr program, otherwise static)
@@ -804,48 +846,71 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	resolved := make(map[string]fieldSource)
-	columnFilterSources := make(map[string]string) // target field -> filter expr (for reporting)
-	for targetField, sourceVal := range mapping {
-		// {filter, value} struct form: only set the column when filter is truthy
-		if obj, ok := sourceVal.(map[string]any); ok {
+	// compileColumnEntry handles a single mapping entry which may be a
+	// scalar/expr value or a {filter, value} struct.
+	compileColumnEntry := func(targetField string, raw any) (fieldSource, error) {
+		if obj, ok := raw.(map[string]any); ok {
 			filterRaw, hasFilter := obj["filter"]
 			valueRaw, hasValue := obj["value"]
 			if hasFilter || hasValue {
 				if !hasValue {
-					return fmt.Errorf("mapping field %q: struct form requires \"value\"", targetField)
+					return fieldSource{}, fmt.Errorf("mapping field %q: struct form requires \"value\"", targetField)
 				}
 				fs, err := compileColumnValue(targetField, valueRaw)
 				if err != nil {
-					return err
+					return fieldSource{}, err
 				}
 				if hasFilter {
 					filterStr, ok := filterRaw.(string)
 					if !ok {
-						return fmt.Errorf("mapping field %q: \"filter\" must be a string expression", targetField)
+						return fieldSource{}, fmt.Errorf("mapping field %q: \"filter\" must be a string expression", targetField)
 					}
-					if filterStr != "" {
+					trimmed := strings.TrimSpace(filterStr)
+					// "default" is a sentinel meaning "always matches"; an
+					// empty filter behaves the same way.
+					if trimmed != "" && !strings.EqualFold(trimmed, "default") {
 						filterProg, err := expr.Compile(filterStr, append(exprOpts, expr.AsBool())...)
 						if err != nil {
-							return fmt.Errorf("mapping field %q: invalid filter %q: %w", targetField, filterStr, err)
+							return fieldSource{}, fmt.Errorf("mapping field %q: invalid filter %q: %w", targetField, filterStr, err)
 						}
 						if strings.Contains(filterStr, "stripe.customer_search") {
 							stripeUsed = true
 						}
 						fs.filter = filterProg
-						columnFilterSources[targetField] = filterStr
+						fs.filterSrc = filterStr
 					}
 				}
-				resolved[targetField] = fs
-				continue
+				return fs, nil
 			}
 		}
+		return compileColumnValue(targetField, raw)
+	}
 
-		fs, err := compileColumnValue(targetField, sourceVal)
-		if err != nil {
-			return err
+	resolved := make(map[string][]fieldSource)
+	columnFilterSources := make(map[string][]string) // target field -> filter expr(s) (for reporting)
+	for targetField, sourceVal := range mapping {
+		var entries []fieldSource
+		if arr, ok := sourceVal.([]any); ok {
+			for i, item := range arr {
+				fs, err := compileColumnEntry(targetField, item)
+				if err != nil {
+					return fmt.Errorf("mapping field %q[%d]: %w", targetField, i, err)
+				}
+				entries = append(entries, fs)
+			}
+		} else {
+			fs, err := compileColumnEntry(targetField, sourceVal)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, fs)
 		}
-		resolved[targetField] = fs
+		resolved[targetField] = entries
+		for _, e := range entries {
+			if e.filterSrc != "" {
+				columnFilterSources[targetField] = append(columnFilterSources[targetField], e.filterSrc)
+			}
+		}
 	}
 
 	// validate stripe key early when any expression references stripe.* — gives
@@ -965,7 +1030,9 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		}
 		sort.Strings(fields)
 		for _, f := range fields {
-			filterLocs = append(filterLocs, filterLoc{kind: "column:" + f, expr: columnFilterSources[f]})
+			for _, e := range columnFilterSources[f] {
+				filterLocs = append(filterLocs, filterLoc{kind: "column:" + f, expr: e})
+			}
 		}
 	}
 
@@ -1078,30 +1145,33 @@ func migrateMapAction(ctx context.Context, cmd *cli.Command) error {
 		// runs once per row regardless of how many output targets exist)
 		rec := &atomic.UserImportRecord{}
 
-		for targetField, src := range resolved {
-			// per-column filter — skip evaluating the value when the filter is falsey
-			if src.filter != nil {
-				fres, ferr := expr.Run(src.filter, rowEnv)
-				if ferr != nil {
-					return fmt.Errorf("mapping field %q: filter evaluation failed on row %d: %w", targetField, rowIdx+1, ferr)
-				}
-				if match, ok := fres.(bool); !ok || !match {
-					continue
-				}
-			}
-
+		for targetField, entries := range resolved {
 			var val string
-			if src.program != nil {
-				result, err := expr.Run(src.program, rowEnv)
-				if err != nil {
-					return fmt.Errorf("mapping field %q: expression evaluation failed on row %d: %w", targetField, rowIdx+1, err)
+			matched := false
+			for _, src := range entries {
+				if src.filter != nil {
+					fres, ferr := expr.Run(src.filter, rowEnv)
+					if ferr != nil {
+						return fmt.Errorf("mapping field %q: filter evaluation failed on row %d: %w", targetField, rowIdx+1, ferr)
+					}
+					if m, ok := fres.(bool); !ok || !m {
+						continue
+					}
 				}
-				val = exprResultToString(result)
-			} else {
-				val = src.static
+				if src.program != nil {
+					result, err := expr.Run(src.program, rowEnv)
+					if err != nil {
+						return fmt.Errorf("mapping field %q: expression evaluation failed on row %d: %w", targetField, rowIdx+1, err)
+					}
+					val = exprResultToString(result)
+				} else {
+					val = src.static
+				}
+				matched = true
+				break
 			}
 
-			if val == "" {
+			if !matched || val == "" {
 				continue
 			}
 
@@ -1349,12 +1419,20 @@ func validateMapping(mapping convertMapping) error {
 	return nil
 }
 
-var headerSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+var headerSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_]+`)
 
-// sanitizeHeader converts a CSV header to a valid expr identifier.
-// "Emails opened (6mo)" -> "Emails_opened__6mo_"
+// sanitizeHeader converts a CSV header to a valid expr identifier. Runs of
+// non-alphanumeric characters collapse to a single underscore and
+// leading/trailing underscores are trimmed, so "Trial_End (UTC)" -> "Trial_End_UTC"
+// and "Emails opened (6mo)" -> "Emails_opened_6mo". Returns the original
+// header when the sanitized form would be empty.
 func sanitizeHeader(h string) string {
-	return headerSanitizeRe.ReplaceAllString(h, "_")
+	s := headerSanitizeRe.ReplaceAllString(h, "_")
+	s = strings.Trim(s, "_")
+	if s == "" {
+		return h
+	}
+	return s
 }
 
 // atoiFn converts a string to an integer for use in expr expressions.
@@ -1378,4 +1456,367 @@ func atoiFn() expr.Option {
 		},
 		new(func(string) int),
 	)
+}
+
+// shiftAnchorDateFn rolls a date forward by whole intervals until it's in
+// the future, mirroring the anchor-date normalization the user_import job
+// applies before sending to Stripe (Stripe rejects past anchor dates).
+//
+// Signatures:
+//
+//	shiftAnchorDate(date)             — month interval, default
+//	shiftAnchorDate(date, interval)   — interval ∈ year/y, month/M, week/w, day/d (long forms case-insensitive; singular accepted)
+//
+// `date` may be a time.Time or any string parseFlexibleTime accepts. Empty
+// dates and zero times return the zero time. Dates already in the future
+// are returned unchanged. Returns time.Time, so it can be assigned directly
+// to e.g. subscription_anchor_date.
+func shiftAnchorDateFn() expr.Option {
+	return expr.Function(
+		"shiftAnchorDate",
+		func(params ...any) (any, error) {
+			if len(params) < 1 {
+				return time.Time{}, fmt.Errorf("shiftAnchorDate: requires (date [, interval])")
+			}
+
+			var t time.Time
+			switch v := params[0].(type) {
+			case time.Time:
+				t = v
+			case *time.Time:
+				if v == nil {
+					return time.Time{}, nil
+				}
+				t = *v
+			case string:
+				s := strings.TrimSpace(v)
+				if s == "" {
+					return time.Time{}, nil
+				}
+				parsed, err := parseFlexibleTime(s)
+				if err != nil {
+					return time.Time{}, fmt.Errorf("shiftAnchorDate: invalid date %q: %w", s, err)
+				}
+				t = parsed
+			default:
+				return time.Time{}, fmt.Errorf("shiftAnchorDate: date must be a time or string, got %T", params[0])
+			}
+
+			if t.IsZero() {
+				return t, nil
+			}
+
+			interval := "month"
+			if len(params) >= 2 {
+				iv, ok := params[1].(string)
+				if !ok {
+					return time.Time{}, fmt.Errorf("shiftAnchorDate: interval must be a string, got %T", params[1])
+				}
+				interval = strings.TrimSpace(iv)
+			}
+
+			var addYears, addMonths, addDays int
+			// short forms are case-sensitive ("M" vs "m" — but only "M" and
+			// "y"/"d"/"w" are defined). long forms are case-insensitive.
+			switch interval {
+			case "y", "M", "w", "d":
+				switch interval {
+				case "y":
+					addYears = 1
+				case "M":
+					addMonths = 1
+				case "w":
+					addDays = 7
+				case "d":
+					addDays = 1
+				}
+			default:
+				switch strings.ToLower(interval) {
+				case "year", "years":
+					addYears = 1
+				case "", "month", "months":
+					addMonths = 1
+				case "week", "weeks":
+					addDays = 7
+				case "day", "days":
+					addDays = 1
+				default:
+					return time.Time{}, fmt.Errorf("shiftAnchorDate: unknown interval %q (valid: year/y, month/M, week/w, day/d)", interval)
+				}
+			}
+
+			now := time.Now().UTC()
+			out := t.UTC()
+			for !out.After(now) {
+				out = out.AddDate(addYears, addMonths, addDays)
+			}
+			return out, nil
+		},
+		new(func(date string) time.Time),
+		new(func(date, interval string) time.Time),
+		new(func(date time.Time) time.Time),
+		new(func(date time.Time, interval string) time.Time),
+	)
+}
+
+// currencyForCountryFn returns the lowercased ISO 4217 currency code for the
+// given country. The country argument accepts an Alpha-2 ("US"), Alpha-3
+// ("USA"), or full name ("United States"), case-insensitive.
+//
+// If the country's native currency is in atomic.LocalizedCurrencies, that
+// currency is returned. Otherwise the optional fallback is returned (which
+// must itself be in LocalizedCurrencies). If no fallback is provided, USD
+// is returned.
+func currencyForCountryFn() expr.Option {
+	return expr.Function(
+		"currencyForCountry",
+		func(params ...any) (any, error) {
+			if len(params) < 1 {
+				return nil, fmt.Errorf("currencyForCountry: requires at least 1 argument")
+			}
+			country, ok := params[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("currencyForCountry: country must be a string, got %T", params[0])
+			}
+
+			fallback := "usd"
+			if len(params) >= 2 {
+				fb, ok := params[1].(string)
+				if !ok {
+					return nil, fmt.Errorf("currencyForCountry: fallback must be a string, got %T", params[1])
+				}
+				fb = strings.ToLower(strings.TrimSpace(fb))
+				if fb != "" {
+					if !util.Slice[string](atomic.LocalizedCurrencies).Contains(fb) {
+						return nil, fmt.Errorf("currencyForCountry: fallback %q is not in LocalizedCurrencies (valid: %s)", fb, strings.Join(atomic.LocalizedCurrencies, ", "))
+					}
+					fallback = fb
+				}
+			}
+
+			country = strings.TrimSpace(country)
+			if country == "" {
+				return fallback, nil
+			}
+
+			cc := countries.ByName(country)
+			if cc == countries.Unknown {
+				return fallback, nil
+			}
+
+			// CurrencyCode.Alpha() returns the ISO 4217 code (e.g. "GBP");
+			// String() returns the English name ("pound sterling"), which
+			// would never match LocalizedCurrencies.
+			currency := strings.ToLower(cc.Currency().Alpha())
+			if util.Slice[string](atomic.LocalizedCurrencies).Contains(currency) {
+				return currency, nil
+			}
+			return fallback, nil
+		},
+		new(func(country string) string),
+		new(func(country, fallback string) string),
+	)
+}
+
+// dateFn overrides expr's built-in date() with a flexible version. Accepts
+//
+//	date(s)                    — auto-detect format
+//	date(s, layout)            — try explicit layout, fall back to auto-detect
+//	date(s, layout, location)  — try explicit layout in tz, fall back to auto-detect
+//
+// Auto-detection uses parseFlexibleTime, which understands a broad set of
+// ISO/RFC layouts as well as US-style MM/DD/YYYY with optional times.
+func dateFn() expr.Option {
+	return expr.Function(
+		"date",
+		func(params ...any) (any, error) {
+			if len(params) == 0 {
+				return nil, fmt.Errorf("date: requires at least 1 argument")
+			}
+			s, ok := params[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("date: first argument must be a string, got %T", params[0])
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return time.Time{}, nil
+			}
+
+			var layout, tzName string
+			if len(params) >= 2 {
+				if l, ok := params[1].(string); ok {
+					layout = l
+				}
+			}
+			if len(params) >= 3 {
+				if z, ok := params[2].(string); ok {
+					tzName = z
+				}
+			}
+
+			loc := time.UTC
+			if tzName != "" {
+				l, err := time.LoadLocation(tzName)
+				if err != nil {
+					return nil, fmt.Errorf("date: unknown timezone %q: %w", tzName, err)
+				}
+				loc = l
+			}
+
+			if layout != "" {
+				if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+					return t, nil
+				}
+				// fall through to auto-detect when the explicit layout doesn't match
+			}
+
+			t, err := parseFlexibleTime(s)
+			if err != nil {
+				return nil, fmt.Errorf("date: %w", err)
+			}
+			// If a tz was provided and the parsed time has no offset (UTC default
+			// from naked layouts), reinterpret in the requested location so the
+			// instant matches the user's intent.
+			if tzName != "" {
+				_, offset := t.Zone()
+				if offset == 0 && loc != time.UTC {
+					t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+				}
+			}
+			return t, nil
+		},
+		new(func(s string) time.Time),
+		new(func(s, layout string) time.Time),
+		new(func(s, layout, location string) time.Time),
+	)
+}
+
+// sinceFn returns the integer count of <unit>s elapsed from <when> until now.
+// Example: since("days", LastSeen) — useful in filters/values to compare ages.
+func sinceFn() expr.Option {
+	return expr.Function(
+		"since",
+		func(params ...any) (any, error) {
+			return diffInUnits(params, true)
+		},
+		new(func(unit, when string) int),
+		new(func(unit string, when time.Time) int),
+	)
+}
+
+// untilFn returns the integer count of <unit>s from now until <when>.
+// Example: until("days", TrialEnd).
+func untilFn() expr.Option {
+	return expr.Function(
+		"until",
+		func(params ...any) (any, error) {
+			return diffInUnits(params, false)
+		},
+		new(func(unit, when string) int),
+		new(func(unit string, when time.Time) int),
+	)
+}
+
+// diffInUnits is the shared body for since/until. fromPast=true means
+// "from <when> to now" (since); false means "from now to <when>" (until).
+func diffInUnits(params []any, fromPast bool) (int, error) {
+	if len(params) != 2 {
+		return 0, fmt.Errorf("requires (unit, time)")
+	}
+	unit, ok := params[0].(string)
+	if !ok {
+		return 0, fmt.Errorf("first argument must be a string unit")
+	}
+
+	var t time.Time
+	switch v := params[1].(type) {
+	case time.Time:
+		t = v
+	case *time.Time:
+		if v == nil {
+			return 0, nil
+		}
+		t = *v
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, nil
+		}
+		parsed, err := parseFlexibleTime(s)
+		if err != nil {
+			return 0, fmt.Errorf("invalid time %q: %w", s, err)
+		}
+		t = parsed
+	default:
+		return 0, fmt.Errorf("second argument must be a time or string, got %T", params[1])
+	}
+
+	now := time.Now().UTC()
+	t = t.UTC()
+
+	from, to := t, now
+	if !fromPast {
+		from, to = now, t
+	}
+
+	// short forms are case-sensitive so "M" (months) doesn't collide with
+	// "m" (minutes); long forms are case-insensitive.
+	switch strings.TrimSpace(unit) {
+	case "s":
+		return int(to.Sub(from).Seconds()), nil
+	case "m":
+		return int(to.Sub(from).Minutes()), nil
+	case "h":
+		return int(to.Sub(from).Hours()), nil
+	case "d":
+		return int(to.Sub(from).Hours() / 24), nil
+	case "M":
+		return calendarMonthsBetween(from, to), nil
+	case "y":
+		return calendarYearsBetween(from, to), nil
+	}
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "second", "seconds":
+		return int(to.Sub(from).Seconds()), nil
+	case "minute", "minutes":
+		return int(to.Sub(from).Minutes()), nil
+	case "hour", "hours":
+		return int(to.Sub(from).Hours()), nil
+	case "day", "days":
+		return int(to.Sub(from).Hours() / 24), nil
+	case "month", "months":
+		return calendarMonthsBetween(from, to), nil
+	case "year", "years":
+		return calendarYearsBetween(from, to), nil
+	default:
+		return 0, fmt.Errorf("unknown unit %q (valid: seconds/s, minutes/m, hours/h, days/d, months/M, years/y)", unit)
+	}
+}
+
+// calendarMonthsBetween counts whole calendar months from a to b. Negative
+// when a is after b. Truncates toward zero on partial months (anniversary
+// semantics): from 2024-01-15 to 2024-02-14 = 0; to 2024-02-15 = 1.
+func calendarMonthsBetween(a, b time.Time) int {
+	months := (b.Year()-a.Year())*12 + int(b.Month()-a.Month())
+	switch {
+	case months > 0 && b.Day() < a.Day():
+		months--
+	case months < 0 && b.Day() > a.Day():
+		months++
+	}
+	return months
+}
+
+// calendarYearsBetween counts whole calendar years from a to b. Negative
+// when a is after b. Anniversary semantics: 2024-03-15 to 2025-03-14 = 0;
+// to 2025-03-15 = 1.
+func calendarYearsBetween(a, b time.Time) int {
+	years := b.Year() - a.Year()
+	switch {
+	case years > 0 && (b.Month() < a.Month() || (b.Month() == a.Month() && b.Day() < a.Day())):
+		years--
+	case years < 0 && (b.Month() > a.Month() || (b.Month() == a.Month() && b.Day() > a.Day())):
+		years++
+	}
+	return years
 }

@@ -195,6 +195,7 @@ func main() {
 		priceCmd,
 		categoryCmd,
 		audienceCmd,
+		templateCmd,
 		optionCmd,
 		accessTokenCmd,
 		dbCommand,
@@ -204,6 +205,7 @@ func main() {
 		importCmd,
 		migrateCmd,
 		stripeCmd,
+		sessionCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
@@ -326,6 +328,28 @@ func PrintResult[T any](cmd *cli.Command, v []T, options ...PrintResultOption) b
 			fmt.Println(err.Error())
 		}
 		fmt.Println(string(out))
+		return true
+
+	case "jsonl", "ndjson":
+		// one compact JSON object per line; --single-value collapses to a
+		// single line, matching `json` output.
+		if opts.SingleValue {
+			out, err := json.Marshal(v[0])
+			if err != nil {
+				fmt.Println(err.Error())
+				return true
+			}
+			fmt.Println(string(out))
+			return true
+		}
+		for _, item := range v {
+			out, err := json.Marshal(item)
+			if err != nil {
+				fmt.Println(err.Error())
+				continue
+			}
+			fmt.Println(string(out))
+		}
 		return true
 
 	case "table":

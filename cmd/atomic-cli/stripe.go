@@ -88,6 +88,7 @@ var (
 			stripeWebhookCmd,
 			stripeRepairCmd,
 			stripeCustomerCmd,
+			stripeInvoiceCmd,
 		},
 	}
 )

@@ -42,3 +42,4 @@ stripe-export-*/
 .DS_Store
 *.csv
 patches/**
+*.tar.gz

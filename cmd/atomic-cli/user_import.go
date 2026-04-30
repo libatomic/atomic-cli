@@ -104,8 +104,7 @@ var userImportCmd = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:  "subscribe_behavior",
-			Usage: "subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none",
-			Value: "subscribers_skip_paid",
+			Usage: "subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none (default: all_users)",
 		},
 		// trials
 		&cli.StringFlag{

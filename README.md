@@ -33,6 +33,7 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Migrate Command](#migrate-command)
   - [Stripe Management](#stripe-management)
   - [Session Diagnostics](#session-diagnostics)
+  - [Cluster Status](#cluster-status)
 - [Output Formats](#output-formats)
 - [Field Selection](#field-selection)
 - [File Input](#file-input)
@@ -110,7 +111,9 @@ You can store one or more named profiles in a credentials file and switch betwee
 | `client_id` | `--client_id` | OAuth2 client ID for client-credentials auth |
 | `client_secret` | `--client_secret` | OAuth2 client secret |
 | `instance_id` | `-i` / `--instance_id` | Default target instance — accepts a base58 ID **or** an instance name/domain |
-| `out_format` | `--out-format` / `-o` | Default output format (`table`, `json`, `yaml`, etc.) |
+| `out_format` | `--out-format` / `-o` | Default output format for every command. Valid values: `table` (default), `json`, `json-pretty`, `jsonl` (alias `ndjson`). Override per-command with `-o ...`. |
+| `stripe_key` | `--stripe-key` / `-k` (under `stripe` and `migrate`) | Default Stripe API key, used by `stripe ...` and `migrate substack` / `migrate map` |
+| `stripe_livemode` | `--live-mode` (under `stripe`) | Allow live Stripe keys for the profile (boolean) |
 | `db_source` | `--db_source` | Direct DB connection string (hidden flag; for internal use) |
 
 **TOML example** (`~/.atomic/credentials`):
@@ -121,11 +124,14 @@ host = "api.atomic.example.com"
 client_id = "your-client-id"
 client_secret = "your-client-secret"
 instance_id = "my.instance.example.com"
+out_format = "json-pretty"
 
 [staging]
 host = "api.staging.atomic.example.com"
 access_token = "at_XXXXXXXXXXXXXXXX"
 instance_id = "CZ6psMmMo4BBCGyE2NyR2"
+out_format = "table"
+stripe_key = "sk_test_XXXXXXXXXXXXXXXX"
 ```
 
 > **TOML strings must be quoted.** `host = foo.example.com` is a syntax error; use `host = "foo.example.com"`. If the file can't be parsed, the CLI prints a warning with the exact parser error and the line number so you can fix it.
@@ -138,11 +144,14 @@ default:
   client_id: your-client-id
   client_secret: your-client-secret
   instance_id: my.instance.example.com
+  out_format: json-pretty
 
 staging:
   host: api.staging.atomic.example.com
   access_token: "at_XXXXXXXXXXXXXXXX"
   instance_id: CZ6psMmMo4BBCGyE2NyR2
+  out_format: table
+  stripe_key: "sk_test_XXXXXXXXXXXXXXXX"
 ```
 
 **Usage:**
@@ -2611,6 +2620,36 @@ atomic-cli -i my-instance session cookie '<value>' --user --application
 Tolerated input forms: bare cookie value, `name=value` (the `name=` is stripped), URL-encoded values. JWT-shaped values are decoded as JWT (header + claims printed) instead of as a gorilla envelope.
 
 When the MAC doesn't verify, the gob decode is skipped (wrong key → garbage bytes); the report includes a `values_skipped` note explaining why so you can spot key mismatches up-front.
+
+### Cluster Status
+
+A live, top-style view of an atomic cluster. Polls the server's `/.well-known/ping?status=true` endpoint and renders a continuously-updating screen with one row per node and (optionally) one row per queue. Refreshes every 60 seconds by default — the same cadence as the server's heartbeat. Press **q** or **ctrl+c** to exit.
+
+```bash
+atomic-cli -p prod status
+atomic-cli -p prod status --nodes api,scheduler
+atomic-cli -p prod status --queues=false
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `--nodes <filter>` | Comma-separated services (`api`, `scheduler`, `event`, `message`, `work`) or `all`. Maps to the server's `?nodes=` query parameter. | `all` |
+| `--queues` | Render the queues table below the nodes table. | `true` |
+| `--interval <duration>` | Polling cadence. **Minimum is 60s** (the server's heartbeat interval); smaller values are silently clamped. | `60s` |
+
+**Keys while running:**
+
+- `q` / `ctrl+c` / `esc` — exit.
+- `r` — refresh now (resets the countdown).
+
+**Layout:**
+
+The TUI runs in alt-screen mode so it doesn't trash your scrollback. The header line shows the host, node filter, last-refresh timestamp, and a "next refresh in N s" countdown that ticks every second. State columns are color-coded: green `OK`, yellow `WARN`, red `ERROR`.
+
+- **Nodes table** — one row per node returned by the filter. Columns: `ID | HOSTNAME | IP | SERVICES | STATE | UPTIME | LAST HB | BUILD`.
+- **Queues table** — one row per dispatcher per node. Columns: `NODE | KIND | NAME | TYPE | STATE | W | IN-PROG | TOTAL | RATE | ERR% | AVG | LAST DISP | LAST HB | LAST ERROR`. `KIND` is `event`, `scheduler`, `msg`, or `work`. `W` = active worker count.
+
+A transient HTTP failure shows as a red banner above the tables; the previous data stays on screen so a single missed poll doesn't blank the view. Auth, when needed, is taken from the global `--access_token` (or the `PASSPORT_ACCESS_TOKEN` env var) and sent as a `Bearer` header.
 
 ## Output Formats
 

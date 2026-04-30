@@ -24,6 +24,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/hex"
@@ -38,6 +39,7 @@ import (
 	"time"
 
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/oauth"
 	"github.com/urfave/cli/v3"
 )
 
@@ -67,16 +69,20 @@ var (
 			"otherwise just the envelope is shown. Reads from stdin when no value is given.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
+				Name:  "session-key",
+				Usage: "raw session key (the same string atomic stores in instance.session_key); sha512'd to derive the hash + block keys. when --instance_id is set this defaults to the instance's session_key automatically",
+			},
+			&cli.StringFlag{
 				Name:  "hash-key",
-				Usage: "session hash key (base64 or raw); enables MAC verification when provided",
+				Usage: "explicit hash key (base64 or hex); overrides --session-key derivation",
 			},
 			&cli.StringFlag{
 				Name:  "block-key",
-				Usage: "session block key (base64 or raw); enables decryption of the value when provided",
+				Usage: "explicit block key (base64 or hex); overrides --session-key derivation",
 			},
 			&cli.StringFlag{
 				Name:  "name",
-				Usage: "cookie name used by the issuing app (only required for MAC verification); defaults to the instance's session_cookie when --instance_id is set, else _atomic_session",
+				Usage: "cookie name used for MAC verification; defaults to the instance's session_cookie when --instance_id is set, else _atomic_session",
 				Value: defaultSessionCookieName,
 			},
 		},
@@ -334,26 +340,39 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 		"mac_len_bytes":     env.macLen,
 	}
 
-	// optional MAC verification + decrypt
-	if hashKey := cmd.String("hash-key"); hashKey != "" {
-		hk, hkErr := loadKeyMaterial(hashKey)
-		if hkErr != nil {
-			out["hash_key_error"] = hkErr.Error()
-		} else {
-			out["mac_verified"] = env.verifyMAC(cookieName, hk)
-		}
+	// derive hash + block keys, in priority order:
+	//   1. explicit --hash-key / --block-key flags
+	//   2. --session-key flag (sha512 → 32+32)
+	//   3. instance's session_key (when -i is set)
+	//   4. atomic's compiled-in default keys
+	hashKey, blockKey, keySource := resolveSessionKeys(cmd)
+	if keySource != "" {
+		out["key_source"] = keySource
 	}
-	if blockKey := cmd.String("block-key"); blockKey != "" {
-		bk, bkErr := loadKeyMaterial(blockKey)
-		if bkErr != nil {
-			out["block_key_error"] = bkErr.Error()
-		} else if plaintext, perr := env.decryptValue(bk); perr != nil {
-			out["decrypt_error"] = perr.Error()
+
+	macOK := false
+	if hashKey != nil {
+		macOK = env.verifyMAC(cookieName, hashKey)
+		out["mac_verified"] = macOK
+	}
+	if blockKey != nil {
+		// only attempt to decrypt + decode when the MAC verifies — otherwise
+		// the keys are wrong (or the cookie was issued by a different
+		// instance) and the gob "decode" would just be garbled bytes.
+		if !macOK && hashKey != nil {
+			out["values_skipped"] = "MAC did not verify; the session key in use does not match the issuer of this cookie"
 		} else {
-			out["value_plaintext_hex"] = fmt.Sprintf("%x", plaintext)
-			// best-effort: try gob then JSON to render a structured payload
-			if v, ok := tryDeserialize(plaintext); ok {
-				out["value"] = v
+			plaintext, perr := env.decryptValue(blockKey)
+			if perr != nil {
+				out["decrypt_error"] = perr.Error()
+			} else {
+				values, derr := decodeSessionValues(plaintext)
+				if derr != nil {
+					out["decode_error"] = derr.Error()
+					out["value_plaintext_hex"] = fmt.Sprintf("%x", plaintext)
+				} else {
+					out["values"] = renderSessionValues(values)
+				}
 			}
 		}
 	}
@@ -364,6 +383,104 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	fmt.Println(string(pretty))
 	return nil
+}
+
+// resolveSessionKeys produces the (hash, block) key pair used to decode an
+// atomic session cookie, mirroring the way oauth/cookiestore.go resolves
+// them at runtime: explicit flags > --session-key string > instance's
+// SessionKeyVal > the compiled-in defaults. The returned source string is
+// included in the report so callers can tell which path was taken.
+func resolveSessionKeys(cmd *cli.Command) (hash, block []byte, source string) {
+	if hk := cmd.String("hash-key"); hk != "" {
+		if k, err := loadKeyMaterial(hk); err == nil {
+			hash = k
+			source = "explicit --hash-key/--block-key"
+		}
+	}
+	if bk := cmd.String("block-key"); bk != "" {
+		if k, err := loadKeyMaterial(bk); err == nil {
+			block = k
+			source = "explicit --hash-key/--block-key"
+		}
+	}
+	if hash != nil && block != nil {
+		return
+	}
+
+	deriveFrom := func(key, src string) {
+		sha := sha512.Sum512([]byte(key))
+		if hash == nil {
+			hash = sha[0:32]
+		}
+		if block == nil {
+			block = sha[32:64]
+		}
+		if source == "" {
+			source = src
+		}
+	}
+
+	if sk := cmd.String("session-key"); sk != "" {
+		deriveFrom(sk, "--session-key")
+	}
+	if (hash == nil || block == nil) && inst != nil && inst.SessionKeyVal != nil && *inst.SessionKeyVal != "" {
+		deriveFrom(*inst.SessionKeyVal, fmt.Sprintf("instance %s session_key", inst.UUID))
+	}
+	if hash == nil || block == nil {
+		// Final fallback mirrors the runtime path in pkg/oauth/cookiestore.go:
+		// the instance's SessionKey() returns atomic.DefaultSessionKey when
+		// SessionKeyVal is nil, and the cookie store sha512s that string to
+		// derive both keys. So a cookie issued for an instance with no
+		// configured session_key is decodable with sha512(DefaultSessionKey).
+		deriveFrom(atomic.DefaultSessionKey, "atomic.DefaultSessionKey")
+	}
+	return
+}
+
+// decodeSessionValues gob-decodes the plaintext payload of an atomic
+// session cookie. gorilla/sessions stores Session.Values as
+// map[interface{}]interface{}, so the gob stream produced by the
+// CookieStore's GobEncoder serializes that shape; the registered types
+// below cover the values atomic puts in (strings + int64 timestamps +
+// oauth.Permissions for scope).
+func decodeSessionValues(plaintext []byte) (map[any]any, error) {
+	out := make(map[any]any)
+	dec := gob.NewDecoder(bytes.NewReader(plaintext))
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// renderSessionValues turns the map[any]any from gob into a friendlier
+// shape: string keys, with timestamp claims rendered as RFC3339 alongside
+// the original unix-seconds value.
+func renderSessionValues(in map[any]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		key := fmt.Sprintf("%v", k)
+		out[key] = v
+		// auto-render the well-known timestamp keys for readability
+		switch key {
+		case "created_at", "expires_at":
+			if ts, ok := toUnix(v); ok {
+				out[key+"_human"] = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	return out
+}
+
+func toUnix(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case float64:
+		return int64(x), true
+	}
+	return 0, false
 }
 
 // gorillaEnvelope captures the parsed shape of a gorilla/sessions cookie:
@@ -496,24 +613,14 @@ func loadKeyMaterial(s string) ([]byte, error) {
 	return nil, fmt.Errorf("could not decode key (need base64/hex/raw bytes, got %d chars)", len(s))
 }
 
-// tryDeserialize tries to interpret a decrypted session payload. gorilla
-// defaults to gob-encoded map[string]interface{}; some apps use JSON. We
-// attempt JSON first (simpler / safer to detect), then gob.
-func tryDeserialize(b []byte) (any, bool) {
-	var v any
-	if err := json.Unmarshal(b, &v); err == nil {
-		return v, true
-	}
-	var gv map[any]any
-	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&gv); err == nil {
-		out := make(map[string]any, len(gv))
-		for k, val := range gv {
-			out[fmt.Sprintf("%v", k)] = val
-		}
-		return out, true
-	}
-	return nil, false
-}
+// note: gorilla/sessions encodes Session.Values (map[interface{}]interface{})
+// with gob, so every concrete type stored in the map must be gob-registered
+// somewhere in the import graph before decode. Atomic's pkg/oauth init()
+// already registers oauth.Permissions (under its legacy internal/pkg path);
+// importing the package pulls in that registration. If new types ever land
+// in Session.Values, register them in pkg/oauth alongside Permissions so
+// both the server and this decoder pick them up.
+var _ = oauth.Permissions{}
 
 // renderTextReport is the original plain-text layout, retained when the
 // caller passes --markdown=false.

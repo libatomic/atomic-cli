@@ -32,6 +32,7 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Import Command](#import-command)
   - [Migrate Command](#migrate-command)
   - [Stripe Management](#stripe-management)
+  - [Session Diagnostics](#session-diagnostics)
 - [Output Formats](#output-formats)
 - [Field Selection](#field-selection)
 - [File Input](#file-input)
@@ -2442,6 +2443,134 @@ atomic-cli -i inst_abc stripe customer cleanup -k sk_test_xxx \
 atomic-cli -i inst_abc stripe customer cleanup -k sk_live_xxx --live-mode active_no_payment.csv
 ```
 
+#### Invoice
+
+```
+atomic-cli stripe invoice [list|get] [options]
+```
+
+`stripe invoice list` walks `stripe.invoices.list` and emits a row per match. Defaults to `--status=open` so the typical use case — "find unpaid invoices, including those tied to canceled subscriptions" — works with no flags. The `--subscription` filter still works for canceled subs (Stripe keeps the link).
+
+| Flag | Description | Default |
+|---|---|---|
+| `--status <s>` | Stripe invoice status (`draft`, `open`, `paid`, `void`, `uncollectible`). | `open` |
+| `--past-due` | Only invoices whose `due_date` is in the past. Forces `--status=open`. Note: `due_date` is null on `charge_automatically` invoices, so use `--collection-disabled` / `--failed` for those. | `false` |
+| `--failed` | Only invoices whose latest payment attempt actually failed (`attempted=true`, `attempt_count >= 1`, plus a real failure code on the `payment_intent.last_payment_error` or `charge.failure_code`). Implies `--attempts 1`. | `false` |
+| `--collection-disabled` | Only invoices with no `next_payment_attempt` scheduled (Stripe gave up retrying). | `false` |
+| `--attempts <N>` | Keep only invoices whose `attempt_count >= N`. | `0` |
+| `--customer <id>` | Filter to a single customer. | |
+| `--subscription <id>` | Filter to a single subscription (works for canceled subs too). | |
+| `--collection-method <m>` | `charge_automatically` or `send_invoice`. | |
+| `--created '>= now-30d'` | Server-side range filter on `invoice.created`. Repeatable to set both bounds. Same expression grammar as `migrate substack --created`. | |
+| `--due '< 2025-01-01'` | Server-side range filter on `invoice.due_date` (excludes invoices with no due_date). | |
+| `--created-before <T>` / `--created-after <T>` | Shorthand for `--created '< T'` / `--created '>= T'`. | |
+| `--due-before <T>` / `--due-after <T>` | Same shorthand for `--due`. | |
+| `--limit <N>` | Stop after N matching invoices (client-side). `0` = no limit. | `0` |
+| `--out <path>` | Write rows to a file. Format picked from extension: `.csv`, `.json`, `.jsonl`/`.ndjson`. | _(stdout)_ |
+
+Time arguments accept RFC3339, `YYYY-MM-DD`, unix seconds, or `now+/-<duration>` (`now-30d`, `now+1h`).
+
+Output columns include the request fields plus collection metadata: `attempted`, `attempt_count`, `next_payment_attempt`, `failure_code`, `failure_decline_code`, `failure_message`. The `failure_*` fields prefer `PaymentIntent.LastPaymentError` (modern flow) and fall back to `Charge.FailureCode` / `Charge.FailureMessage` (legacy invoices).
+
+A live spinner on stderr shows scanned/kept counts during iteration; `-v` logs each kept invoice's id/status/amount/failure to stderr too. Both go to stderr so they don't pollute `-o jsonl` output.
+
+```bash
+# every unpaid invoice (incl. those on canceled subs)
+atomic-cli -i inst stripe invoice list -k sk_xxx
+
+# invoices stripe has given up on, written to CSV
+atomic-cli -i inst stripe invoice list -k sk_xxx --failed -O failed.csv
+
+# overdue invoices for one customer in the last 90 days
+atomic-cli -i inst stripe invoice list -k sk_xxx --past-due \
+  --customer cus_X --created-after now-90d
+
+# filter to a known sub even if it's canceled
+atomic-cli -i inst stripe invoice list -k sk_xxx --subscription sub_X
+```
+
+`stripe invoice get <invoice_id>` fetches one invoice and prints the full Stripe object as pretty JSON (subscription + customer expanded). The output bypasses the table renderer because the object is too nested to flatten cleanly.
+
+### Session Diagnostics
+
+Two subcommands under `atomic-cli session` for inspecting browser/auth state — useful when triaging customer reports of "the site is broken" or "I can't log in":
+
+#### session decode
+
+Reads a HAR file (Chrome DevTools → Network → "Save all as HAR") and produces a Markdown report with client info, the atomic session cookie decoded, a per-request summary classified by surface (oauth / api / app / other), and a per-request detail block with bodies and diagnostic hints.
+
+```bash
+atomic-cli -i my-instance session decode browser-trace.har > report.md
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `--cookie-name <name>` | Atomic session cookie name. Auto-detected from the instance when `-i` is set, else `_atomic_session`. | `_atomic_session` |
+| `--host <host>` | Filter requests to this host. Auto-detected from the cookie's domain or the global `--host` when not set. | _(auto)_ |
+| `--all` | Disable the host filter so traffic to other hosts (CDNs, third-party widgets, telemetry) is included too. | `false` |
+| `--max-body <n>` | Max bytes of request/response body to include per entry. | `600` |
+| `--markdown` | Render as Markdown. Pass `--markdown=false` for the plain-text format. | `true` |
+| `--out <path>` | Write the report to a file instead of stdout. | _(stdout)_ |
+
+Report sections:
+
+- **HAR file** — version, creator, browser metadata.
+- **Client** — most-common User-Agent (with a count if multiple are seen), Accept-Language, Referer, Origin, server IPs, time range, hosts touched.
+- **Session cookie: <name>** — Set-Cookie attributes (domain, path, secure, expires) and a JWT decode of the value when JWT-shaped. For gorilla/sessions cookies (atomic's default) it surfaces the envelope; use `session cookie` for the full decode.
+- **Request summary** — one row per request with columns `# | time | host | type | endpoint | status | backend method`. Type values:
+  - `oauth` — `/oauth/*`, `/.well-known/*`, JWKS, OIDC discovery
+  - `api` — atomic REST surface (`/api/<v>/...`)
+  - `app` — `/member`, `/admin`, `/auth/*`, `/login`, `/logout` (HTML / app shell)
+  - `other` — third-party assets, telemetry
+  The **backend method** column maps `oauth` calls to `oauth.Authorize` / `oauth.Token` / etc., and `api` calls to `atomic.<Resource><Verb>` derived from path + HTTP method (e.g. `GET /api/1.0.0/instances/abc` → `atomic.InstanceGet`, `POST /api/1.0.0/users` → `atomic.UserCreate`).
+- **Request detail** — drills into every entry in the summary. Per request: heading shows `METHOD /path → backend.Method`, then a meta table (time, host, type, oauth/atomic method, status, duration), an optional query-parameter table, request body (pretty JSON when applicable), response body (pretty JSON when applicable), and a one-line hint for known failure modes.
+- **Summary** — request counts by status class (`2xx`, `3xx`, `4xx`, `5xx`, `0` for no-response).
+- **Diagnosis** — plain-language hints derived from the counts (server error, no response / CORS, client error, no issues visible).
+
+#### session cookie
+
+Decodes an atomic session cookie value (gorilla/sessions format). When `-i` is set the instance's `session_key` is used automatically to derive both the hash and block keys, so the inner `Session.Values` map is fully decoded:
+
+```bash
+atomic-cli -i my-instance session cookie '<cookie-value>'
+echo '<cookie-value>' | atomic-cli -i my-instance session cookie
+```
+
+Output (when keys verify):
+
+```json
+{
+  "format": "gorilla/sessions",
+  "cookie_name": "_atomic_session",
+  "timestamp": 1777496240,
+  "timestamp_human": "2026-04-29T20:57:20Z",
+  "key_source": "instance CZg... session_key",
+  "mac_verified": true,
+  "values": {
+    "audience": "passport.example.com",
+    "client_id": "KSgqXAh...",
+    "subject": "user_abc",
+    "scope": ["openid", "profile", "..."],
+    "domain": "passport.example.com",
+    "created_at": 1777496240,
+    "created_at_human": "2026-04-29T20:57:20Z",
+    "expires_at": 1809053840,
+    "expires_at_human": "2027-04-30T02:57:20Z"
+  }
+}
+```
+
+| Flag | Description |
+|---|---|
+| `--session-key <k>` | Raw session key (sha512 → 32 + 32). Defaults to the instance's `session_key` when `-i` is set, falling back to `atomic.DefaultSessionKey`. |
+| `--hash-key <k>` | Explicit HMAC key (base64 / hex / raw bytes). Overrides the derivation. |
+| `--block-key <k>` | Explicit AES-CTR key (same accepted forms). Overrides the derivation. |
+| `--name <name>` | Cookie name used for MAC verification. Defaults to the instance's `session_cookie` when `-i` is set, else `_atomic_session`. |
+
+Tolerated input forms: bare cookie value, `name=value` (the `name=` is stripped), URL-encoded values. JWT-shaped values are decoded as JWT (header + claims printed) instead of as a gorilla envelope.
+
+When the MAC doesn't verify, the gob decode is skipped (wrong key → garbage bytes); the report includes a `values_skipped` note explaining why so you can spot key mismatches up-front.
+
 ## Output Formats
 
 The CLI supports multiple output formats controlled by the `--out-format` option:
@@ -2465,6 +2594,14 @@ Outputs formatted, indented JSON for readability.
 
 ```bash
 atomic-cli instance list --out-format json-pretty
+```
+
+### JSON Lines / NDJSON
+Outputs one compact JSON object per line — pipes cleanly to `jq -c`, `gron`, or row-streaming tools without an array wrapper. `jsonl` and `ndjson` are accepted as aliases.
+
+```bash
+atomic-cli stripe invoice list --failed -o jsonl > failed.jsonl
+atomic-cli stripe invoice list --past-due -o jsonl | jq -c 'select(.amount_due | tonumber > 1000)'
 ```
 
 ## Field Selection

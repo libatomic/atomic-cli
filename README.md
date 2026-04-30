@@ -2556,9 +2556,32 @@ Output (when keys verify):
     "created_at_human": "2026-04-29T20:57:20Z",
     "expires_at": 1809053840,
     "expires_at_human": "2027-04-30T02:57:20Z"
+  },
+  "user": {
+    "id": "Ca3...",
+    "login": "rob@modelrocket.io",
+    "subject": "9b8e...uuid",
+    "name": "Rob Rodriguez",
+    "email": "rob@modelrocket.io",
+    "roles": ["admin", "member"]
+  },
+  "application": {
+    "id": "Cb1...",
+    "name": "Passport Web",
+    "client_id": "KSgqXAh...",
+    "description": "Customer-facing web app",
+    "permissions": ["openid", "profile", "..."],
+    "allowed_grants": ["authorization_code", "refresh_token"]
   }
 }
 ```
+
+When `-i` is set the cli uses the loaded backend client to look up:
+
+- **`user`** — the user behind the session (resolved from the `subject` claim, falling back to `login`). Surfaces the user's id, login, subject, name, email, and roles.
+- **`application`** — the OAuth client (atomic Application) that issued the cookie, looked up by `client_id`. Surfaces the app's id, name, client_id, description, permissions, and allowed grant types.
+
+Both lookups are best-effort — failures are silent so the rest of the report still renders.
 
 | Flag | Description |
 |---|---|

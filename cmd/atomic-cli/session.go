@@ -334,7 +334,6 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 		"cookie_name":       cookieName,
 		"timestamp":         env.timestamp,
 		"timestamp_human":   env.timestampHuman,
-		"value_base64":      env.valueB64,
 		"value_decoded_len": env.valueLen,
 		"mac_base64":        env.macB64,
 		"mac_len_bytes":     env.macLen,
@@ -371,7 +370,20 @@ func sessionCookieAction(ctx context.Context, cmd *cli.Command) error {
 					out["decode_error"] = derr.Error()
 					out["value_plaintext_hex"] = fmt.Sprintf("%x", plaintext)
 				} else {
-					out["values"] = renderSessionValues(values)
+					rendered := renderSessionValues(values)
+					out["values"] = rendered
+					// when -i is set, we have a backend client and the
+					// instance UUID; resolve subject → user and
+					// client_id → application so the report shows the
+					// real principal/app rather than just opaque ids.
+					if inst != nil && backend != nil {
+						if u := lookupSessionUser(ctx, rendered); u != nil {
+							out["user"] = u
+						}
+						if app := lookupSessionApplication(ctx, rendered); app != nil {
+							out["application"] = app
+						}
+					}
 				}
 			}
 		}
@@ -467,6 +479,80 @@ func renderSessionValues(in map[any]any) map[string]any {
 				out[key+"_human"] = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 			}
 		}
+	}
+	return out
+}
+
+// lookupSessionUser resolves the user behind a decoded session by its
+// stored "subject" (a UUID-string the cookie carries through Principal.
+// Subject()). Falls back to the "login" claim if a subject lookup fails.
+// Returns nil when neither path produces a user — never an error, since
+// failures here are diagnostic-only and shouldn't block the report.
+func lookupSessionUser(ctx context.Context, values map[string]any) map[string]any {
+	subject, _ := values["subject"].(string)
+	login, _ := values["login"].(string)
+
+	var u *atomic.User
+	if subject != "" {
+		if id, err := atomic.ParseID(subject); err == nil {
+			u, _ = backend.UserGet(ctx, &atomic.UserGetInput{
+				InstanceID: inst.UUID,
+				Subject:    &id,
+			})
+		}
+	}
+	if u == nil && login != "" {
+		u, _ = backend.UserGet(ctx, &atomic.UserGetInput{
+			InstanceID: inst.UUID,
+			Login:      &login,
+		})
+	}
+	if u == nil {
+		return nil
+	}
+
+	out := map[string]any{
+		"id":      u.UUID.String(),
+		"login":   u.LoginVal,
+		"subject": u.SubjectVal.UUID().String(),
+		"roles":   u.RolesVal,
+	}
+	if u.ProfileVal != nil {
+		if u.ProfileVal.Name != "" {
+			out["name"] = u.ProfileVal.Name
+		}
+		if u.ProfileVal.EmailClaim != nil && u.ProfileVal.EmailClaim.Email != nil {
+			out["email"] = *u.ProfileVal.EmailClaim.Email
+		}
+	}
+	return out
+}
+
+// lookupSessionApplication resolves the OAuth client (atomic Application)
+// that issued the session by its client_id. Returns nil on any miss.
+func lookupSessionApplication(ctx context.Context, values map[string]any) map[string]any {
+	clientID, _ := values["client_id"].(string)
+	if clientID == "" {
+		return nil
+	}
+	app, err := backend.ApplicationGet(ctx, &atomic.ApplicationGetInput{
+		InstanceID: &inst.UUID,
+		ClientID:   &clientID,
+	})
+	if err != nil || app == nil {
+		return nil
+	}
+	out := map[string]any{
+		"id":          app.UUID.String(),
+		"name":        app.Name,
+		"client_id":   app.ClientIDVal,
+		"description": app.Description,
+	}
+	if len(app.PermissionsVal) > 0 {
+		out["permissions"] = app.PermissionsVal
+	}
+	if len(app.Grants) > 0 {
+		out["allowed_grants"] = app.Grants
 	}
 	return out
 }

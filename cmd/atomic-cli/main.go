@@ -207,6 +207,7 @@ func main() {
 		stripeCmd,
 		sessionCmd,
 		statusCmd,
+		mcpCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

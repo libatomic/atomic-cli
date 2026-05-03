@@ -1,6 +1,6 @@
 /*
  * This file is part of the Passport Atomic Stack (https://github.com/libatomic/atomic).
- * Copyright (c) 2026 Passport, LLC.
+ * Copyright (c) 2026 Passport, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -70,7 +70,7 @@ var (
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
 						Name:  "force",
-						Usage: "Force the update, overrides the protected flag (requires partner role)",
+						Usage: "Force the update, overrides the protected flag",
 					},
 					&cli.BoolFlag{
 						Name:  "file",
@@ -98,7 +98,7 @@ var (
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
 						Name:  "force",
-						Usage: "Force the delete, overrides the protected flag (requires partner role)",
+						Usage: "Force the delete, overrides the protected flag",
 					},
 				},
 			},

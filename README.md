@@ -24,7 +24,6 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Category Management](#category-management)
   - [Audience Management](#audience-management)
   - [Access Token Management](#access-token-management)
-  - [Partner Management](#partner-management)
   - [Asset Management](#asset-management)
   - [Job Management](#job-management)
   - [Option Management](#option-management)
@@ -34,6 +33,7 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Stripe Management](#stripe-management)
   - [Session Diagnostics](#session-diagnostics)
   - [Cluster Status](#cluster-status)
+  - [MCP Server](#mcp-server)
 - [Output Formats](#output-formats)
 - [Field Selection](#field-selection)
 - [File Input](#file-input)
@@ -882,7 +882,6 @@ atomic-cli access-token create [options]
 |------------------------|----------------------------------------------|---------|
 | `--application_id` | Application ID to associate with the token | |
 | `--user_id` | User ID to associate with the token | |
-| `--partner_id` | Partner ID to associate with the token | |
 | `--scope` | Token scope | `openid, profile` |
 | `--type` | Token type | `access` |
 | `--expires_at` | Token expiration timestamp | |
@@ -916,108 +915,6 @@ atomic-cli access-token revoke <token_id> [options]
 
 **Options:**
 - `--delete` - Delete the token entirely instead of just revoking
-
-### Partner Management
-
-Manage partners with the `partner` (or `partners`) command.
-
-#### Create Partner
-
-```bash
-atomic-cli partner create <name> [options]
-```
-
-**Options:**
-- `--name` - Set the partner name
-- `--description` - Set the partner description
-- `--support_contact` - Set the partner support contact
-- `--metadata` - Set partner metadata from a JSON file
-- `--roles` - Set the partner roles (default: `admin`)
-- `--permissions` - Set the partner permissions
-- `--file` - Read partner input from a JSON file
-
-**Example:**
-```bash
-atomic-cli partner create "My Partner" \
-  --description "Integration partner" \
-  --support_contact "support@partner.com"
-```
-
-#### Get Partner
-
-```bash
-atomic-cli partner get <partner_id> [options]
-```
-
-**Options:**
-- `--credentials` / `-c` - Include credentials (default: true)
-- `--tokens` / `-t` - Include tokens (default: true)
-
-#### Update Partner
-
-```bash
-atomic-cli partner update <partner_id> [options]
-```
-
-**Options:** Same as create.
-
-#### List Partners
-
-```bash
-atomic-cli partner list
-```
-
-#### Delete Partner
-
-```bash
-atomic-cli partner delete <partner_id>
-```
-
-#### Partner Credentials
-
-Manage partner credentials with `partner credential` (or `credentials`, `creds`).
-
-Requires `--partner_id` on the parent command.
-
-```bash
-# Create a credential
-atomic-cli partner credential create --partner_id <id> [options]
-
-# Get a credential
-atomic-cli partner credential get <client_id> --partner_id <id>
-
-# Revoke a credential
-atomic-cli partner credential revoke <client_id> --partner_id <id>
-```
-
-**Create options:**
-- `--permissions` - Set credential permissions
-- `--roles` - Set credential roles
-- `--instance_id` - Scope to an instance
-- `--expires_at` - Set expiration timestamp
-
-#### Partner Tokens
-
-Manage partner tokens with `partner token`.
-
-Requires `--partner_id` on the parent command.
-
-```bash
-# Create a token
-atomic-cli partner token create --partner_id <id> [options]
-
-# Get a token
-atomic-cli partner token get <token_id> --partner_id <id>
-
-# Revoke a token
-atomic-cli partner token revoke <token_id> --partner_id <id>
-```
-
-**Create options:**
-- `--instance_id` - Scope to an instance
-- `--expires_at` - Set expiration timestamp
-- `--permissions` - Set token permissions
-- `--roles` - Set token roles
 
 ### Asset Management
 
@@ -1173,7 +1070,7 @@ atomic-cli option create <name> <value> [options]
 
 **Options:**
 - `--instance_id` - The instance id
-- `--force` - Force update even if protected (requires partner role)
+- `--force` - Force update even if protected
 - `--file` - Read full input (including name and value) from JSON file
 - `--validate` - Validate option value only
 
@@ -1194,7 +1091,7 @@ atomic-cli option delete <name> [options]
 
 **Options:**
 - `--instance_id` - The instance id
-- `--force` - Force delete even if protected (requires partner role)
+- `--force` - Force delete even if protected
 
 **Example:**
 ```bash
@@ -2650,6 +2547,158 @@ The TUI runs in alt-screen mode so it doesn't trash your scrollback. The header 
 - **Queues table** — one row per dispatcher per node. Columns: `NODE | KIND | NAME | TYPE | STATE | W | IN-PROG | TOTAL | RATE | ERR% | AVG | LAST DISP | LAST HB | LAST ERROR`. `KIND` is `event`, `scheduler`, `msg`, or `work`. `W` = active worker count.
 
 A transient HTTP failure shows as a red banner above the tables; the previous data stays on screen so a single missed poll doesn't blank the view. Auth, when needed, is taken from the global `--access_token` (or the `PASSPORT_ACCESS_TOKEN` env var) and sent as a `Bearer` header.
+
+### MCP Server
+
+`atomic-cli mcp` runs the CLI as a [Model Context Protocol](https://modelcontextprotocol.io/) server, exposing every CLI subcommand as a tool that an MCP-aware host (Claude Desktop, Claude Code, etc.) can call. Each tool dispatch fork-execs a fresh `atomic-cli` subprocess, so no state leaks between calls.
+
+```bash
+# Read-only mode (the default), bound to a specific instance
+atomic-cli -p prod -i <instance> mcp
+
+# Allow write/destructive tools too — the host should still confirm each call
+atomic-cli -p prod -i <instance> mcp --allow-write
+
+# HTTP transport (for remote clients or sharing across processes)
+atomic-cli -p prod -i <instance> mcp --transport http --listen 127.0.0.1:8765
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `--transport` | `stdio` or `http`. Stdio is what Claude Desktop / Claude Code use locally. | `stdio` |
+| `--listen <addr>` | Bind address for the HTTP transport. | `127.0.0.1:8765` |
+| `--allow-write` | Register mutating tools (create / update / delete / cancel / import / migrate / …). Off by default. | `false` |
+| `--tool-prefix <s>` | Prefix added to every tool name (useful when you wire multiple instances into the same host). | (empty) |
+
+Auth and the bound instance come from the global flags / credentials profile / env vars used to launch `atomic-cli mcp`. They're captured at server startup and forwarded to every spawned subprocess. **Use `--client_id` / `--client_secret`** for long-lived sessions: `WithClientCredentials` auto-refreshes tokens, while a static `--access_token` will eventually expire.
+
+#### Tool naming and read-only classification
+
+Each leaf command becomes a tool whose name is the underscore-joined command path: `audience list` → `audience_list`, `stripe customer cleanup` → `stripe_customer_cleanup`. (Underscores rather than dots because Claude Desktop's frontend rejects `.` in tool names — the spec allows it but Desktop's stricter validator does not.) Tools are auto-classified:
+
+- **Read-only** (`readOnlyHint: true`) — leaf verb matches `list|get|search|show|describe|tail|wait|status|view|inspect|count`. Always registered.
+- **Destructive** (`destructiveHint: true`) — leaf verb matches `delete|cancel|drop|purge|reset|destroy|remove`. Only registered with `--allow-write`.
+- **Other writes** (create / update / import / migrate / restart / …) — registered with `--allow-write`, but not flagged destructive.
+
+Override per command via `cli.Command.Metadata`: `"mcp:readOnly"`, `"mcp:destructive"`, or `"mcp:skip"` (boolean). The `status` TUI and the `mcp` command itself are always skipped.
+
+#### Wiring `atomic-cli mcp` to Claude Desktop
+
+Claude Desktop reads its MCP server list from a JSON config file:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+Add an entry under `mcpServers` (create the file if it doesn't exist):
+
+```json
+{
+  "mcpServers": {
+    "atomic": {
+      "command": "/usr/local/bin/atomic-cli",
+      "args": ["-p", "prod", "-i", "<your-instance-id-or-name>", "mcp"]
+    }
+  }
+}
+```
+
+Use the absolute path to the binary — Claude Desktop doesn't inherit your shell's `$PATH`. Restart Claude Desktop after editing the file; the `atomic` tools should appear in the tool picker. Add `"--allow-write"` to `args` if you want write tools available (Claude will still prompt before each mutating call).
+
+To pass auth explicitly instead of relying on a credentials profile:
+
+```json
+{
+  "mcpServers": {
+    "atomic": {
+      "command": "/usr/local/bin/atomic-cli",
+      "args": [
+        "-i", "<your-instance>",
+        "--client_id", "...",
+        "--client_secret", "...",
+        "--host", "api.example.com",
+        "mcp"
+      ]
+    }
+  }
+}
+```
+
+You can also lift secrets out of `args` into an `env` block and reference them with the `PASSPORT_*` env vars the CLI already honors:
+
+```json
+{
+  "mcpServers": {
+    "atomic": {
+      "command": "/usr/local/bin/atomic-cli",
+      "args": ["-i", "<your-instance>", "mcp"],
+      "env": {
+        "PASSPORT_CLIENT_ID": "...",
+        "PASSPORT_CLIENT_SECRET": "...",
+        "PASSPORT_API_HOST": "api.example.com"
+      }
+    }
+  }
+}
+```
+
+#### Wiring to Claude Code
+
+```bash
+claude mcp add atomic -- /usr/local/bin/atomic-cli -p prod -i <instance> mcp
+```
+
+For HTTP transport (e.g. shared across multiple Claude Code sessions):
+
+```bash
+atomic-cli -p prod -i <instance> mcp --transport http --listen 127.0.0.1:8765 &
+claude mcp add --transport http atomic http://127.0.0.1:8765
+```
+
+#### Multiple instances / profiles
+
+Each `claude mcp add <name>` call registers a separate server, so you can stack as many as you want — one per instance, environment, or profile:
+
+```bash
+claude mcp add atomic-ankler-dev  -- /usr/local/bin/atomic-cli -p ankler_dev  -i <instance> mcp
+claude mcp add atomic-ankler-prod -- /usr/local/bin/atomic-cli -p ankler_prod -i <instance> mcp
+claude mcp add atomic-stratechery -- /usr/local/bin/atomic-cli -p prod -i stratechery mcp
+```
+
+The same pattern applies in Claude Desktop — add multiple keys under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "atomic-ankler-dev": {
+      "command": "/usr/local/bin/atomic-cli",
+      "args": ["-p", "ankler_dev", "-i", "<instance>", "mcp"]
+    },
+    "atomic-ankler-prod": {
+      "command": "/usr/local/bin/atomic-cli",
+      "args": ["-p", "ankler_prod", "-i", "<instance>", "mcp"]
+    }
+  }
+}
+```
+
+Both hosts namespace tools by server name, so `audience_list` from `atomic-ankler-dev` and `atomic-ankler-prod` don't collide — they show up as distinct tools and the model picks the right one based on the question. Each server is its own subprocess, started lazily on first tool call and held open for the session (≈ 30 MB resident per idle server). `--tool-prefix` is generally not needed given that namespacing.
+
+To switch a single server's instance, restart it with a different `-i`. Mid-session instance switching isn't supported today.
+
+#### Example queries
+
+Once wired up, the host can answer questions by composing read-only tool calls. For instance:
+
+- "When did the last `distribution:publish` job run?" → `job_list` with `{ "type": "distribution:publish", "status": "success", "order_by": "completed_at desc", "limit": 1 }`.
+- "How big is the `<name>` audience?" → `audience_list` to find the ID, then `audience_get` to read `member_count`.
+
+#### Notes & limitations
+
+- **Instance is bound at server start.** To switch instances, restart with a different `-i`.
+- **File-input commands** (`audience import <file>`, `job get --logs`, etc.) work, but the file path must be reachable from the process running the MCP server.
+- **`--out-format` is forced to `json`** for tool dispatches; the dispatcher attempts to parse stdout as JSON for structured content and falls back to a text block for non-JSON output (e.g. progress lines from import commands).
+- **Subprocess errors** (non-zero exit, panic, network failure) are returned as `isError: true` MCP results with the child's stderr included — the server itself stays alive across failed calls.
+- **Secrets are redacted** in the server's own log line; `--client_id`, `--client_secret`, and `--access_token` are forwarded to subprocess calls but never echoed at full value to stderr.
 
 ## Output Formats
 

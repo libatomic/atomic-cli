@@ -1,6 +1,6 @@
 /*
  * This file is part of the Passport Atomic Stack (https://github.com/libatomic/atomic).
- * Copyright (c) 2026 Passport, LLC.
+ * Copyright (c) 2026 Passport, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,10 +46,6 @@ var (
 					&cli.StringFlag{
 						Name:  "user_id",
 						Usage: "specify the user id",
-					},
-					&cli.StringFlag{
-						Name:  "partner_id",
-						Usage: "specify the partner id",
 					},
 					&cli.StringSliceFlag{
 						Name:  "scope",
@@ -223,8 +219,6 @@ func accessTokenPrint(cmd *cli.Command, tokens []*atomic.AccessToken) {
 				return token.UserID.String()
 			} else if token.ApplicationID.Valid() {
 				return token.ApplicationID.String()
-			} else if token.PartnerID.Valid() {
-				return token.PartnerID.String()
 			}
 			return ""
 		}),
@@ -235,8 +229,6 @@ func accessTokenPrint(cmd *cli.Command, tokens []*atomic.AccessToken) {
 				t = "user"
 			} else if token.ApplicationID.Valid() {
 				t = "application"
-			} else if token.PartnerID.Valid() {
-				t = "partner"
 			}
 			return fmt.Sprintf("%s (%s)", token.Type, t)
 		}),

@@ -1,6 +1,6 @@
 /*
  * This file is part of the Passport Atomic Stack (https://github.com/libatomic/atomic).
- * Copyright (c) 2026 Passport, LLC.
+ * Copyright (c) 2026 Passport, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -78,8 +78,10 @@ var (
 	// matches `<name>` and `[name]` tokens in ArgsUsage, with optional `...` for variadic.
 	argTokenRE = regexp.MustCompile(`([\<\[])([a-zA-Z0-9_\-]+)([\>\]])(\.{3})?`)
 
-	// tool names allowed by the MCP spec: [A-Za-z0-9_.\-]+ — convert anything else to `_`.
-	toolNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_.\-]`)
+	// Claude Desktop's frontend validates tool names as `^[a-zA-Z0-9_-]{1,64}$`
+	// (stricter than the MCP spec, which allows dots). Stick to the strict
+	// alphabet so the same server works in both Code and Desktop.
+	toolNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_\-]`)
 )
 
 func runMCPServer(ctx context.Context, cmd *cli.Command) error {
@@ -91,7 +93,7 @@ func runMCPServer(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("resolve own executable: %w", err)
 	}
 	selfExecutable = exe
-	forwardedRootArgs = captureRootArgs(cmd)
+	forwardedRootArgs = captureRootArgs()
 	log.Infof("mcp: forwarding root flags %v to subprocess invocations", redactSecrets(forwardedRootArgs))
 
 	impl := &mcp.Implementation{
@@ -177,7 +179,7 @@ func buildTools(root *cli.Command, prefix string, allowWrite bool) []toolBinding
 				return
 			}
 
-			name := prefix + sanitizeToolName(strings.Join(path, "."))
+			name := prefix + sanitizeToolName(strings.Join(path, "_"))
 			schema := schemaFor(c)
 
 			desc := strings.TrimSpace(c.Usage)
@@ -217,9 +219,8 @@ func shouldSkip(c *cli.Command) bool {
 		return true
 	}
 	switch c.Name {
-	case "mcp", "status":
-		// `mcp` would self-recurse; `status` is an interactive bubbletea TUI
-		// that takes over the terminal and is incompatible with stdio MCP.
+	case "mcp":
+		// `mcp` would self-recurse.
 		return true
 	case "help", "h":
 		return true
@@ -342,7 +343,7 @@ func sanitizeToolName(s string) string {
 // the MCP server (auth, host, instance, etc) and emits them in `--name=value`
 // form. These get forwarded to every subprocess invocation so the spawned
 // `atomic-cli` shares the same auth/instance config.
-func captureRootArgs(mcpCmd *cli.Command) []string {
+func captureRootArgs() []string {
 	var out []string
 	skip := map[string]bool{"verbose": true, "help": true, "h": true}
 	for _, f := range mainCmd.Flags {

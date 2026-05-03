@@ -1,6 +1,6 @@
 /*
  * This file is part of the Passport Atomic Stack (https://github.com/libatomic/atomic).
- * Copyright (c) 2026 Passport, LLC.
+ * Copyright (c) 2026 Passport, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -636,7 +636,7 @@ func verifyExportOptions(previous, current *exportManifestOptions) error {
 			msg += fmt.Sprintf("  - %s\n", m)
 		}
 		msg += "use --clean to start a fresh export with the new options"
-		return fmt.Errorf(msg)
+		return errors.New(msg)
 	}
 
 	return nil

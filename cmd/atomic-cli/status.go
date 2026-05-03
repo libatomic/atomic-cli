@@ -1,6 +1,6 @@
 /*
  * This file is part of the Passport Atomic Stack (https://github.com/libatomic/atomic).
- * Copyright (c) 2026 Passport, LLC.
+ * Copyright (c) 2026 Passport, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,6 +31,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lensesio/tableprinter"
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 )
 
@@ -39,10 +40,10 @@ const minStatusInterval = 60 * time.Second
 var (
 	statusCmd = &cli.Command{
 		Name:  "status",
-		Usage: "live, top-style view of atomic node and queue status (polls /.well-known/ping)",
-		Description: "Polls the cluster's status endpoint and renders a continuously- " +
-			"updating screen with one row per node and (optionally) one row per " +
-			"queue. Refreshes every 60 seconds by default. Press q or ctrl+c to exit.",
+		Usage: "fetch atomic node and queue status (--top for a live, top-style UI)",
+		Description: "Queries the cluster's /.well-known/ping endpoint and prints the " +
+			"current node/queue status. Pass --top to launch a continuously-updating " +
+			"top-style UI instead (refreshes every 60 seconds; press q or ctrl+c to exit).",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "nodes",
@@ -51,13 +52,18 @@ var (
 			},
 			&cli.BoolFlag{
 				Name:  "queues",
-				Usage: "render the queues table below the nodes table",
+				Usage: "render the queues table below the nodes table (--top mode only)",
 				Value: true,
 			},
 			&cli.DurationFlag{
 				Name:  "interval",
-				Usage: "polling interval (minimum 60s; smaller values are clamped)",
+				Usage: "polling interval for --top (minimum 60s; smaller values are clamped)",
 				Value: minStatusInterval,
+			},
+			&cli.BoolFlag{
+				Name:  "top",
+				Usage: "launch the live, top-style UI instead of doing a single-shot fetch",
+				Value: false,
 			},
 		},
 		Action: statusAction,
@@ -111,10 +117,26 @@ func statusAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("--host is required to reach the status endpoint")
 	}
 
-	interval := cmd.Duration("interval")
-	if interval < minStatusInterval {
-		interval = minStatusInterval
+	// --top runs a bubbletea TUI that needs a real terminal. Refuse to
+	// launch it when stdout isn't a TTY so MCP/script callers get a clean
+	// error instead of a silent hang.
+	top := cmd.Bool("top")
+	if top && !isatty.IsTerminal(os.Stdout.Fd()) && !isatty.IsCygwinTerminal(os.Stdout.Fd()) {
+		return fmt.Errorf("--top requires an interactive terminal")
 	}
+
+	if !top {
+		nodes, err := fetchClusterStatus(host, cmd.String("nodes"), cmd.String("access_token"))
+		if err != nil {
+			return err
+		}
+		PrintResult(cmd, nodes,
+			WithFields("id", "hostname", "ip", "services", "state", "uptime", "build"),
+		)
+		return nil
+	}
+
+	interval := max(cmd.Duration("interval"), minStatusInterval)
 
 	model := statusModel{
 		host:      host,
@@ -213,10 +235,7 @@ func (m statusModel) View() string {
 	}
 	nextIn := time.Duration(0)
 	if !m.lastFetch.IsZero() {
-		nextIn = m.interval - time.Since(m.lastFetch)
-		if nextIn < 0 {
-			nextIn = 0
-		}
+		nextIn = max(m.interval-time.Since(m.lastFetch), 0)
 	}
 
 	header := fmt.Sprintf("Atomic Status • host=%s • nodes=%s • updated=%s • next refresh in %s",
@@ -473,20 +492,33 @@ func fetchClusterStatus(host, nodesFilter, token string) ([]statusNodeInfo, erro
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(body.String(), 200))
 	}
 
-	// Try array first (the response shape when ?nodes is set), then
-	// single object (when nodes is unset). Either way we end up with a
-	// []statusNodeInfo to render.
-	var arr []statusNodeInfo
-	if err := json.Unmarshal(body.Bytes(), &arr); err == nil && (len(arr) > 0 || strings.HasPrefix(strings.TrimSpace(body.String()), "[")) {
+	// The endpoint returns one of three shapes depending on the query:
+	//   ?status=true&nodes=<filter>  → []NodeInfo (possibly empty)
+	//   ?status=true                 → single NodeInfo (or null if the
+	//                                  node is still registering)
+	//   no status flag               → bare string ("OK"/"WARN"/etc)
+	// Detect by the first non-whitespace byte rather than guessing.
+	trimmed := strings.TrimSpace(body.String())
+	switch {
+	case trimmed == "" || trimmed == "null":
+		return nil, nil
+
+	case strings.HasPrefix(trimmed, "["):
+		var arr []statusNodeInfo
+		if err := json.Unmarshal(body.Bytes(), &arr); err != nil {
+			return nil, fmt.Errorf("decode status array: %w (body: %s)", err, truncate(body.String(), 400))
+		}
 		return arr, nil
-	}
-	var single statusNodeInfo
-	if err := json.Unmarshal(body.Bytes(), &single); err == nil && single.ID != "" {
+
+	case strings.HasPrefix(trimmed, "{"):
+		var single statusNodeInfo
+		if err := json.Unmarshal(body.Bytes(), &single); err != nil {
+			return nil, fmt.Errorf("decode status object: %w (body: %s)", err, truncate(body.String(), 400))
+		}
 		return []statusNodeInfo{single}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected response shape: %s", truncate(body.String(), 400))
 	}
-	return nil, fmt.Errorf("unexpected response shape: %s", truncate(body.String(), 200))
 }
 
-// dummy use of os to keep imports tidy (status writes to alt-screen, no
-// direct stdout writes in normal flow)
-var _ = os.Stdout

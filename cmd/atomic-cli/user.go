@@ -1,6 +1,6 @@
 /*
  * This file is part of the Passport Atomic Stack (https://github.com/libatomic/atomic).
- * Copyright (c) 2026 Passport, LLC.
+ * Copyright (c) 2026 Passport, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,6 +28,14 @@ import (
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
+
+// userExpandUsage enumerates the valid `--expand` values so MCP/LLM
+// callers can pick the right keys without trial and error. Mirrors the
+// expand handlers in atomic/pkg/atomic/user.go.
+const userExpandUsage = "expand related objects inline; valid values: " +
+	"subscriptions, entitlements, credits, audiences, access_tokens, " +
+	"roles, permissions, account (alias: stripe_account), preferences. " +
+	"Repeat the flag to expand multiple."
 
 var (
 	userUpdateFlags = []cli.Flag{
@@ -114,50 +122,51 @@ var (
 			},
 			{
 				Name:      "get",
-				Usage:     "get a user",
-				ArgsUsage: "get <user_id>",
+				Usage:     "get a user by id (use --expand to include subscriptions, entitlements, etc.)",
+				ArgsUsage: "<user_id>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
 						Name:    "stripe_customer",
 						Aliases: []string{"stripe", "sc"},
-						Usage:   "get by stripe customer id",
+						Usage:   "treat the positional arg as a stripe customer id",
 					},
 					&cli.BoolFlag{
 						Name:    "subject",
 						Aliases: []string{"sub"},
-						Usage:   "get by subject",
+						Usage:   "treat the positional arg as an oauth subject",
 					},
 					&cli.StringSliceFlag{
 						Name:  "expand",
-						Usage: "expand the user",
+						Usage: userExpandUsage,
 					},
 				},
 				Action: userGet,
 			},
 			{
 				Name:      "list",
-				Usage:     "list users",
+				Usage:     "list/search users (filter by --login/email, --audience, --roles, --status; use --expand=entitlements,subscriptions to include them inline)",
 				ArgsUsage: "list",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "audience",
-						Usage: "list by audience",
+						Usage: "filter by audience id",
 					},
 					&cli.StringSliceFlag{
 						Name:  "roles",
-						Usage: "list by role",
+						Usage: "filter by role (member, admin, editor, author, contrib)",
 					},
 					&cli.StringFlag{
 						Name:  "status",
-						Usage: "list by subscription status (one of: active, canceled, past_due, unpaid, incomplete, incomplete_expired, trialing, pending, deleted, paused, deferred)",
+						Usage: "filter by subscription status (one of: active, canceled, past_due, unpaid, incomplete, incomplete_expired, trialing, pending, deleted, paused, deferred)",
 					},
 					&cli.StringFlag{
-						Name:  "login",
-						Usage: "list by login",
+						Name:    "login",
+						Aliases: []string{"email"},
+						Usage:   "filter by login (the user's email address)",
 					},
 					&cli.StringFlag{
 						Name:  "stripe_account",
-						Usage: "list by stripe account",
+						Usage: "filter by stripe customer id",
 					},
 					&cli.IntFlag{
 						Name:  "limit",
@@ -169,7 +178,7 @@ var (
 					},
 					&cli.StringSliceFlag{
 						Name:  "expand",
-						Usage: "expand the user",
+						Usage: userExpandUsage,
 					},
 				},
 				Action: userList,

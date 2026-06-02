@@ -50,6 +50,10 @@ var userImportCmd = &cli.Command{
 			Value: "atomic",
 		},
 		// import behavior
+		&cli.StringFlag{
+			Name:  "mode",
+			Usage: "import mode: import (default, creates new users), update (only updates existing users)",
+		},
 		&cli.BoolFlag{
 			Name:  "dry_run",
 			Usage: "preview import without creating or updating users",

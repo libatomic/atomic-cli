@@ -585,8 +585,8 @@ func resolveSessionKeys(cmd *cli.Command) (hash, block []byte, source string) {
 	if sk := cmd.String("session-key"); sk != "" {
 		deriveFrom(sk, "--session-key")
 	}
-	if (hash == nil || block == nil) && inst != nil && inst.SessionKeyVal != nil && *inst.SessionKeyVal != "" {
-		deriveFrom(*inst.SessionKeyVal, fmt.Sprintf("instance %s session_key", inst.UUID))
+	if (hash == nil || block == nil) && inst != nil && inst.SessionSecretVal != nil && *inst.SessionSecretVal != "" {
+		deriveFrom(*inst.SessionSecretVal, fmt.Sprintf("instance %s session_secret", inst.UUID))
 	}
 	if hash == nil || block == nil {
 		// Final fallback mirrors the runtime path in pkg/oauth/cookiestore.go:
@@ -594,7 +594,7 @@ func resolveSessionKeys(cmd *cli.Command) (hash, block []byte, source string) {
 		// SessionKeyVal is nil, and the cookie store sha512s that string to
 		// derive both keys. So a cookie issued for an instance with no
 		// configured session_key is decodable with sha512(DefaultSessionKey).
-		deriveFrom(atomic.DefaultSessionKey, "atomic.DefaultSessionKey")
+		deriveFrom(atomic.DefaultSessionSecret, "atomic.DefaultSessionSecret")
 	}
 	return
 }
@@ -990,9 +990,9 @@ func cookieReport(w *os.File, har harFile, cookieName string) {
 	}
 
 	fmt.Fprintln(w, "  jwt header:")
-		printIndentedJSON(w, "    ", header)
+	printIndentedJSON(w, "    ", header)
 	fmt.Fprintln(w, "  jwt claims:")
-		printIndentedJSON(w, "    ", claims)
+	printIndentedJSON(w, "    ", claims)
 
 	// surface common claim derivatives in a quick-glance form
 	if expVal, ok := claims["exp"]; ok {

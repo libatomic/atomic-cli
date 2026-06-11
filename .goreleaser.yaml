@@ -52,17 +52,22 @@ release:
 
     Released by [GoReleaser](https://github.com/goreleaser/goreleaser).
 
-homebrew_casks:
+brews:
   - name: atomic-cli
-    binaries:
-      - atomic-cli
-    homepage: "https://github.com/libatomic/atomic-cli"
-    description: "A command-line tool for Atomic"
     repository:
       owner: libatomic
       name: homebrew-tap
       branch: master
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/libatomic/atomic-cli"
+    description: "A command-line tool for Atomic"
+    license: "MIT"
+    install: |
+      bin.install "atomic-cli"
+    test: |
+      output = shell_output("#{bin}/atomic-cli --help", 2)
+      assert_match "atomic", output
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com

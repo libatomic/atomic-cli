@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/pkg/email"
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
@@ -57,7 +58,7 @@ var (
 			{
 				Name:      "create",
 				Usage:     "create a credit",
-				ArgsUsage: "[type]",
+				ArgsUsage: "<type>",
 				Action:    creditCreate,
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "name"},
@@ -93,6 +94,31 @@ var (
 					&cli.StringFlag{Name: "stripe_coupon", Usage: "stripe coupon"},
 					&cli.StringFlag{Name: "metadata", Usage: "read metadata from a JSON `FILE`"},
 					&cli.StringFlag{Name: "file", Usage: "read full input from JSON `FILE`"},
+				},
+			},
+			{
+				Name:  "invite",
+				Usage: "manage credit invites",
+				Commands: []*cli.Command{
+					{
+						Name:      "create",
+						Usage:     "create a credit invite",
+						ArgsUsage: "<credit_id>",
+						Action:    creditInviteCreate,
+						Flags: []cli.Flag{
+							&cli.StringFlag{Name: "to", Usage: "recipient email address"},
+							&cli.StringFlag{Name: "user_id", Usage: "recipient user id"},
+							&cli.StringFlag{Name: "message", Usage: "invite message"},
+							&cli.BoolFlag{Name: "auto_accept", Usage: "auto accept the invite"},
+							&cli.StringFlag{Name: "file", Usage: "read full input from JSON `FILE`"},
+						},
+					},
+					{
+						Name:      "accept",
+						Usage:     "accept a credit invite",
+						ArgsUsage: "<invite_code>",
+						Action:    creditInviteAccept,
+					},
 				},
 			},
 		},
@@ -137,7 +163,7 @@ func creditList(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	PrintResult(cmd, credits,
-		WithFields("id", "name", "type", "status", "owner_id", "amount", "percent_off", "created_at"),
+		WithFields("id", "name", "type", "status", "owner_id", "amount", "percent_off", "redemptions", "max_redemptions", "created_at"),
 	)
 	return nil
 }
@@ -162,7 +188,7 @@ func creditGet(ctx context.Context, cmd *cli.Command) error {
 
 	PrintResult(cmd, []*atomic.Credit{credit},
 		WithSingleValue(true),
-		WithFields("id", "name", "type", "status", "owner_id", "amount", "percent_off", "passcode", "created_at"),
+		WithFields("id", "name", "type", "status", "owner_id", "amount", "percent_off", "redemptions", "max_redemptions", "passcode", "created_at"),
 	)
 	return nil
 }
@@ -175,9 +201,10 @@ func creditCreate(ctx context.Context, cmd *cli.Command) error {
 			return err
 		}
 	} else {
-		if cmd.NArg() >= 1 {
-			input.Type = atomic.CreditType(cmd.Args().First())
+		if cmd.NArg() < 1 {
+			return fmt.Errorf("credit type is required")
 		}
+		input.Type = atomic.CreditType(cmd.Args().First())
 		if cmd.IsSet("name") {
 			input.Name = ptr.String(cmd.String("name"))
 		}
@@ -326,5 +353,83 @@ func creditUpdate(ctx context.Context, cmd *cli.Command) error {
 		WithSingleValue(true),
 		WithFields("id", "name", "type", "status", "amount", "updated_at"),
 	)
+	return nil
+}
+
+func creditInviteCreate(ctx context.Context, cmd *cli.Command) error {
+	var input atomic.CreditInviteCreateInput
+
+	if cmd.IsSet("file") {
+		if err := readJSONFile(cmd.String("file"), &input); err != nil {
+			return err
+		}
+	} else {
+		if cmd.NArg() < 1 {
+			return fmt.Errorf("credit id is required")
+		}
+
+		id, err := atomic.ParseID(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to parse credit id: %w", err)
+		}
+		input.CreditID = id
+
+		if !cmd.IsSet("to") && !cmd.IsSet("user_id") {
+			return fmt.Errorf("either --to or --user_id is required")
+		}
+
+		if cmd.IsSet("to") {
+			addr, err := email.ParseAddress(cmd.String("to"))
+			if err != nil {
+				return fmt.Errorf("failed to parse email address: %w", err)
+			}
+			input.To = addr
+		}
+		if cmd.IsSet("user_id") {
+			id, err := atomic.ParseID(cmd.String("user_id"))
+			if err != nil {
+				return fmt.Errorf("failed to parse user_id: %w", err)
+			}
+			input.UserID = &id
+		}
+		if cmd.IsSet("message") {
+			input.Message = ptr.String(cmd.String("message"))
+		}
+		if cmd.IsSet("auto_accept") {
+			v := cmd.Bool("auto_accept")
+			input.AutoAccept = &v
+		}
+	}
+
+	input.InstanceID = inst.UUID
+
+	invite, err := backend.CreditInviteCreate(ctx, &input)
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.CreditInvite{invite},
+		WithSingleValue(true),
+		WithFields("id", "credit_id", "type", "status", "to", "invite_code", "expires_at", "created_at"),
+	)
+	return nil
+}
+
+func creditInviteAccept(ctx context.Context, cmd *cli.Command) error {
+	if cmd.NArg() < 1 {
+		return fmt.Errorf("invite code is required")
+	}
+
+	code := cmd.Args().First()
+
+	_, _, err := backend.CreditInviteAccept(ctx, &atomic.CreditInviteAcceptInput{
+		InstanceID: inst.UUID,
+		InviteCode: &code,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("invite accepted")
 	return nil
 }

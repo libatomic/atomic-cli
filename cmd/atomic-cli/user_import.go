@@ -201,6 +201,15 @@ var userImportCmd = &cli.Command{
 			Name:  "abort_on_error_threshold",
 			Usage: "ratio of errored / processed records at which the import aborts (0.0 = abort on any error, 1.0 = never abort). Default 0.01 (1%). The check only fires after at least 100 records have been processed, so a single early failure won't trip it.",
 		},
+		// discount code (coupon passcode)
+		&cli.StringFlag{
+			Name:  "discount_code",
+			Usage: "coupon passcode to apply as a promo invite for eligible users",
+		},
+		&cli.StringFlag{
+			Name:  "discount_code_behavior",
+			Usage: "when to apply discount code: none, all, new_subscribers (default: new_subscribers)",
+		},
 		// record window — primarily a testing knob so a smaller slice of a
 		// large CSV can be processed without trimming the file
 		&cli.UintFlag{

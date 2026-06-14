@@ -15,8 +15,8 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
-	github.com/libatomic/atomic v1.2.4-rc.14
-	github.com/libatomic/atomic-go v1.2.4-rc.14
+	github.com/libatomic/atomic v1.2.4
+	github.com/libatomic/atomic-go v1.2.4
 	github.com/mattn/go-isatty v0.0.21
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/schollz/progressbar/v3 v3.19.0

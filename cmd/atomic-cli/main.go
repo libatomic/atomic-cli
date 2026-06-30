@@ -211,6 +211,7 @@ func main() {
 		sessionCmd,
 		statusCmd,
 		mcpCmd,
+		workflowCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

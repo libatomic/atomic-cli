@@ -619,3 +619,4 @@ func workflowRunGetAction(ctx context.Context, cmd *cli.Command) error {
 
 	return nil
 }
+

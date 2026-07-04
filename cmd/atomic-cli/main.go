@@ -211,6 +211,7 @@ func main() {
 		sessionCmd,
 		statusCmd,
 		mcpCmd,
+		secretCmd,
 		workflowCmd,
 	}
 

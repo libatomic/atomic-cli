@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
@@ -64,6 +65,10 @@ var (
 		&cli.StringSliceFlag{
 			Name:  "permissions",
 			Usage: "set the permissions",
+		},
+		&cli.StringFlag{
+			Name:  "role",
+			Usage: "set permissions from a role (admin, member)",
 		},
 		&cli.StringFlag{
 			Name:  "metadata",
@@ -140,8 +145,16 @@ func appCreate(ctx context.Context, cmd *cli.Command) error {
 		input.Name = cmd.Args().First()
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "metadata", "role"); err != nil {
 		return err
+	}
+
+	if cmd.IsSet("role") {
+		perms, ok := atomic.RolePermissions[cmd.String("role")]
+		if !ok {
+			return fmt.Errorf("unknown role %q (valid: admin, member)", cmd.String("role"))
+		}
+		input.Permissions = perms
 	}
 
 	if cmd.IsSet("metadata") {
@@ -194,8 +207,34 @@ func appUpdate(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("application id is required")
 	}
 
-	if err := BindFlagsFromContext(cmd, &input, "metadata"); err != nil {
+	if err := BindFlagsFromContext(cmd, &input, "metadata", "role", "type", "token_lifetime", "refresh_token_lifetime"); err != nil {
 		return err
+	}
+
+	if cmd.IsSet("type") {
+		input.Type = ptr.String(cmd.String("type"))
+	}
+	if cmd.IsSet("token_lifetime") {
+		v, err := parseInt64(cmd.String("token_lifetime"))
+		if err != nil {
+			return fmt.Errorf("invalid token_lifetime: %w", err)
+		}
+		input.TokenLifetime = &v
+	}
+	if cmd.IsSet("refresh_token_lifetime") {
+		v, err := parseInt64(cmd.String("refresh_token_lifetime"))
+		if err != nil {
+			return fmt.Errorf("invalid refresh_token_lifetime: %w", err)
+		}
+		input.RefreshTokenLifetime = &v
+	}
+
+	if cmd.IsSet("role") {
+		perms, ok := atomic.RolePermissions[cmd.String("role")]
+		if !ok {
+			return fmt.Errorf("unknown role %q (valid: admin, member)", cmd.String("role"))
+		}
+		input.Permissions = perms
 	}
 
 	if cmd.IsSet("metadata") {
@@ -290,4 +329,8 @@ func appDelete(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	return nil
+}
+
+func parseInt64(s string) (int64, error) {
+	return strconv.ParseInt(s, 10, 64)
 }

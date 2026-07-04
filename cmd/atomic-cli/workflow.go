@@ -28,6 +28,7 @@ import (
 	"github.com/libatomic/atomic/pkg/atomic"
 	"github.com/libatomic/atomic/pkg/ptr"
 	"github.com/urfave/cli/v3"
+	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -101,7 +102,7 @@ var (
 	workflowUpdateCmd = &cli.Command{
 		Name:      "update",
 		Usage:     "update a workflow from a YAML or JSON definition file",
-		ArgsUsage: "<workflow_id> [definition_file]",
+		ArgsUsage: "[workflow_id] <definition_file>",
 		Action:    workflowUpdate,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -266,7 +267,14 @@ func workflowGet(ctx context.Context, cmd *cli.Command) error {
 
 	PrintResult(cmd, []*atomic.Workflow{wf},
 		WithSingleValue(true),
-		WithFields("id", "name", "slug", "enabled", "version", "created_at"),
+		WithFields("id", "name", "slug", "enabled", "version", "webhook_url", "created_at"),
+		WithVirtualField("webhook_url", func(v any) string {
+			wf := v.(atomic.Workflow)
+			if len(wf.Webhooks) > 0 {
+				return wf.Webhooks[0].URL
+			}
+			return ""
+		}),
 		WithVirtualField("created_at", func(v any) string {
 			wf := v.(atomic.Workflow)
 			return wf.CreatedAt.Format(time.RFC3339)
@@ -332,17 +340,68 @@ func workflowUpdate(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if cmd.Args().Len() == 0 {
-		return cli.Exit("workflow id is required", 1)
+		return cli.Exit("definition file or workflow id is required", 1)
 	}
 
-	workflowID, err := atomic.ParseID(cmd.Args().First())
-	if err != nil {
-		return cli.Exit(fmt.Sprintf("invalid workflow id: %s", err), 1)
+	apiBackend, ok := backend.(*client.Client)
+	if !ok {
+		return cli.Exit("workflow update requires an API backend (not db_source)", 1)
 	}
 
 	input := atomic.WorkflowUpdateInput{
 		InstanceID: inst.UUID,
-		WorkflowID: workflowID,
+	}
+
+	var defBody []byte
+	sendDefinition := false
+
+	// If the first arg is a valid ID use it; otherwise treat it as a
+	// definition file and resolve the workflow by slug.
+	if id, err := atomic.ParseID(cmd.Args().First()); err == nil {
+		input.WorkflowID = id
+		if cmd.Args().Len() > 1 {
+			defBody, err = os.ReadFile(cmd.Args().Get(1))
+			if err != nil {
+				return fmt.Errorf("failed to read definition file: %w", err)
+			}
+			sendDefinition = true
+		}
+	} else {
+		defBody, err = os.ReadFile(cmd.Args().First())
+		if err != nil {
+			return fmt.Errorf("failed to read definition file: %w", err)
+		}
+
+		var def struct {
+			Name string `json:"name" yaml:"name"`
+		}
+		if err := yaml.Unmarshal(defBody, &def); err != nil {
+			return fmt.Errorf("failed to parse definition name: %w", err)
+		}
+		if def.Name == "" {
+			return cli.Exit("definition file must have a name field to resolve workflow by slug", 1)
+		}
+
+		workflows, err := apiBackend.WorkflowList(ctx, &atomic.WorkflowListInput{
+			InstanceID: inst.UUID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to list workflows: %w", err)
+		}
+
+		slug := def.Name
+		var found *atomic.Workflow
+		for _, w := range workflows {
+			if ptr.Value(w.Slug) == slug {
+				found = w
+				break
+			}
+		}
+		if found == nil {
+			return fmt.Errorf("no workflow found with slug %q", slug)
+		}
+		input.WorkflowID = found.UUID
+		sendDefinition = true
 	}
 
 	if cmd.IsSet("name") {
@@ -358,31 +417,17 @@ func workflowUpdate(ctx context.Context, cmd *cli.Command) error {
 		input.Enabled = ptr.Bool(false)
 	}
 
-	apiBackend, ok := backend.(*client.Client)
-	if !ok {
-		return cli.Exit("workflow update requires an API backend (not db_source)", 1)
-	}
-
-	var defFile string
-	if cmd.Args().Len() > 1 {
-		defFile = cmd.Args().Get(1)
-	}
-
-	var wf *atomic.Workflow
-	if defFile != "" {
-		data, err := os.ReadFile(defFile)
-		if err != nil {
-			return fmt.Errorf("failed to read definition file: %w", err)
-		}
-		wf, err = apiBackend.WorkflowUpdateFromBytes(ctx, &input, data)
-		if err != nil {
-			return err
-		}
+	var (
+		wf  *atomic.Workflow
+		err error
+	)
+	if sendDefinition {
+		wf, err = apiBackend.WorkflowUpdateFromBytes(ctx, &input, defBody)
 	} else {
 		wf, err = apiBackend.WorkflowUpdate(ctx, &input, nil, "application/json")
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 
 	PrintResult(cmd, []*atomic.Workflow{wf},

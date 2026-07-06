@@ -45,6 +45,8 @@ var (
 			workflowRunCmd,
 			workflowRunsCmd,
 			workflowRunGetCmd,
+			workflowVersionsCmd,
+			workflowRevertCmd,
 		},
 	}
 
@@ -88,10 +90,6 @@ var (
 				Aliases: []string{"n"},
 				Usage:   "workflow name (defaults to name in definition)",
 			},
-			&cli.StringFlag{
-				Name:  "slug",
-				Usage: "workflow slug (defaults to slugified name)",
-			},
 			&cli.BoolFlag{
 				Name:  "disabled",
 				Usage: "create the workflow in a disabled state",
@@ -109,10 +107,6 @@ var (
 				Name:    "name",
 				Aliases: []string{"n"},
 				Usage:   "update the workflow name",
-			},
-			&cli.StringFlag{
-				Name:  "slug",
-				Usage: "update the workflow slug",
 			},
 			&cli.BoolFlag{
 				Name:  "enable",
@@ -192,6 +186,20 @@ var (
 				Usage: "wait for the run's job to complete, streaming logs with --verbose",
 			},
 		},
+	}
+
+	workflowVersionsCmd = &cli.Command{
+		Name:      "versions",
+		Usage:     "list version history for a workflow",
+		ArgsUsage: "<workflow_id>",
+		Action:    workflowVersions,
+	}
+
+	workflowRevertCmd = &cli.Command{
+		Name:      "revert",
+		Usage:     "revert a workflow to a previous version",
+		ArgsUsage: "<workflow_id> <version>",
+		Action:    workflowRevert,
 	}
 )
 
@@ -305,9 +313,6 @@ func workflowCreate(ctx context.Context, cmd *cli.Command) error {
 	if cmd.IsSet("name") {
 		input.Name = cmd.String("name")
 	}
-	if cmd.IsSet("slug") {
-		input.Slug = ptr.String(cmd.String("slug"))
-	}
 	if cmd.Bool("disabled") {
 		input.Enabled = ptr.Bool(false)
 	}
@@ -406,9 +411,6 @@ func workflowUpdate(ctx context.Context, cmd *cli.Command) error {
 
 	if cmd.IsSet("name") {
 		input.Name = ptr.String(cmd.String("name"))
-	}
-	if cmd.IsSet("slug") {
-		input.Slug = ptr.String(cmd.String("slug"))
 	}
 	if cmd.Bool("enable") {
 		input.Enabled = ptr.Bool(true)
@@ -661,6 +663,93 @@ func workflowRunGetAction(ctx context.Context, cmd *cli.Command) error {
 		}
 		return waitForJob(ctx, job, mainCmd.Bool("verbose"), false)
 	}
+
+	return nil
+}
+
+func workflowVersions(ctx context.Context, cmd *cli.Command) error {
+	if inst == nil {
+		return cli.Exit("instance is required", 1)
+	}
+
+	if cmd.Args().Len() == 0 {
+		return cli.Exit("workflow id is required", 1)
+	}
+
+	workflowID, err := atomic.ParseID(cmd.Args().First())
+	if err != nil {
+		return cli.Exit(fmt.Sprintf("invalid workflow id: %s", err), 1)
+	}
+
+	apiBackend, ok := backend.(*client.Client)
+	if !ok {
+		return cli.Exit("workflow versions requires an API backend (not db_source)", 1)
+	}
+
+	versions, err := apiBackend.WorkflowVersionList(ctx, &atomic.WorkflowVersionListInput{
+		InstanceID: inst.UUID,
+		WorkflowID: workflowID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(versions) == 0 {
+		return cli.Exit("no version history", 1)
+	}
+
+	PrintResult(cmd, versions,
+		WithFields("version", "created_at"),
+		WithVirtualField("created_at", func(v any) string {
+			ver := v.(atomic.WorkflowVersion)
+			return ver.CreatedAt.Format(time.RFC3339)
+		}),
+	)
+
+	return nil
+}
+
+func workflowRevert(ctx context.Context, cmd *cli.Command) error {
+	if inst == nil {
+		return cli.Exit("instance is required", 1)
+	}
+
+	if cmd.Args().Len() < 2 {
+		return cli.Exit("usage: workflow revert <workflow_id> <version>", 1)
+	}
+
+	workflowID, err := atomic.ParseID(cmd.Args().First())
+	if err != nil {
+		return cli.Exit(fmt.Sprintf("invalid workflow id: %s", err), 1)
+	}
+
+	var version int
+	if _, err := fmt.Sscanf(cmd.Args().Get(1), "%d", &version); err != nil {
+		return cli.Exit(fmt.Sprintf("invalid version number: %s", err), 1)
+	}
+
+	apiBackend, ok := backend.(*client.Client)
+	if !ok {
+		return cli.Exit("workflow revert requires an API backend (not db_source)", 1)
+	}
+
+	wf, err := apiBackend.WorkflowVersionRevert(ctx, &atomic.WorkflowVersionRevertInput{
+		InstanceID: inst.UUID,
+		WorkflowID: workflowID,
+		Version:    version,
+	})
+	if err != nil {
+		return err
+	}
+
+	PrintResult(cmd, []*atomic.Workflow{wf},
+		WithSingleValue(true),
+		WithFields("id", "name", "slug", "enabled", "version", "created_at"),
+		WithVirtualField("created_at", func(v any) string {
+			wf := v.(atomic.Workflow)
+			return wf.CreatedAt.Format(time.RFC3339)
+		}),
+	)
 
 	return nil
 }

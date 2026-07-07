@@ -53,6 +53,7 @@ var (
 				Action:    subscriptionGet,
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "user_id", Usage: "look up by user id"},
+					&cli.StringFlag{Name: "plan_id", Usage: "look up a user's subscription to a plan (with --user_id)"},
 					&cli.StringFlag{Name: "stripe_subscription", Usage: "look up by stripe subscription id"},
 				},
 			},
@@ -183,6 +184,13 @@ func subscriptionGet(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("failed to parse user_id: %w", err)
 		}
 		input.UserID = &id
+	}
+	if cmd.IsSet("plan_id") {
+		id, err := atomic.ParseID(cmd.String("plan_id"))
+		if err != nil {
+			return fmt.Errorf("failed to parse plan_id: %w", err)
+		}
+		input.PlanID = &id
 	}
 	if cmd.IsSet("stripe_subscription") {
 		input.StripeSubscription = ptr.String(cmd.String("stripe_subscription"))

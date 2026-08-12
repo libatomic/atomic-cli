@@ -479,6 +479,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--config`, `-c` | JSON config file with import parameters | |
 | `--mime_type` | MIME type of the import file | `text/csv` |
 | `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
+| `--mode` | Import mode: `import` (create/update), `update` (existing users only), `unsubscribe` (cancel subs for `--unsubscribe_plans` only) | `import` |
 | `--dry_run` | Preview import without creating or updating users | `false` |
 | `--ignore_created_at` | Ignore the `created_at` column from the CSV; users are created with the current timestamp at job runtime | `false` |
 | `--existing_user_behavior` | Behavior for existing users: `skip` (leave the user alone and skip the record entirely), `merge` (update profile/roles/stripe **and** process subscriptions, plans, trials, and category opt-outs), `recreate` (delete and re-create from the import record), `retain` (leave the existing user untouched but still process the record's subscriptions, default plans, trial, and category opt-outs like `merge` would) | `merge` |
@@ -490,8 +491,10 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |
 | `--stripe_account_behavior` | Stripe account behavior: `existing`, `create`, `none` | `existing` |
 | `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` — controls both subscribe plans and instance defaults | `non_subscribers` |
-| `--subscribe_plans` | Plan IDs to subscribe users to (repeatable) | |
+| `--subscribe_plans` | Plan IDs to subscribe users to (repeatable); not allowed with `--mode unsubscribe` | |
 | `--subscribe_behavior` | Subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
+| `--unsubscribe_plans` | Plan IDs to unsubscribe users from (repeatable); required when `--mode unsubscribe`, rejected in `import`/`update` | |
+| `--unsubscribe_behavior` | Unsubscribe cancel timing: `at_period_end`, `immediate` | `at_period_end` |
 | `--trial_plan_id` | Trial plan ID | |
 | `--trial_price_id` | Trial price ID | |
 | `--trial_end_at` | Trial end date/time | |
@@ -532,7 +535,13 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --
 
 # Import and wait for completion with progress bar and log streaming
 atomic-cli user import migrate_users.csv -i inst_abc123 --wait --verbose
-```
+
+# Bulk unsubscribe existing users from a plan
+atomic-cli user import users.csv \
+  --mode unsubscribe \
+  --unsubscribe_plans plan_abc123 \
+  --unsubscribe_behavior at_period_end \
+  --wait
 
 **Example config file (`import-config.json`):**
 

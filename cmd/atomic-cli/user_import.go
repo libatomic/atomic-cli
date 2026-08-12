@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -52,7 +53,7 @@ var userImportCmd = &cli.Command{
 		// import behavior
 		&cli.StringFlag{
 			Name:  "mode",
-			Usage: "import mode: import (default, creates new users), update (only updates existing users)",
+			Usage: "import mode: import (default, creates new users), update (only updates existing users), unsubscribe (cancel existing users' subscriptions for --unsubscribe_plans; never creates or updates users)",
 		},
 		&cli.BoolFlag{
 			Name:  "dry_run",
@@ -109,6 +110,15 @@ var userImportCmd = &cli.Command{
 		&cli.StringFlag{
 			Name:  "subscribe_behavior",
 			Usage: "subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none (default: all_users)",
+		},
+		&cli.StringSliceFlag{
+			Name:  "unsubscribe_plans",
+			Usage: "plan IDs to unsubscribe users from (repeatable); required when --mode unsubscribe",
+		},
+		&cli.StringFlag{
+			Name:  "unsubscribe_behavior",
+			Usage: "unsubscribe behavior: at_period_end (default), immediate; only used with --mode unsubscribe",
+			Value: string(atomic.UserImportUnsubscribeBehaviorAtPeriodEnd),
 		},
 		// trials
 		&cli.StringFlag{
@@ -247,6 +257,33 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	// mode=unsubscribe rejects enroll-oriented fields; CLI defaults for
+	// default_plan_behavior / stripe_account_behavior / etc. are always
+	// bound by BindFlagsFromContext (non-zero Value), so clear them unless
+	// the operator explicitly set a conflicting flag (server will reject).
+	if input.Mode != nil && *input.Mode == atomic.UserImportModeUnsubscribe {
+		if !cmd.IsSet("default_plan_behavior") {
+			none := atomic.UserImportDefaultPlanBehaviorNone
+			input.DefaultPlanBehavior = &none
+		}
+		if !cmd.IsSet("subscribe_behavior") {
+			none := atomic.UserImportSubscribeBehaviorNone
+			input.SubscribeBehavior = &none
+		}
+		if !cmd.IsSet("trial_behavior") {
+			input.TrialBehavior = nil
+		}
+		if !cmd.IsSet("trial_existing_users") {
+			input.TrialExistingUsers = nil
+		}
+		if !cmd.IsSet("existing_user_behavior") {
+			input.ExistingUserBehavior = nil
+		}
+		if !cmd.IsSet("subscribe_plans") {
+			input.SubscribePlans = nil
+		}
+	}
+
 	// parse user_event_options string flag
 	if evtStr := cmd.String("user_event_options"); evtStr != "" {
 		opts, err := parseEventLogOptions(evtStr)
@@ -294,6 +331,23 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("failed to open file for validation: %w", err)
 	}
+
+	if input.Mode != nil && *input.Mode == atomic.UserImportModeUnsubscribe {
+		headers, herr := csv.NewReader(csvFile).Read()
+		if herr != nil {
+			csvFile.Close()
+			return fmt.Errorf("failed to read CSV headers: %w", herr)
+		}
+		if err := atomic.ValidateUnsubscribeCSVHeaders(headers); err != nil {
+			csvFile.Close()
+			return err
+		}
+		if _, err := csvFile.Seek(0, 0); err != nil {
+			csvFile.Close()
+			return fmt.Errorf("failed to rewind CSV for validation: %w", err)
+		}
+	}
+
 	var records []*importRecord
 	if err := gocsv.UnmarshalFile(csvFile, &records); err != nil {
 		csvFile.Close()

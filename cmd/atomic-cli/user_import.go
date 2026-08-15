@@ -342,6 +342,9 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 			csvFile.Close()
 			return err
 		}
+		if n := atomic.UnsubscribeCSVIgnoredColumnCount(headers); n > 0 {
+			fmt.Fprintf(os.Stderr, "unsubscribe matches on login only; ignoring %d extra columns\n", n)
+		}
 		if _, err := csvFile.Seek(0, 0); err != nil {
 			csvFile.Close()
 			return fmt.Errorf("failed to rewind CSV for validation: %w", err)

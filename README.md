@@ -490,7 +490,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--import_audience_id` | Audience ID to add imported users to | |
 | `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |
 | `--stripe_account_behavior` | Stripe account behavior: `existing`, `create`, `none` | `existing` |
-| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` — controls both subscribe plans and instance defaults | `non_subscribers` |
+| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` — controls both subscribe plans and instance defaults. In `--mode unsubscribe` the CLI clears this to `none` unless you explicitly set the flag. | `all` |
 | `--subscribe_plans` | Plan IDs to subscribe users to (repeatable); not allowed with `--mode unsubscribe` | |
 | `--subscribe_behavior` | Subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
 | `--unsubscribe_plans` | Plan IDs to unsubscribe users from (repeatable); required when `--mode unsubscribe`, rejected in `import`/`update` | |
@@ -525,7 +525,7 @@ atomic-cli user import migrate_users.csv \
   -i inst_abc123 \
   --verify_user_email \
   --subscribe_plans plan_abc123 \
-  --auto_subscribe_behavior all_users
+  --subscribe_behavior all_users
 
 # Import with a JSON config file
 atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json
@@ -542,6 +542,7 @@ atomic-cli user import users.csv \
   --unsubscribe_plans plan_abc123 \
   --unsubscribe_behavior at_period_end \
   --wait
+```
 
 **Example config file (`import-config.json`):**
 

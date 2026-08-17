@@ -257,32 +257,7 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	// mode=unsubscribe rejects enroll-oriented fields; CLI defaults for
-	// default_plan_behavior / stripe_account_behavior / etc. are always
-	// bound by BindFlagsFromContext (non-zero Value), so clear them unless
-	// the operator explicitly set a conflicting flag (server will reject).
-	if input.Mode != nil && *input.Mode == atomic.UserImportModeUnsubscribe {
-		if !cmd.IsSet("default_plan_behavior") {
-			none := atomic.UserImportDefaultPlanBehaviorNone
-			input.DefaultPlanBehavior = &none
-		}
-		if !cmd.IsSet("subscribe_behavior") {
-			none := atomic.UserImportSubscribeBehaviorNone
-			input.SubscribeBehavior = &none
-		}
-		if !cmd.IsSet("trial_behavior") {
-			input.TrialBehavior = nil
-		}
-		if !cmd.IsSet("trial_existing_users") {
-			input.TrialExistingUsers = nil
-		}
-		if !cmd.IsSet("existing_user_behavior") {
-			input.ExistingUserBehavior = nil
-		}
-		if !cmd.IsSet("subscribe_plans") {
-			input.SubscribePlans = nil
-		}
-	}
+	clearUnsubscribeEnrollDefaults(&input, cmd.IsSet)
 
 	// parse user_event_options string flag
 	if evtStr := cmd.String("user_event_options"); evtStr != "" {
@@ -377,4 +352,35 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	return nil
+}
+
+// clearUnsubscribeEnrollDefaults strips enroll-oriented CLI defaults that
+// BindFlagsFromContext always binds (non-zero Value). mode=unsubscribe
+// rejects those fields; leave them if the operator explicitly set the flag
+// (server will still reject). Does not touch stripe_account_behavior,
+// discount_behavior, or rebuild_audiences — Validate does not reject those.
+func clearUnsubscribeEnrollDefaults(input *atomic.UserImportInput, isSet func(string) bool) {
+	if input.Mode == nil || *input.Mode != atomic.UserImportModeUnsubscribe {
+		return
+	}
+	if !isSet("default_plan_behavior") {
+		none := atomic.UserImportDefaultPlanBehaviorNone
+		input.DefaultPlanBehavior = &none
+	}
+	if !isSet("subscribe_behavior") {
+		none := atomic.UserImportSubscribeBehaviorNone
+		input.SubscribeBehavior = &none
+	}
+	if !isSet("trial_behavior") {
+		input.TrialBehavior = nil
+	}
+	if !isSet("trial_existing_users") {
+		input.TrialExistingUsers = nil
+	}
+	if !isSet("existing_user_behavior") {
+		input.ExistingUserBehavior = nil
+	}
+	if !isSet("subscribe_plans") {
+		input.SubscribePlans = nil
+	}
 }

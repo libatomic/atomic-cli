@@ -494,7 +494,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--subscribe_plans` | Plan IDs to subscribe users to (repeatable); not allowed with `--mode unsubscribe` | |
 | `--subscribe_behavior` | Subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
 | `--unsubscribe_plans` | Plan IDs to unsubscribe users from (repeatable); required when `--mode unsubscribe`, rejected in `import`/`update` | |
-| `--unsubscribe_behavior` | Unsubscribe cancel timing: `at_period_end` (no audience rebuild), `immediate` (rebuilds each plan audience on that audience's instance — parent and child — if anything canceled, including after abort) | `at_period_end` |
+| `--unsubscribe_behavior` | Unsubscribe cancel timing: `immediate` (rebuilds each plan audience on that audience's instance — parent and child — if anything canceled, including after abort), `at_period_end` (no audience rebuild; server/API default if the field is omitted) | `immediate` |
 | `--trial_plan_id` | Trial plan ID | |
 | `--trial_price_id` | Trial price ID | |
 | `--trial_end_at` | Trial end date/time | |
@@ -536,11 +536,11 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --
 # Import and wait for completion with progress bar and log streaming
 atomic-cli user import migrate_users.csv -i inst_abc123 --wait --verbose
 
-# Bulk unsubscribe existing users from a plan
+# Bulk unsubscribe existing users from a plan (immediate cancel; pass
+# --unsubscribe_behavior at_period_end to schedule period-end cancel instead)
 atomic-cli user import users.csv \
   --mode unsubscribe \
   --unsubscribe_plans plan_abc123 \
-  --unsubscribe_behavior at_period_end \
   --wait
 ```
 

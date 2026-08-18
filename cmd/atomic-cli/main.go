@@ -278,6 +278,8 @@ func main() {
 
 			if inst != nil {
 				log.Infof("using instance %s", inst.Name)
+			} else if instanceLookup != "" {
+				log.Warnf("instance %q not resolved; pass --instance_id if the command needs one", instanceLookup)
 			}
 		}
 

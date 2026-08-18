@@ -126,7 +126,9 @@ func subscriptionList(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	input.InstanceID = inst.UUID
+	if inst != nil {
+		input.InstanceID = inst.UUID
+	}
 
 	if cmd.IsSet("user_id") {
 		id, err := atomic.ParseID(cmd.String("user_id"))
@@ -166,8 +168,9 @@ func subscriptionList(ctx context.Context, cmd *cli.Command) error {
 }
 
 func subscriptionGet(ctx context.Context, cmd *cli.Command) error {
-	input := &atomic.SubscriptionGetInput{
-		InstanceID: inst.UUID,
+	input := &atomic.SubscriptionGetInput{}
+	if inst != nil {
+		input.InstanceID = inst.UUID
 	}
 
 	if cmd.NArg() >= 1 {
@@ -282,7 +285,9 @@ func subscriptionCreate(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	input.InstanceID = inst.UUID
+	if inst != nil {
+		input.InstanceID = inst.UUID
+	}
 
 	sub, err := backend.SubscriptionCreate(ctx, &input)
 	if err != nil {
@@ -380,7 +385,9 @@ func subscriptionUpdate(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	input.InstanceID = inst.UUID
+	if inst != nil {
+		input.InstanceID = inst.UUID
+	}
 	input.SubscriptionID = &id
 
 	sub, err := backend.SubscriptionUpdate(ctx, &input)
@@ -406,9 +413,11 @@ func subscriptionDelete(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	input := &atomic.SubscriptionDeleteInput{
-		InstanceID:     inst.UUID,
 		SubscriptionID: &id,
 		PreserveStripe: cmd.Bool("ignore_stripe"),
+	}
+	if inst != nil {
+		input.InstanceID = inst.UUID
 	}
 
 	if cmd.IsSet("immediate") {

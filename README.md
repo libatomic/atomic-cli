@@ -479,6 +479,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--config`, `-c` | JSON config file with import parameters | |
 | `--mime_type` | MIME type of the import file | `text/csv` |
 | `--source` | Import source identifier (atomic, ghost, substack, etc.) | `atomic` |
+| `--mode` | Import mode: `import` (create/update), `update` (existing users only), `unsubscribe` (cancel subs for `--unsubscribe_plans` only) | `import` |
 | `--dry_run` | Preview import without creating or updating users | `false` |
 | `--ignore_created_at` | Ignore the `created_at` column from the CSV; users are created with the current timestamp at job runtime | `false` |
 | `--existing_user_behavior` | Behavior for existing users: `skip` (leave the user alone and skip the record entirely), `merge` (update profile/roles/stripe **and** process subscriptions, plans, trials, and category opt-outs), `recreate` (delete and re-create from the import record), `retain` (leave the existing user untouched but still process the record's subscriptions, default plans, trial, and category opt-outs like `merge` would) | `merge` |
@@ -489,9 +490,11 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--import_audience_id` | Audience ID to add imported users to | |
 | `--import_audience_behavior` | Audience behavior: `add_all_users`, `add_new_users`, `add_existing_users` | `add_all_users` |
 | `--stripe_account_behavior` | Stripe account behavior: `existing`, `create`, `none` | `existing` |
-| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` — controls both subscribe plans and instance defaults | `non_subscribers` |
-| `--subscribe_plans` | Plan IDs to subscribe users to (repeatable) | |
+| `--default_plan_behavior` | Default plan behavior: `all`, `non_subscribers`, `none` — controls both subscribe plans and instance defaults. In `--mode unsubscribe` the CLI clears this to `none` unless you explicitly set the flag. | `all` |
+| `--subscribe_plans` | Plan IDs to subscribe users to (repeatable); not allowed with `--mode unsubscribe` | |
 | `--subscribe_behavior` | Subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
+| `--unsubscribe_plans` | Plan IDs to unsubscribe users from (repeatable); required when `--mode unsubscribe`, rejected in `import`/`update` | |
+| `--unsubscribe_behavior` | Unsubscribe cancel timing: `at_period_end` (no audience rebuild), `immediate` (rebuilds each plan audience on that audience's instance — parent and child — if anything canceled, including after abort) | `at_period_end` |
 | `--trial_plan_id` | Trial plan ID | |
 | `--trial_price_id` | Trial price ID | |
 | `--trial_end_at` | Trial end date/time | |
@@ -509,7 +512,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 | `--job_event_options` | Event options for the job completed event: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Controls whether the completion event triggers emails, webhooks, etc. | |
 | `--job_max_workers` | Override the per-job worker concurrency. Clamped to `[1, NumCPU]` and further capped by the server-side `UserImportMaxWorkers` (itself clamped to `[1, NumCPU]`, tunable via `ATOMIC_USER_IMPORT_WORKERS`). Leave unset to use the server default. | |
-| `--abort_on_error_threshold` | Ratio of errored / processed records at which the import aborts (safety net for pathological runs — bad CSV, upstream outage). `0` aborts on any error, `1.0` disables the check, otherwise the import stops once the ratio crosses the threshold. The check is only evaluated after at least 100 records have been processed, so a single early failure can't trip it. When it fires, in-flight workers drain, the team second pass and audience rebuild are skipped, the report's status becomes `aborted` with a reason note, and the job row's `queue_error` carries the message. Created users and their subscriptions are retained. | `0.01` (1%) |
+| `--abort_on_error_threshold` | Ratio of errored / processed records at which the import aborts (safety net for pathological runs — bad CSV, upstream outage). `0` aborts on any error, `1.0` disables the check, otherwise the import stops once the ratio crosses the threshold. The check is only evaluated after at least 100 records have been processed, so a single early failure can't trip it. When it fires, in-flight workers drain. Import skips the team second pass and audience rebuild (created users and subscriptions are retained). Unsubscribe `immediate` still rebuilds plan audiences if anything canceled, each on that audience's instance (parent and child). The report's status becomes `aborted` with a reason note, and the job row's `queue_error` carries the message. | `0.01` (1%) |
 | `--user_import_skip` | Skip the first N records of the parsed CSV before importing. Must not exceed the parsed record count (the job fails if it does). Primarily a testing knob. | `0` |
 | `--user_import_limit` | Process at most N records (applied after `--user_import_skip`). `0` means no limit; values larger than the remaining record count are silently capped. Primarily a testing knob. | `0` |
 | `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. On completion, prints total duration and a per-stage breakdown (duration and items/sec); also prints any `job.Errors` recorded by the handler, even when the queue status is `success`. **Ctrl+C detaches** the tail — the import keeps running on the server; use `atomic-cli job get <id> --wait` or `atomic-cli job cancel <id>` to manage it. | `false` |
@@ -522,7 +525,7 @@ atomic-cli user import migrate_users.csv \
   -i inst_abc123 \
   --verify_user_email \
   --subscribe_plans plan_abc123 \
-  --auto_subscribe_behavior all_users
+  --subscribe_behavior all_users
 
 # Import with a JSON config file
 atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json
@@ -532,6 +535,13 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --
 
 # Import and wait for completion with progress bar and log streaming
 atomic-cli user import migrate_users.csv -i inst_abc123 --wait --verbose
+
+# Bulk unsubscribe existing users from a plan
+atomic-cli user import users.csv \
+  --mode unsubscribe \
+  --unsubscribe_plans plan_abc123 \
+  --unsubscribe_behavior at_period_end \
+  --wait
 ```
 
 **Example config file (`import-config.json`):**

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
@@ -283,7 +284,9 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Args().First() != "" {
 		var err error
 
-		input.Filename = cmd.Args().First()
+		// Basename only — AssetCreate stores this under the instance asset
+		// volume and does not create parent dirs (PSPT-707).
+		input.Filename = filepath.Base(cmd.Args().First())
 
 		file, err := os.Open(cmd.Args().First())
 		if err != nil {

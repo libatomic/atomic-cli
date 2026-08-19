@@ -542,6 +542,20 @@ atomic-cli user import users.csv \
   --unsubscribe_plans plan_abc123 \
   --unsubscribe_behavior at_period_end \
   --wait
+
+# Replace a cohort on existing products (remove list, then enroll a new list).
+# Full steps: https://github.com/libatomic/atomic/blob/pspt-702/bulk-plan-remove/docs/USER_IMPORT.md#replace-users-on-existing-products
+atomic-cli user import remove-100.csv -i inst_abc123 \
+  --mode unsubscribe \
+  --unsubscribe_plans plan_abc123 --unsubscribe_plans plan_def456 --unsubscribe_plans plan_ghi789 \
+  --unsubscribe_behavior immediate \
+  --wait
+atomic-cli user import add-60.csv -i inst_abc123 \
+  --subscribe_plans plan_abc123 --subscribe_plans plan_def456 --subscribe_plans plan_ghi789 \
+  --subscribe_behavior all_users \
+  --default_plan_behavior none \
+  --existing_user_behavior retain \
+  --wait
 ```
 
 **Example config file (`import-config.json`):**

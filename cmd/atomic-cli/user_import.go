@@ -119,8 +119,8 @@ var userImportCmd = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:  "unsubscribe_behavior",
-			Usage: "unsubscribe behavior: at_period_end (default), immediate; only used with --mode unsubscribe",
-			Value: string(atomic.UserImportUnsubscribeBehaviorAtPeriodEnd),
+			Usage: "unsubscribe behavior: immediate (default), at_period_end; only used with --mode unsubscribe",
+			Value: string(atomic.UserImportUnsubscribeBehaviorImmediate),
 		},
 		// trials
 		&cli.StringFlag{

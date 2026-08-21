@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gocarina/gocsv"
 	"github.com/libatomic/atomic/pkg/atomic"
@@ -118,8 +119,8 @@ var userImportCmd = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:  "unsubscribe_behavior",
-			Usage: "unsubscribe behavior: at_period_end (default), immediate; only used with --mode unsubscribe",
-			Value: string(atomic.UserImportUnsubscribeBehaviorAtPeriodEnd),
+			Usage: "unsubscribe behavior: immediate (default), at_period_end; only used with --mode unsubscribe",
+			Value: string(atomic.UserImportUnsubscribeBehaviorImmediate),
 		},
 		// trials
 		&cli.StringFlag{
@@ -210,7 +211,11 @@ var userImportCmd = &cli.Command{
 		// downstream outage) doesn't burn through 100k records silently
 		&cli.Float64Flag{
 			Name:  "abort_on_error_threshold",
-			Usage: "ratio of errored / processed records at which the import aborts (0.0 = abort on any error, 1.0 = never abort). Default 0.01 (1%). The check only fires after at least 100 records have been processed, so a single early failure won't trip it.",
+			Usage: "ratio of errored / processed records at which the import aborts (0.0 = abort on any error, 1.0 = never abort). Default 0.01 (1%). The check only fires after --abort_min_sample records have been processed (default 100), so a single early failure won't trip it.",
+		},
+		&cli.UintFlag{
+			Name:  "abort_min_sample",
+			Usage: "minimum processed records before abort-on-error is evaluated. 0/unset = 100. Testing knob so a small CSV can trip abort (e.g. --abort_min_sample 1 --abort_on_error_threshold 0).",
 		},
 		// discount code (coupon passcode)
 		&cli.StringFlag{
@@ -336,7 +341,14 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 	}
 	csvFile.Close()
 
-	if err := validateImportCSV(records); err != nil {
+	if input.Mode != nil && *input.Mode == atomic.UserImportModeUnsubscribe {
+		// Login uniqueness only. Per-row email-format belongs on the server so
+		// a bad login is a countable unsubscribe error (abort-on-error), not a
+		// client-side reject of the whole file.
+		if err := validateUnsubscribeCSVLogins(records); err != nil {
+			return err
+		}
+	} else if err := validateImportCSV(records); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "validated %d records\n", len(records))
@@ -354,6 +366,28 @@ func userImport(ctx context.Context, cmd *cli.Command) error {
 		return waitForJob(ctx, job, mainCmd.Bool("verbose"), false)
 	}
 
+	return nil
+}
+
+// validateUnsubscribeCSVLogins rejects duplicate logins. Empty or non-email
+// logins are left for the server (mode=unsubscribe Validate / abort-on-error).
+func validateUnsubscribeCSVLogins(records []*importRecord) error {
+	seen := make(map[string]bool)
+	var dupes int
+	for _, rec := range records {
+		login := strings.ToLower(strings.TrimSpace(rec.Login))
+		if login == "" {
+			continue
+		}
+		if seen[login] {
+			dupes++
+		} else {
+			seen[login] = true
+		}
+	}
+	if dupes > 0 {
+		return fmt.Errorf("CSV validation failed: 0 validation errors, %d duplicate issues; run 'migrate validate' for details", dupes)
+	}
 	return nil
 }
 

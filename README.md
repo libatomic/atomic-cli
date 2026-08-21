@@ -494,7 +494,7 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--subscribe_plans` | Plan IDs to subscribe users to (repeatable); not allowed with `--mode unsubscribe` | |
 | `--subscribe_behavior` | Subscribe behavior: `all_users`, `subscribers_only`, `non_subscribers_only`, `subscribers_skip_paid`, `none` | `all_users` |
 | `--unsubscribe_plans` | Plan IDs to unsubscribe users from (repeatable); required when `--mode unsubscribe`, rejected in `import`/`update` | |
-| `--unsubscribe_behavior` | Unsubscribe cancel timing: `at_period_end` (no audience rebuild), `immediate` (rebuilds each plan audience on that audience's instance — parent and child — if anything canceled, including after abort) | `at_period_end` |
+| `--unsubscribe_behavior` | Unsubscribe cancel timing: `immediate` (rebuilds each plan audience on that audience's instance — parent and child — if anything canceled, including after abort), `at_period_end` (no audience rebuild) | `immediate` |
 | `--trial_plan_id` | Trial plan ID | |
 | `--trial_price_id` | Trial price ID | |
 | `--trial_end_at` | Trial end date/time | |
@@ -512,7 +512,8 @@ All options can be provided via CLI flags, a JSON config file (`--config`), or b
 | `--team_limit_behavior` | Team seat limit behavior: `drop_admin`, `drop_user`, `expand_subscription` | `drop_admin` |
 | `--job_event_options` | Event options for the job completed event: pipe-delimited flags (`LOG\|EMIT\|SYNC\|CHILDREN\|CONTEXT\|SUPPRESS`). Controls whether the completion event triggers emails, webhooks, etc. | |
 | `--job_max_workers` | Override the per-job worker concurrency. Clamped to `[1, NumCPU]` and further capped by the server-side `UserImportMaxWorkers` (itself clamped to `[1, NumCPU]`, tunable via `ATOMIC_USER_IMPORT_WORKERS`). Leave unset to use the server default. | |
-| `--abort_on_error_threshold` | Ratio of errored / processed records at which the import aborts (safety net for pathological runs — bad CSV, upstream outage). `0` aborts on any error, `1.0` disables the check, otherwise the import stops once the ratio crosses the threshold. The check is only evaluated after at least 100 records have been processed, so a single early failure can't trip it. When it fires, in-flight workers drain. Import skips the team second pass and audience rebuild (created users and subscriptions are retained). Unsubscribe `immediate` still rebuilds plan audiences if anything canceled, each on that audience's instance (parent and child). The report's status becomes `aborted` with a reason note, and the job row's `queue_error` carries the message. | `0.01` (1%) |
+| `--abort_on_error_threshold` | Ratio of errored / processed records at which the import aborts (safety net for pathological runs — bad CSV, upstream outage). `0` aborts on any error, `1.0` disables the check, otherwise the import stops once the ratio crosses the threshold. The check is only evaluated after `--abort_min_sample` records have been processed (default 100), so a single early failure can't trip it. When it fires, in-flight workers drain. Import skips the team second pass and audience rebuild (created users and subscriptions are retained). Unsubscribe `immediate` still rebuilds plan audiences if anything canceled, each on that audience's instance (parent and child). The report's status becomes `aborted` with a reason note, and the job row's `queue_error` carries the message. | `0.01` (1%) |
+| `--abort_min_sample` | Minimum processed records before abort-on-error is evaluated. `0`/unset = 100. Testing knob so a small CSV can trip abort (e.g. `--abort_min_sample 1 --abort_on_error_threshold 0`). | `100` |
 | `--user_import_skip` | Skip the first N records of the parsed CSV before importing. Must not exceed the parsed record count (the job fails if it does). Primarily a testing knob. | `0` |
 | `--user_import_limit` | Process at most N records (applied after `--user_import_skip`). `0` means no limit; values larger than the remaining record count are silently capped. Primarily a testing knob. | `0` |
 | `--wait` | Wait for the import job to complete, showing a progress bar. With `--verbose`, also streams job logs above the progress bar. On completion, prints total duration and a per-stage breakdown (duration and items/sec); also prints any `job.Errors` recorded by the handler, even when the queue status is `success`. **Ctrl+C detaches** the tail — the import keeps running on the server; use `atomic-cli job get <id> --wait` or `atomic-cli job cancel <id>` to manage it. | `false` |
@@ -536,11 +537,31 @@ atomic-cli user import migrate_users.csv -i inst_abc123 -c import-config.json --
 # Import and wait for completion with progress bar and log streaming
 atomic-cli user import migrate_users.csv -i inst_abc123 --wait --verbose
 
-# Bulk unsubscribe existing users from a plan
+# Bulk unsubscribe existing users from a plan (immediate by default)
+atomic-cli user import users.csv \
+  --mode unsubscribe \
+  --unsubscribe_plans plan_abc123 \
+  --wait
+
+# Same, but keep paid access until period end (no audience rebuild)
 atomic-cli user import users.csv \
   --mode unsubscribe \
   --unsubscribe_plans plan_abc123 \
   --unsubscribe_behavior at_period_end \
+  --wait
+
+# Replace a cohort on existing products (remove list, then enroll a new list).
+# Full steps: https://github.com/libatomic/atomic/blob/pspt-702/bulk-plan-remove/docs/USER_IMPORT.md#replace-users-on-existing-products
+atomic-cli user import remove-100.csv -i inst_abc123 \
+  --mode unsubscribe \
+  --unsubscribe_plans plan_abc123 --unsubscribe_plans plan_def456 --unsubscribe_plans plan_ghi789 \
+  --unsubscribe_behavior immediate \
+  --wait
+atomic-cli user import add-60.csv -i inst_abc123 \
+  --subscribe_plans plan_abc123 --subscribe_plans plan_def456 --subscribe_plans plan_ghi789 \
+  --subscribe_behavior all_users \
+  --default_plan_behavior none \
+  --existing_user_behavior retain \
   --wait
 ```
 

@@ -31,8 +31,8 @@ import (
 	"time"
 
 	"github.com/apex/log"
-	"github.com/libatomic/atomic/pkg/ptr"
-	"github.com/libatomic/atomic/pkg/util"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/util"
 	"github.com/schollz/progressbar/v3"
 	"github.com/stripe/stripe-go/v79"
 	stripecoupon "github.com/stripe/stripe-go/v79/coupon"

@@ -31,11 +31,11 @@ import (
 
 	"github.com/apex/log"
 	"github.com/lensesio/tableprinter"
-	client "github.com/libatomic/atomic-go"
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/db"
-	"github.com/libatomic/atomic/pkg/ptr"
-	"github.com/libatomic/atomic/pkg/util"
+	client "github.com/libatomic/atomic-go/v2"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/db"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/util"
 	"github.com/spf13/cast"
 	"github.com/urfave/cli/v3"
 )

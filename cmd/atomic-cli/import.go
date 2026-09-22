@@ -26,9 +26,9 @@ import (
 	"path"
 	"strings"
 
-	client "github.com/libatomic/atomic-go"
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/ptr"
+	client "github.com/libatomic/atomic-go/v2"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
 

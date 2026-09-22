@@ -1,4 +1,4 @@
-module github.com/libatomic/atomic-cli
+module github.com/libatomic/atomic-cli/v2
 
 go 1.26
 
@@ -15,8 +15,8 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
-	github.com/libatomic/atomic v1.2.4
-	github.com/libatomic/atomic-go v1.2.4
+	github.com/libatomic/atomic-go/v2 v2.0.0-20260922203609-d22e361b8c8a
+	github.com/libatomic/atomic/v2 v2.0.1
 	github.com/mattn/go-isatty v0.0.21
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/schollz/progressbar/v3 v3.19.0
@@ -95,6 +95,7 @@ require (
 	github.com/fanatic/instrumentedsql v0.0.0-20220630161905-0737c8d31b10 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
+	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-openapi/errors v0.22.7 // indirect

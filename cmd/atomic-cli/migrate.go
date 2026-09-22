@@ -30,9 +30,9 @@ import (
 
 	"github.com/apex/log"
 	"github.com/gocarina/gocsv"
-	atomicpkg "github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/ptr"
-	"github.com/libatomic/atomic/pkg/util"
+	atomicpkg "github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/util"
 	"github.com/schollz/progressbar/v3"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"

@@ -26,9 +26,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/ptr"
-	"github.com/libatomic/atomic/pkg/queue"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/queue"
 	"github.com/schollz/progressbar/v3"
 )
 

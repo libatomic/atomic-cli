@@ -29,9 +29,9 @@ import (
 	"ariga.io/atlas-go-sdk/atlasexec"
 	"github.com/apex/log"
 	"github.com/go-sql-driver/mysql"
-	"github.com/libatomic/atomic/assets"
-	deploy "github.com/libatomic/atomic/deployments"
-	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/v2/assets"
+	deploy "github.com/libatomic/atomic/v2/deployments"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
 	"github.com/urfave/cli/v3"
 )
 

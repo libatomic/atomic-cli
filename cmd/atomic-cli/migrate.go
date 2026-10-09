@@ -18,7 +18,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -272,17 +271,6 @@ func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun boo
 	}
 
 	return
-}
-
-func confirmAction(title string) (bool, error) {
-	fmt.Fprintf(os.Stderr, "%s [y/N]: ", title)
-	reader := bufio.NewReader(os.Stdin)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return false, err
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	return answer == "y" || answer == "yes", nil
 }
 
 // Rewrite rewrites an email address according to the configured mode.

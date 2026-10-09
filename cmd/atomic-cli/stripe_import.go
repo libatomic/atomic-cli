@@ -18,7 +18,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -316,10 +315,11 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 
 	if liveMode && !dryRun {
 		fmt.Fprintf(os.Stderr, "WARNING: you are about to import into a LIVE Stripe account (%s)\n", acct.ID)
-		fmt.Fprintf(os.Stderr, "type 'confirm livemode import' to proceed: ")
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		if strings.TrimSpace(answer) != "confirm livemode import" {
+		answer, err := promptLine("type 'confirm livemode import' to proceed: ")
+		if err != nil {
+			return err
+		}
+		if answer != "confirm livemode import" {
 			return fmt.Errorf("import aborted")
 		}
 	}
@@ -334,10 +334,11 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 	if clean {
 		fmt.Fprintf(os.Stderr, "WARNING: this will clear all import state and ID mappings, starting a fresh import.\n")
 		fmt.Fprintf(os.Stderr, "Previously imported objects will NOT be deleted from Stripe.\n")
-		fmt.Fprintf(os.Stderr, "type 'yes' to proceed: ")
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		if strings.TrimSpace(answer) != "yes" {
+		answer, err := promptLine("type 'yes' to proceed: ")
+		if err != nil {
+			return err
+		}
+		if answer != "yes" {
 			return fmt.Errorf("import aborted")
 		}
 		os.Remove(filepath.Join(inputDir, importStateFilename))
@@ -385,10 +386,11 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 			fmt.Fprintf(os.Stderr, "WARNING: you are importing live customer data into a test account without email rewriting.\n")
 			fmt.Fprintf(os.Stderr, "Real customer email addresses will be used, which may cause Stripe to send emails to real users.\n")
 			fmt.Fprintf(os.Stderr, "Use --email-domain-overwrite or --email-template to rewrite emails.\n\n")
-			fmt.Fprintf(os.Stderr, "Continue anyway? [y/N]: ")
-			reader := bufio.NewReader(os.Stdin)
-			answer, _ := reader.ReadString('\n')
-			if a := strings.TrimSpace(strings.ToLower(answer)); a != "y" && a != "yes" {
+			ok, err := confirmAction("Continue anyway?")
+			if err != nil {
+				return err
+			}
+			if !ok {
 				return fmt.Errorf("import aborted")
 			}
 		} else {
@@ -480,10 +482,11 @@ func stripeImport(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if !liveMode {
-		fmt.Fprintf(os.Stderr, "proceed with import? [y/N]: ")
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		if a := strings.TrimSpace(strings.ToLower(answer)); a != "y" && a != "yes" {
+		ok, err := confirmAction("proceed with import?")
+		if err != nil {
+			return err
+		}
+		if !ok {
 			return fmt.Errorf("import aborted")
 		}
 	}

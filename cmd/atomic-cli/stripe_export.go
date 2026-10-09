@@ -18,7 +18,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -293,10 +292,11 @@ func stripeExport(ctx context.Context, cmd *cli.Command) error {
 	if clean || manifest == nil {
 		if clean && manifest != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: this will delete all existing export data in %s and start a fresh export.\n", exportDir)
-			fmt.Fprintf(os.Stderr, "type 'yes' to proceed: ")
-			reader := bufio.NewReader(os.Stdin)
-			answer, _ := reader.ReadString('\n')
-			if strings.TrimSpace(answer) != "yes" {
+			answer, err := promptLine("type 'yes' to proceed: ")
+			if err != nil {
+				return err
+			}
+			if answer != "yes" {
 				return fmt.Errorf("export aborted")
 			}
 			fmt.Fprintf(os.Stderr, "clearing existing export data\n")

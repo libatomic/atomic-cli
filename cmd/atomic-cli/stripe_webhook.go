@@ -683,6 +683,9 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 
 	// --- view-only mode: just show the TUI with existing events ---
 	if viewOnly {
+		if !isTerminal(os.Stdout) {
+			return fmt.Errorf("--view requires an interactive terminal")
+		}
 		m := newWebhookModel(evtLog, acct.ID, "", "", "", eventsPath)
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
@@ -837,6 +840,9 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// --- full TUI mode ---
+	if !isTerminal(os.Stdout) {
+		return fmt.Errorf("the webhook TUI requires an interactive terminal; use --log-only for scripted runs")
+	}
 	m := newWebhookModel(evtLog, acct.ID, publicURL, endpointID, webhookSecret, eventsPath)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 

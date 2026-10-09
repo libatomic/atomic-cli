@@ -130,6 +130,7 @@ You can store one or more named profiles in a credentials file and switch betwee
 | `stripe_key` | `--stripe-key` / `-k` (under `stripe` and `migrate`) | Default Stripe API key, used by `stripe ...` and `migrate substack` / `migrate map` |
 | `stripe_livemode` | `--live-mode` (under `stripe`) | Allow live Stripe keys for the profile (boolean) |
 | `db_source` | `--db_source` | Direct DB connection string (hidden flag; for internal use) |
+| `db_cache` | `--db_cache` | The nodes' cache URI (`redis://...`) that goes with `db_source`, so direct changes flush what they have cached (hidden flag) |
 
 **TOML example** (`~/.atomic/credentials`):
 
@@ -1184,6 +1185,44 @@ atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate
 # Create database and apply migrations
 atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate --create --apply
 ```
+
+#### Rotate an instance's token signing key
+
+```bash
+atomic-cli --db_source "..." --db_cache "redis://..." instance token-rotate <instance id or name> [options]
+```
+
+Generates a new signing key for the instance and keeps the current one as
+the previous key for a grace period, so bearers, feed and email link tokens,
+tracking links and webhook signatures issued before the rotation keep
+verifying while everything new is signed with the new key. Verification
+picks the key by the token's algorithm, so the algorithm must change (the
+usual move is RS256 to ES256, which is much cheaper to verify) unless
+`--force`. The command flushes every cached copy of the instance on the
+nodes through `--db_cache`; without it the nodes keep the old key for up to
+15 minutes. Needs atomic 2.1 with the `token_secret_prev` columns.
+
+**Options:**
+
+| Option | Description | Default |
+|------------------|------------------------------------------------------------------|---------|
+| `--alg` | The new algorithm: `ES256` or `HS256` | `ES256` |
+| `--grace` | How long the previous key keeps verifying: `90d`, `120d`, `2160h` (1 to 365 days) | `90d` |
+| `--retire` | Drop the previous key now instead of rotating | `false` |
+| `--force` | Rotate even if the algorithm is unchanged or a previous key is still in grace | `false` |
+| `--no-cache-flush` | Run without `--db_cache` (nodes stay stale for up to 15 minutes) | `false` |
+
+**Examples:**
+```bash
+# Move a publisher from RS256 to ES256, keeping the RSA key good for 120 days
+atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --alg ES256 --grace 120d
+
+# End the grace period early
+atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --retire
+```
+
+Set `ATOMIC_ENGAGEMENT_IP_SALT` on every node before the first rotation,
+otherwise unique-device counts reset with the secret.
 
 ### Import Command
 

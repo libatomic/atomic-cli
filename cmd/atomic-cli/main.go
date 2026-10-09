@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"os/user"
 	"reflect"
 	"strings"
 	"syscall"
@@ -81,10 +80,14 @@ const (
 )
 
 func main() {
+	applyAgentDefaults()
+
 	profile = DefaultProfile
 
-	usr, _ := user.Current()
-	dir := usr.HomeDir
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		log.Warnf("could not determine home directory: %v", err)
+	}
 
 	creds = dir + "/.atomic/credentials"
 
@@ -211,9 +214,19 @@ func main() {
 		sessionCmd,
 		statusCmd,
 		mcpCmd,
+		skillsCmd,
+		doctorCmd,
+		setupCmd,
+		helpCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		// Local-only commands (skills, doctor, setup, help) never need a
+		// backend or an instance; skip the network entirely.
+		if isLocalCommand(cmd) {
+			return ctx, nil
+		}
+
 		if cmd.IsSet("db_source") && cmd.String("db_source") != "" {
 			conn, err := db.Connect(ctx, cmd.String("db_source"))
 			if err != nil {
@@ -238,7 +251,7 @@ func main() {
 			if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
 				opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
 			} else if cmd.IsSet("access_token") {
-				opts = append(opts, client.WithToken(cmd.String("access-token")))
+				opts = append(opts, client.WithToken(cmd.String("access_token")))
 			}
 
 			backend = client.New(opts...)

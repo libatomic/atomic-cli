@@ -14,6 +14,7 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Environment Variables](#environment-variables)
   - [Credentials file (TOML or YAML)](#credentials-file-toml-or-yaml)
   - [Authentication](#authentication)
+  - [Agent Setup](#agent-setup)
 - [Global Options](#global-options)
 - [Commands](#commands)
   - [Instance Management](#instance-management)
@@ -34,6 +35,12 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Session Diagnostics](#session-diagnostics)
   - [Cluster Status](#cluster-status)
   - [MCP Server](#mcp-server)
+  - [AI Agent Integration](#ai-agent-integration)
+    - [Skills](#skills)
+    - [Doctor](#doctor)
+    - [Setup](#setup)
+    - [Machine-readable help](#machine-readable-help)
+    - [Agent defaults](#agent-defaults)
 - [Output Formats](#output-formats)
 - [Field Selection](#field-selection)
 - [File Input](#file-input)
@@ -45,6 +52,8 @@ A command-line interface for managing Atomic instances, applications, users, and
 ## Overview
 
 The `atomic-cli` is a powerful command-line tool for interacting with the Atomic platform. It provides comprehensive management capabilities for instances, applications, users, and options through an intuitive CLI interface.
+
+It is also built to be driven by AI coding agents: every command has JSON output, `help describe` emits the full command grammar as JSON, `PASSPORT_AGENT_DEFAULTS=1` turns off prompts, and `atomic-cli setup` installs skills that teach Claude Code, Codex, Cursor, Gemini CLI and other agents how to use it. See [AI Agent Integration](#ai-agent-integration).
 
 ## Installation
 
@@ -61,6 +70,9 @@ brew install libatomic/tap/atomic-cli
 
 # Upgrade later
 brew upgrade libatomic/tap/atomic-cli
+
+# Optional: install the agent skills and check your setup
+atomic-cli setup
 ```
 
 ### Download prebuilt binaries
@@ -92,6 +104,9 @@ The CLI supports configuration through environment variables or command-line fla
 - `PASSPORT_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
 - `PASSPORT_API_HOST` - The Passport API host (defaults to the client default)
 - `PASSPORT_DB_SOURCE` - Used for direct connection to the Passport db rather than API
+- `PASSPORT_INSTANCE_ID` - Default target instance (ID or name/domain); same as `-i`
+- `PASSPORT_OUT_FORMAT` - Default output format (`table`, `json`, `json-pretty`, `jsonl`); same as `-o`
+- `PASSPORT_AGENT_DEFAULTS` - Set to `1` when an AI agent or script drives the CLI: JSON output by default and no interactive prompts (see [Agent defaults](#agent-defaults))
 
 ### Credentials file (TOML or YAML)
 
@@ -176,19 +191,37 @@ atomic-cli --credentials /path/to/credentials instance list
 
 The CLI supports two authentication methods:
 
-1. **Access Token**: Use `--access-token` flag or `PASSPORT_ACCESS_TOKEN` environment variable
-2. **Client Credentials**: Use `--client-id` and `--client-secret` flags or environment variables
+1. **Access Token**: Use the `--access_token` flag or `PASSPORT_ACCESS_TOKEN` environment variable
+2. **Client Credentials**: Use the `--client_id` and `--client_secret` flags or environment variables
+
+### Agent Setup
+
+If you use an AI coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot), run once:
+
+```bash
+atomic-cli setup
+```
+
+This installs the atomic-cli skills into the agent skills directories, prints a credentials template if `~/.atomic/credentials` is missing, and runs `atomic-cli doctor`. Details are in [AI Agent Integration](#ai-agent-integration).
 
 ## Global Options
 
+Global options go **before** the command: `atomic-cli -p prod -i my.site -o json user list`.
+
 | Option | Alias | Description | Default |
 |------------------------|-------|----------------------------------------------|---------|
-| `--access-token` | | Specify the access token | |
-| `--client-id` | | Specify the client ID | |
-| `--client-secret` | | Specify the client secret | |
-| `--host` | | Specify the API host | Client default |
-| `--out-format` | `-o` | Output format (table, json, json-pretty) | table |
-| `--fields` | `-f` | Specify fields to display | |
+| `--profile` | `-p` | Credentials profile to use | `default` |
+| `--credentials` | `-c` | Path to the credentials file | `~/.atomic/credentials` |
+| `--host` | `-h` | API host | Client default |
+| `--access_token` | | Bearer access token | |
+| `--client_id` | | OAuth2 client ID | |
+| `--client_secret` | | OAuth2 client secret | |
+| `--instance_id` | `-i`, `--instance` | Target instance (base58 ID or name/domain) | |
+| `--out-format` | `-o` | Output format (`table`, `json`, `json-pretty`, `jsonl`) | `table` |
+| `--fields` | `-f` | Fields to display in table output | |
+| `--verbose` | `-v` | Verbose logging | `false` |
+
+Every global option can also come from the environment (`PASSPORT_*`) or the selected credentials profile; precedence is flag > environment > credentials file > default.
 
 ## Commands
 
@@ -2725,6 +2758,88 @@ Once wired up, the host can answer questions by composing read-only tool calls. 
 - **Subprocess errors** (non-zero exit, panic, network failure) are returned as `isError: true` MCP results with the child's stderr included — the server itself stays alive across failed calls.
 - **Secrets are redacted** in the server's own log line; `--client_id`, `--client_secret`, and `--access_token` are forwarded to subprocess calls but never echoed at full value to stderr.
 
+### AI Agent Integration
+
+The preferred way for AI coding agents to use atomic-cli is to run the binary directly, guided by **skills**: short markdown documents that tell the agent when to reach for atomic-cli, how to discover the exact command grammar, and which operations need confirmation. This is lighter than the MCP server above (no long-running process, no instance bound at start) and works in any agent that reads a skills directory.
+
+```bash
+atomic-cli setup            # install skills + check credentials + doctor
+atomic-cli doctor           # re-check any time
+atomic-cli skills list      # where the skills are and whether they match this binary
+```
+
+#### Skills
+
+The binary embeds six skills: a root `atomic-cli` skill that routes to five companions (`atomic-cli-identity`, `atomic-cli-billing`, `atomic-cli-content`, `atomic-cli-platform`, `atomic-cli-migrate`). Their sources live in [`skills/`](skills/) in this repository.
+
+```bash
+atomic-cli skills install                 # all agents, home directory
+atomic-cli skills install --agent claude  # one agent
+atomic-cli skills install --local         # this project only (./.agents/skills, ./.claude/skills)
+atomic-cli skills uninstall               # remove everything atomic-cli installed
+atomic-cli skills list -o json
+```
+
+| `--agent` value | Directory | Read by |
+|---|---|---|
+| `agents` (default, also `codex`, `cursor`, `gemini`, `copilot`, `windsurf`) | `~/.agents/skills/` | Codex, Cursor, Gemini CLI, GitHub Copilot and any `.agents/skills`-compatible host |
+| `claude` | `~/.claude/skills/` | Claude Code |
+
+With no `--agent`, both are installed. Each installed skill directory gets an `.atomic-cli-install.json` manifest recording the CLI version, commit and binary path, so `doctor` and `skills list` can tell you when the installed skills are older than the binary. Install replaces existing atomic-cli skill directories, prunes atomic-cli skills from older versions that no longer ship (disable with `--no-prune`), and never touches directories that lack the manifest. Symlinked skill directories are left alone unless you pass `--yes`.
+
+Restart the agent session after installing. In Claude Code the root skill then appears as `/atomic-cli`.
+
+#### Doctor
+
+`atomic-cli doctor` is a read-only health check that needs no backend unless credentials resolve:
+
+```bash
+atomic-cli doctor                      # human checklist
+atomic-cli -p prod doctor -o json      # machine-readable, for agents
+atomic-cli doctor --no-network         # skip the API round trip
+atomic-cli doctor --local              # also report ./.agents/skills and ./.claude/skills
+```
+
+The JSON report has these top-level keys:
+
+| Key | Contents |
+|---|---|
+| `build` | version, commit, build date |
+| `install` | the running executable, what `atomic-cli` on `PATH` resolves to, other copies found in common bin directories |
+| `credentials` | file path, whether it exists and parses, the selected profile, and per-profile field **names** (never values); `envVars` lists which `PASSPORT_*` variables are set |
+| `connectivity` | whether an API call was attempted, succeeded, and which instance resolved. Attempted only when `client_id`/`client_secret` or `access_token` resolve for the profile |
+| `skills` | per agent host: skills directory, installed vs expected count, stale skills, and the repair command |
+| `problems` | human-readable remediation strings; empty when everything is fine |
+
+Exit status is always 0; consult `problems`.
+
+#### Setup
+
+`atomic-cli setup` runs `skills install` (same flags), prints a credentials template when `~/.atomic/credentials` does not exist, then runs `doctor`. It is safe to re-run after upgrading the CLI.
+
+#### Machine-readable help
+
+`help describe` walks the command tree and emits JSON an agent can plan from without guessing flags:
+
+```bash
+atomic-cli help describe -o json                      # whole tree
+atomic-cli help describe user list -o json-pretty     # one command
+atomic-cli help describe --leaves-only -o json        # flat list of runnable commands
+atomic-cli help describe stripe --depth 1 -o json     # one level only
+```
+
+Each node carries `path`, `usage`, `args` (parsed from the usage string, with `required` / `variadic`), `flags` (name, aliases, type, default, env vars, required), `read_only`, `destructive`, `local` (needs no backend) and `leaf`. The root node also carries `global_flags`. Classification uses the same verb rules and `mcp:readOnly` / `mcp:destructive` metadata as the MCP server. The plain `atomic-cli help [command]` output is unchanged.
+
+#### Agent defaults
+
+Set `PASSPORT_AGENT_DEFAULTS=1` (alias `ATOMIC_AGENT_DEFAULTS`) in the environment an agent spawns the CLI from:
+
+- `--out-format` defaults to `json` unless `PASSPORT_OUT_FORMAT` or `-o` says otherwise.
+- Interactive confirmations (`migrate …` overwrite prompts, `stripe import` live-mode and sandbox warnings, `skills uninstall`) fail immediately with a clear error instead of waiting on stdin. Pass `--yes` where a command supports it, or run the command interactively.
+- Full-screen TUIs (`status --top`, `stripe webhook`) refuse to start without a terminal in any mode.
+
+The installed skills instruct agents to always pass `-o json`, to describe a command before composing flags, to prefer read-only verbs, to confirm every mutating or destructive command, and never to run `setup`, `skills install`, or edit credentials unless asked.
+
 ## Output Formats
 
 The CLI supports multiple output formats controlled by the `--out-format` option:
@@ -2842,6 +2957,8 @@ Check the CLI version:
 ```bash
 atomic-cli --version
 ```
+
+`atomic-cli doctor` also reports the version, commit and build date alongside install and credentials checks.
 
 ## License
 

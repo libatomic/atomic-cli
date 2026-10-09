@@ -119,7 +119,12 @@ func describeAction(ctx context.Context, cmd *cli.Command) error {
 		path = append(path, next.Name)
 	}
 
-	desc := describeCommand(target, path, cmd.Int("depth"))
+	depth := cmd.Int("depth")
+	if depth <= 0 {
+		depth = -1
+	}
+
+	desc := describeCommand(target, path, depth)
 	if target == root {
 		desc.Path = root.Name
 		desc.Name = root.Name
@@ -141,7 +146,8 @@ func describeAction(ctx context.Context, cmd *cli.Command) error {
 }
 
 // describeCommand builds the description of c (located at path) and its
-// visible descendants. depth limits recursion; 0 means unlimited.
+// visible descendants. depth is the number of levels to include below c;
+// a negative depth means unlimited.
 func describeCommand(c *cli.Command, path []string, depth int) commandDesc {
 	d := commandDesc{
 		Path:        strings.Join(path, " "),
@@ -172,7 +178,7 @@ func describeCommand(c *cli.Command, path []string, depth int) commandDesc {
 		})
 	}
 
-	if depth == 1 {
+	if depth == 0 {
 		return d
 	}
 	next := depth

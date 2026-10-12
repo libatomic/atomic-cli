@@ -122,8 +122,8 @@ var (
 				ArgsUsage: "token-rotate <instance id or name>",
 				Description: "Generates a new signing key and moves the current one into the previous slot, where it keeps " +
 					"verifying bearers, link tokens and webhook signatures until the grace period ends; everything new is " +
-					"signed with the new key. Keys are told apart by algorithm, so the algorithm must change unless --force. " +
-					"Needs --db_source and --db_cache so the nodes' cached copies of the instance are flushed.",
+					"signed with the new key under its own kid. Rotating while a previous key is still in grace needs " +
+					"--force. Needs --db_source and --db_cache so the nodes' cached copies of the instance are flushed.",
 				Action: instTokenRotate,
 				Before: requireDirectDB,
 				Flags: []cli.Flag{
@@ -142,8 +142,12 @@ var (
 						Usage: "drop the previous key now instead of rotating",
 					},
 					&cli.BoolFlag{
+						Name:  "revert",
+						Usage: "undo the last rotation: the previous key signs again and the key it replaces moves to the previous slot with --grace",
+					},
+					&cli.BoolFlag{
 						Name:  "force",
-						Usage: "rotate even if the algorithm is unchanged or a previous key is still in its grace period (what they signed stops verifying)",
+						Usage: "rotate even if a previous key is still in its grace period (what it signed stops verifying)",
 					},
 					&cli.BoolFlag{
 						Name:  "no-cache-flush",
@@ -382,9 +386,19 @@ func instTokenRotate(ctx context.Context, cmd *cli.Command) error {
 
 	in := &atomic.InstanceTokenRotateInput{InstanceID: target.UUID}
 
-	if cmd.Bool("retire") {
+	switch {
+	case cmd.Bool("retire"):
 		in.Retire = ptr.True
-	} else {
+	case cmd.Bool("revert"):
+		in.Revert = ptr.True
+
+		grace, err := parseGrace(cmd.String("grace"))
+		if err != nil {
+			return err
+		}
+
+		in.Grace = &grace
+	default:
 		alg := oauth.TokenAlgorithm(strings.ToUpper(strings.TrimSpace(cmd.String("alg"))))
 		in.Algorithm = &alg
 
@@ -405,7 +419,7 @@ func instTokenRotate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	PrintResult(cmd, []*atomic.Instance{inst}, WithFields("id", "name", "token_algorithm", "token_algorithm_prev", "token_rotated_at", "token_prev_expires_at"))
+	PrintResult(cmd, []*atomic.Instance{inst}, WithFields("id", "name", "token_algorithm", "token_kid", "token_algorithm_prev", "token_kid_prev", "token_rotated_at", "token_prev_expires_at"))
 
 	if cmd.Root().String("db_cache") == "" {
 		fmt.Fprintln(os.Stderr, "note: no --db_cache; nodes keep the old key for up to 15 minutes")

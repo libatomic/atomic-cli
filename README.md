@@ -1195,12 +1195,15 @@ atomic-cli --db_source "..." --db_cache "redis://..." instance token-rotate <ins
 Generates a new signing key for the instance and keeps the current one as
 the previous key for a grace period, so bearers, feed and email link tokens,
 tracking links and webhook signatures issued before the rotation keep
-verifying while everything new is signed with the new key. Verification
-picks the key by the token's algorithm, so the algorithm must change (the
-usual move is RS256 to ES256, which is much cheaper to verify) unless
-`--force`. The command flushes every cached copy of the instance on the
-nodes through `--db_cache`; without it the nodes keep the old key for up to
-15 minutes. Needs atomic 2.1 with the `token_secret_prev` columns.
+verifying while everything new is signed with the new key. Each key is
+published in JWKS under its own `kid`: the key being retained keeps the one
+it signed with (the hostname for a never-rotated key, so tokens already out
+keep matching) and the new key gets a random id, which new tokens carry, so
+the algorithm may stay the same (the usual move is still RS256 to ES256,
+which is much cheaper to verify). The command
+flushes every cached copy of the instance on the nodes through `--db_cache`;
+without it the nodes keep the old key for up to 15 minutes. Needs atomic 2.1
+with the `token_secret_prev` columns.
 
 **Options:**
 
@@ -1209,7 +1212,8 @@ nodes through `--db_cache`; without it the nodes keep the old key for up to
 | `--alg` | The new algorithm: `ES256` or `HS256` | `ES256` |
 | `--grace` | How long the previous key keeps verifying: `90d`, `120d`, `2160h` (1 to 365 days) | `90d` |
 | `--retire` | Drop the previous key now instead of rotating | `false` |
-| `--force` | Rotate even if the algorithm is unchanged or a previous key is still in grace | `false` |
+| `--revert` | Undo the last rotation: the previous key signs again and the key it replaces takes the previous slot with `--grace` | `false` |
+| `--force` | Rotate even if a previous key is still in grace | `false` |
 | `--no-cache-flush` | Run without `--db_cache` (nodes stay stale for up to 15 minutes) | `false` |
 
 **Examples:**
@@ -1219,6 +1223,9 @@ atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rota
 
 # End the grace period early
 atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --retire
+
+# Undo the rotation (the ES256 key stays verifiable for the grace, then --retire it)
+atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --revert --grace 7d
 ```
 
 Set `ATOMIC_ENGAGEMENT_IP_SALT` on every node before the first rotation,

@@ -55,6 +55,11 @@ var (
 				Usage: "render the queues table below the nodes table (--top mode only)",
 				Value: true,
 			},
+			&cli.BoolFlag{
+				Name:  "engagement",
+				Usage: "render the engagement writer / intake tables (--top mode only)",
+				Value: true,
+			},
 			&cli.DurationFlag{
 				Name:  "interval",
 				Usage: "polling interval for --top (minimum 60s; smaller values are clamped)",
@@ -92,6 +97,10 @@ type (
 		Scheduler  *statusQueue `json:"scheduler,omitempty"`
 		MsgQueue   *statusQueue `json:"msg_queue,omitempty"`
 		Work       *statusQueue `json:"work_queue,omitempty"`
+
+		Engagement         *statusEngagement         `json:"engagement,omitempty"`
+		EngagementConsumer *statusEngagementConsumer `json:"engagement_consumer,omitempty"`
+		EngagementIntake   *statusEngagementIntake   `json:"engagement_intake,omitempty"`
 	}
 
 	statusQueue struct {
@@ -108,6 +117,61 @@ type (
 		AvgDispatchDuration  string     `json:"avg_dispatch_duration,omitempty"`
 		DispatchRate         float64    `json:"dispatch_rate"`
 		ErrorRate            float64    `json:"error_rate,omitempty"`
+	}
+
+	// statusEngagement mirrors atomic.EngagementStats: the direct DB writer
+	// plus, when ENGAGEMENT_QUEUE is set, broker publication.
+	statusEngagement struct {
+		Enabled           bool       `json:"enabled"`
+		Sealed            bool       `json:"sealed,omitempty"`
+		Pending           int        `json:"pending"`
+		Queued            uint64     `json:"queued"`
+		Flushed           uint64     `json:"flushed"`
+		Dropped           uint64     `json:"dropped"`
+		DroppedAfterSeal  uint64     `json:"dropped_after_seal"`
+		FlushErrors       uint64     `json:"flush_errors"`
+		LastFlushAt       *time.Time `json:"last_flush_at,omitempty"`
+		LastError         string     `json:"last_error,omitempty"`
+		Queue             bool       `json:"queue,omitempty"`
+		Published         uint64     `json:"published,omitempty"`
+		PublishErrors     uint64     `json:"publish_errors"`
+		PublishTimeouts   uint64     `json:"publish_timeouts"`
+		PublishOverloaded uint64     `json:"publish_overloaded"`
+		PublishInFlight   int        `json:"publish_in_flight"`
+	}
+
+	// statusEngagementConsumer mirrors atomic.EngagementConsumerStats: the
+	// cursor-driven aggregator that builds the daily analytics tables.
+	statusEngagementConsumer struct {
+		Enabled          bool       `json:"enabled"`
+		Running          bool       `json:"running"`
+		LastEventID      uint64     `json:"last_event_id"`
+		EventsProcessed  uint64     `json:"events_processed"`
+		BatchesProcessed uint64     `json:"batches_processed"`
+		LastSuccessAt    *time.Time `json:"last_success_at,omitempty"`
+		LastError        string     `json:"last_error,omitempty"`
+	}
+
+	// statusEngagementIntake mirrors atomic.EngagementIntakeStats: the
+	// engagement queue consumer. Only present when ENGAGEMENT_QUEUE is set.
+	statusEngagementIntake struct {
+		Enabled         bool       `json:"enabled"`
+		Running         bool       `json:"running"`
+		LeaseHeld       bool       `json:"lease_held"`
+		Backlog         int64      `json:"backlog"`
+		LagSeconds      float64    `json:"lag_seconds"`
+		RateLimit       float64    `json:"rate_limit"`
+		Batches         uint64     `json:"batches"`
+		Events          uint64     `json:"events"`
+		Duplicates      uint64     `json:"duplicates"`
+		Rejected        uint64     `json:"rejected"`
+		Poisoned        uint64     `json:"poisoned"`
+		Retries         uint64     `json:"retries"`
+		LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
+		LastError       string     `json:"last_error,omitempty"`
+		LastErrorAt     *time.Time `json:"last_error_at,omitempty"`
+		LeaseAcquiredAt *time.Time `json:"lease_acquired_at,omitempty"`
+		LeaseLostCount  uint64     `json:"lease_lost_count"`
 	}
 )
 
@@ -142,6 +206,7 @@ func statusAction(ctx context.Context, cmd *cli.Command) error {
 		host:      host,
 		nodes:     cmd.String("nodes"),
 		showQueue: cmd.Bool("queues"),
+		showEng:   cmd.Bool("engagement"),
 		interval:  interval,
 		token:     cmd.String("access_token"),
 	}
@@ -160,6 +225,7 @@ type (
 		host      string
 		nodes     string
 		showQueue bool
+		showEng   bool
 		interval  time.Duration
 		token     string
 
@@ -253,6 +319,11 @@ func (m statusModel) View() string {
 	if m.showQueue {
 		sb.WriteString("\n")
 		sb.WriteString(renderQueuesTable(m.fetched))
+	}
+
+	if m.showEng {
+		sb.WriteString("\n")
+		sb.WriteString(renderEngagementTables(m.fetched))
 	}
 
 	sb.WriteString("\n")
@@ -360,6 +431,137 @@ func renderQueuesTable(nodes []statusNodeInfo) string {
 		[]string{"NODE", "KIND", "NAME", "TYPE", "STATE", "W", "IN-PROG", "TOTAL", "RATE", "ERR%", "AVG", "LAST DISP", "LAST HB", "LAST ERROR"},
 		out,
 	)
+}
+
+// renderEngagementTables renders the engagement writer / consumer health
+// per node, then the engagement queue intake when any node reports one.
+// Non-zero loss counters (dropped, rejected, poisoned) are colored red and
+// error counters amber, matching the alerts in atomic/docs/STATS.md.
+func renderEngagementTables(nodes []statusNodeInfo) string {
+	var writer, intake [][]string
+	for _, n := range nodes {
+		if n.Status == nil {
+			continue
+		}
+		shortID := shortNodeID(n.ID)
+
+		if e, c := n.Status.Engagement, n.Status.EngagementConsumer; e != nil || c != nil {
+			row := []string{shortID, "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—"}
+			lastErr := ""
+			if e != nil {
+				mode := "direct"
+				switch {
+				case !e.Enabled:
+					mode = "off"
+				case e.Sealed:
+					mode = statusWarnStyle.Render("sealed")
+				case e.Queue:
+					mode = "queue"
+				}
+				lastFlush := "—"
+				if e.LastFlushAt != nil {
+					lastFlush = ago(*e.LastFlushAt)
+				}
+				row[1] = mode
+				row[2] = fmt.Sprintf("%d", e.Pending)
+				row[3] = fmt.Sprintf("%d", e.Flushed)
+				row[4] = countStyle(e.Dropped+e.DroppedAfterSeal, statusBadStyle)
+				row[5] = countStyle(e.FlushErrors, statusWarnStyle)
+				row[6] = lastFlush
+				if e.Queue {
+					row[7] = fmt.Sprintf("%d", e.Published)
+					row[8] = fmt.Sprintf("%s (%d/%d)", countStyle(e.PublishErrors, statusWarnStyle), e.PublishTimeouts, e.PublishOverloaded)
+					row[9] = fmt.Sprintf("%d", e.PublishInFlight)
+				}
+				lastErr = e.LastError
+			}
+			if c != nil {
+				consumer := "standby"
+				if !c.Enabled {
+					consumer = "off"
+				} else if c.Running {
+					consumer = statusOKStyle.Render("running")
+				}
+				lastOK := "—"
+				if c.LastSuccessAt != nil {
+					lastOK = ago(*c.LastSuccessAt)
+				}
+				row[10] = consumer
+				row[11] = fmt.Sprintf("%d", c.LastEventID)
+				row[12] = lastOK
+				if c.LastError != "" {
+					lastErr = c.LastError
+				}
+			}
+			writer = append(writer, append(row, truncate(lastErr, 40)))
+		}
+
+		if in := n.Status.EngagementIntake; in != nil {
+			lease := "standby"
+			if !in.Running {
+				lease = "—"
+			} else if in.LeaseHeld {
+				lease = statusOKStyle.Render("held")
+			}
+			backlog := fmt.Sprintf("%d", in.Backlog)
+			if in.Backlog < 0 {
+				backlog = "?"
+			}
+			lastOK := "—"
+			if in.LastSuccessAt != nil {
+				lastOK = ago(*in.LastSuccessAt)
+			}
+			intake = append(intake, []string{
+				shortID,
+				lease,
+				backlog,
+				fmt.Sprintf("%.1fs", in.LagSeconds),
+				fmt.Sprintf("%.0f/s", in.RateLimit),
+				fmt.Sprintf("%d", in.Batches),
+				fmt.Sprintf("%d", in.Events),
+				fmt.Sprintf("%d", in.Duplicates),
+				countStyle(in.Rejected, statusBadStyle),
+				countStyle(in.Poisoned, statusBadStyle),
+				countStyle(in.Retries, statusWarnStyle),
+				countStyle(in.LeaseLostCount, statusWarnStyle),
+				lastOK,
+				truncate(in.LastError, 40),
+			})
+		}
+	}
+
+	if len(writer) == 0 && len(intake) == 0 {
+		return "Engagement\n  (no engagement data; daemon may predate engagement stats)\n"
+	}
+
+	var sb strings.Builder
+	if len(writer) > 0 {
+		sb.WriteString("Engagement\n")
+		sb.WriteString(renderASCIITable(
+			[]string{"NODE", "MODE", "PENDING", "FLUSHED", "DROPPED", "FLUSH ERR", "LAST FLUSH", "PUBLISHED", "PUB ERR (T/O)", "IN-FLIGHT", "CONSUMER", "CURSOR", "LAST OK", "LAST ERROR"},
+			writer,
+		))
+	}
+	if len(intake) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("Engagement Intake\n")
+		sb.WriteString(renderASCIITable(
+			[]string{"NODE", "LEASE", "BACKLOG", "LAG", "LIMIT", "BATCHES", "EVENTS", "DUPES", "REJECTED", "POISONED", "RETRIES", "LEASE LOST", "LAST OK", "LAST ERROR"},
+			intake,
+		))
+	}
+	return sb.String()
+}
+
+// countStyle renders a counter, styled when it is non-zero.
+func countStyle(n uint64, style lipgloss.Style) string {
+	s := fmt.Sprintf("%d", n)
+	if n > 0 {
+		return style.Render(s)
+	}
+	return s
 }
 
 func renderASCIITable(headers []string, rows [][]string) string {

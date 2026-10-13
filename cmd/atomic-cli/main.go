@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"os/user"
 	"reflect"
 	"strings"
 	"syscall"
@@ -31,11 +30,12 @@ import (
 
 	"github.com/apex/log"
 	"github.com/lensesio/tableprinter"
-	client "github.com/libatomic/atomic-go"
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/db"
-	"github.com/libatomic/atomic/pkg/ptr"
-	"github.com/libatomic/atomic/pkg/util"
+	client "github.com/libatomic/atomic-go/v2"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/db"
+	"github.com/libatomic/atomic/v2/pkg/helpers"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/util"
 	"github.com/spf13/cast"
 	"github.com/urfave/cli/v3"
 )
@@ -81,10 +81,14 @@ const (
 )
 
 func main() {
+	applyAgentDefaults()
+
 	profile = DefaultProfile
 
-	usr, _ := user.Current()
-	dir := usr.HomeDir
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		log.Warnf("could not determine home directory: %v", err)
+	}
 
 	creds = dir + "/.atomic/credentials"
 
@@ -118,6 +122,16 @@ func main() {
 				cli.EnvVar("PASSPORT_DB_SOURCE"),
 				cli.EnvVar("DB_SOURCE"),
 				NewCredentialsSource("db_source", func() string { return creds }, func() string { return profile }),
+			),
+			Hidden: true,
+		},
+		&cli.StringFlag{
+			Name:  "db_cache",
+			Usage: "specify the cache uri (redis://...) that goes with db_source, so direct changes flush what the nodes have cached",
+			Sources: cli.NewValueSourceChain(
+				cli.EnvVar("PASSPORT_DB_CACHE"),
+				cli.EnvVar("DB_CACHE"),
+				NewCredentialsSource("db_cache", func() string { return creds }, func() string { return profile }),
 			),
 			Hidden: true,
 		},
@@ -211,16 +225,41 @@ func main() {
 		sessionCmd,
 		statusCmd,
 		mcpCmd,
+		skillsCmd,
+		doctorCmd,
+		setupCmd,
+		helpCmd,
 	}
 
 	mainCmd.Before = func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+		// Local-only commands (skills, doctor, setup, help) never need a
+		// backend or an instance; skip the network entirely.
+		if isLocalCommand(cmd) {
+			return ctx, nil
+		}
+
 		if cmd.IsSet("db_source") && cmd.String("db_source") != "" {
-			conn, err := db.Connect(ctx, cmd.String("db_source"))
+			dbOpts := []db.Option{}
+			atomicOpts := []atomic.AtomicOption{}
+
+			// The shared cache the nodes read through; without it a direct
+			// change sits behind what they have cached for up to 15 minutes.
+			if uri := cmd.String("db_cache"); uri != "" {
+				cc, err := helpers.CacheFromURI(uri)
+				if err != nil {
+					return nil, fmt.Errorf("failed to open cache %s: %w", uri, err)
+				}
+
+				dbOpts = append(dbOpts, db.WithCache(cc))
+				atomicOpts = append(atomicOpts, atomic.WithCache(cc))
+			}
+
+			conn, err := db.Connect(ctx, cmd.String("db_source"), dbOpts...)
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to datastore %s: %w", cmd.String("db_source"), err)
 			}
 
-			a, err := atomic.New(conn)
+			a, err := atomic.New(conn, atomicOpts...)
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize atomic: %w", err)
 			}
@@ -238,7 +277,7 @@ func main() {
 			if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
 				opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
 			} else if cmd.IsSet("access_token") {
-				opts = append(opts, client.WithToken(cmd.String("access-token")))
+				opts = append(opts, client.WithToken(cmd.String("access_token")))
 			}
 
 			backend = client.New(opts...)

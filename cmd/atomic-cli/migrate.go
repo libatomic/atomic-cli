@@ -18,7 +18,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -30,9 +29,9 @@ import (
 
 	"github.com/apex/log"
 	"github.com/gocarina/gocsv"
-	atomicpkg "github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/ptr"
-	"github.com/libatomic/atomic/pkg/util"
+	atomicpkg "github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/util"
 	"github.com/schollz/progressbar/v3"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"
@@ -272,17 +271,6 @@ func validateMigrateFlags(cmd *cli.Command, requireInstance ...bool) (dryRun boo
 	}
 
 	return
-}
-
-func confirmAction(title string) (bool, error) {
-	fmt.Fprintf(os.Stderr, "%s [y/N]: ", title)
-	reader := bufio.NewReader(os.Stdin)
-	answer, err := reader.ReadString('\n')
-	if err != nil {
-		return false, err
-	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	return answer == "y" || answer == "yes", nil
 }
 
 // Rewrite rewrites an email address according to the configured mode.

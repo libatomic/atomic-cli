@@ -39,9 +39,9 @@ import (
 	"time"
 
 	"github.com/lensesio/tableprinter"
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/oauth"
-	"github.com/libatomic/atomic/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/oauth"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
 

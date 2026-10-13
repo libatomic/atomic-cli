@@ -23,8 +23,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/ptr"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/ptr"
 	"github.com/stripe/stripe-go/v79"
 	stripeclient "github.com/stripe/stripe-go/v79/client"
 	"github.com/urfave/cli/v3"

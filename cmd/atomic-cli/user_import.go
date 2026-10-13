@@ -27,7 +27,7 @@ import (
 	"strings"
 
 	"github.com/gocarina/gocsv"
-	"github.com/libatomic/atomic/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
 	"github.com/urfave/cli/v3"
 )
 

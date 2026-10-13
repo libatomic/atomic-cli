@@ -23,8 +23,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/libatomic/atomic/pkg/atomic"
-	"github.com/libatomic/atomic/pkg/email"
+	"github.com/libatomic/atomic/v2/pkg/atomic"
+	"github.com/libatomic/atomic/v2/pkg/email"
 	"github.com/urfave/cli/v3"
 )
 

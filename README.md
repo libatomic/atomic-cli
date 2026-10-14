@@ -28,7 +28,7 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Asset Management](#asset-management)
   - [Job Management](#job-management)
   - [Option Management](#option-management)
-  - [Database Management](#database-management)
+  - [Signing Keys](#signing-keys)
   - [Import Command](#import-command)
   - [Migrate Command](#migrate-command)
   - [Stripe Management](#stripe-management)
@@ -103,7 +103,6 @@ The CLI supports configuration through environment variables or command-line fla
 - `PASSPORT_CLIENT_ID` - Your client ID for OAuth2 client credentials flow
 - `PASSPORT_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
 - `PASSPORT_API_HOST` - The Passport API host (defaults to the client default)
-- `PASSPORT_DB_SOURCE` - Used for direct connection to the Passport db rather than API
 - `PASSPORT_INSTANCE_ID` - Default target instance (ID or name/domain); same as `-i`
 - `PASSPORT_OUT_FORMAT` - Default output format (`table`, `json`, `json-pretty`, `jsonl`); same as `-o`
 - `PASSPORT_AGENT_DEFAULTS` - Set to `1` when an AI agent or script drives the CLI: JSON output by default and no interactive prompts (see [Agent defaults](#agent-defaults))
@@ -129,8 +128,6 @@ You can store one or more named profiles in a credentials file and switch betwee
 | `out_format` | `--out-format` / `-o` | Default output format for every command. Valid values: `table` (default), `json`, `json-pretty`, `jsonl` (alias `ndjson`). Override per-command with `-o ...`. |
 | `stripe_key` | `--stripe-key` / `-k` (under `stripe` and `migrate`) | Default Stripe API key, used by `stripe ...` and `migrate substack` / `migrate map` |
 | `stripe_livemode` | `--live-mode` (under `stripe`) | Allow live Stripe keys for the profile (boolean) |
-| `db_source` | `--db_source` | Direct DB connection string (hidden flag; for internal use) |
-| `db_cache` | `--db_cache` | The nodes' cache URI (`redis://...`) that goes with `db_source`, so direct changes flush what they have cached (hidden flag) |
 
 **TOML example** (`~/.atomic/credentials`):
 
@@ -977,7 +974,7 @@ atomic-cli access-token revoke <token_id> [options]
 
 ### Asset Management
 
-Manage assets with the `asset` (or `assets`, `a`) command. Requires the `--asset_volume` flag to specify the storage volume URI.
+Manage assets with the `asset` (or `assets`, `a`) command. Uploads go through the API; the instance's storage volume is the platform's concern.
 
 #### Create Asset
 
@@ -989,7 +986,6 @@ atomic-cli asset create <filename> [options]
 
 | Option | Description | Default |
 |------------------------|----------------------------------------------|---------|
-| `--asset_volume` | URI of the asset volume | *required* |
 | `--description` | Set the asset description | |
 | `--mime_type` | Set the MIME type (auto-detected if omitted) | |
 | `--type` | Set the asset type | `media` |
@@ -1001,7 +997,6 @@ atomic-cli asset create <filename> [options]
 **Example:**
 ```bash
 atomic-cli asset create photo.jpg \
-  --asset_volume "s3://my-bucket" \
   --type media \
   --public
 ```
@@ -1157,75 +1152,85 @@ atomic-cli option delete <name> [options]
 atomic-cli option delete feature.flags --force
 ```
 
-### Database Management
+### Signing Keys
 
-Manage the Atomic database with the `db` command. Requires `--db_source` to be set.
+Every instance signs with a **token key** (bearers, feed and email link
+tokens, tracking links and webhook signatures, published in JWKS under its
+key id) and seals its session cookies with a **session key**. The `instance
+keys` command manages both over the API; it needs the `instance:keys` scope,
+which admin tokens carry. The CLI never touches the database or the cache:
+a change made here reaches every node at once.
 
-#### Migrate Database
+A **rotation** makes a new current key and gives the one it replaces a
+grace period, during which it still verifies what it signed while
+everything new uses the new key. A **revert** undoes the last rotation the
+same way: the replaced key signs again and the key the rotation introduced
+gets the grace period. A **retire** ends a grace period early. Keys a day
+past their expiry are cleaned up by the platform.
+
+The instance is the positional argument (id or name) or, when omitted, the
+one selected with `-i`.
+
+#### List keys
 
 ```bash
-atomic-cli db migrate [options]
+atomic-cli instance keys list [instance] [--kind token|session]
 ```
 
-Initializes or updates database functions, tables, and views using Atlas schema migrations.
+Shows each key's kind, key id, algorithm, status (`current`, `grace` or
+`expired`), expiry, source and audit trail. Key material is never shown or
+returned by the API.
 
-**Options:**
+#### Rotate a key
+
+```bash
+atomic-cli instance keys rotate [instance] [options]
+```
 
 | Option | Description | Default |
-|------------------------|----------------------------------------------|---------|
-| `--create` | Create the database if it doesn't exist | `false` |
-| `--apply` | Apply the migrations (without this flag, changes are shown as a dry run) | `false` |
-| `--verbose` | Show verbose output of applied changes | `false` |
+|---|---|---|
+| `--kind` | `token` or `session` | `token` |
+| `--alg` | The new token algorithm: `ES256` or `HS256` (RS256 only verifies now); ignored for session keys | `ES256` |
+| `--grace` | How long the replaced key keeps verifying: `30d`, `90d`, `720h` (up to `365d`); `0` ends it at once | `30d` |
+| `--reason` | Why, for the key's audit trail | |
 
-**Examples:**
-```bash
-# Preview pending migrations
-atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate
+A session rotation on an instance still sealing with the built-in default
+secret keeps that secret good for the grace period too, so the cookies
+already out survive the switch.
 
-# Create database and apply migrations
-atomic-cli --db_source "user:pass@tcp(localhost:3306)/atomic" db migrate --create --apply
-```
-
-#### Rotate an instance's token signing key
+#### Revert the last rotation
 
 ```bash
-atomic-cli --db_source "..." --db_cache "redis://..." instance token-rotate <instance id or name> [options]
+atomic-cli instance keys revert [instance] [--kind token|session] [--grace 7d] [--reason "..."]
 ```
 
-Generates a new signing key for the instance and keeps the current one as
-the previous key for a grace period, so bearers, feed and email link tokens,
-tracking links and webhook signatures issued before the rotation keep
-verifying while everything new is signed with the new key. Each key is
-published in JWKS under its own `kid`: the key being retained keeps the one
-it signed with (the hostname for a never-rotated key, so tokens already out
-keep matching) and the new key gets a random id, which new tokens carry, so
-the algorithm may stay the same (the usual move is still RS256 to ES256,
-which is much cheaper to verify). The command
-flushes every cached copy of the instance on the nodes through `--db_cache`;
-without it the nodes keep the old key for up to 15 minutes. Needs atomic 2.1
-with the `token_secret_prev` columns.
+Only a key still in its grace period can come back; once it has expired
+nothing it signed is valid any more, and a fresh rotation is the right
+move. A session key reverted off a rotation from the default secret goes
+back to sealing with it.
 
-**Options:**
+#### Retire a key
 
-| Option | Description | Default |
-|------------------|------------------------------------------------------------------|---------|
-| `--alg` | The new algorithm: `ES256` or `HS256` | `ES256` |
-| `--grace` | How long the previous key keeps verifying: `90d`, `120d`, `2160h` (1 to 365 days) | `90d` |
-| `--retire` | Drop the previous key now instead of rotating | `false` |
-| `--revert` | Undo the last rotation: the previous key signs again and the key it replaces takes the previous slot with `--grace` | `false` |
-| `--force` | Rotate even if a previous key is still in grace | `false` |
-| `--no-cache-flush` | Run without `--db_cache` (nodes stay stale for up to 15 minutes) | `false` |
+```bash
+atomic-cli instance keys retire <key id> [instance] [--reason "..."]
+```
+
+Ends the key's grace period now; nothing it signed verifies after this.
+The current key cannot be retired: rotate it instead.
 
 **Examples:**
 ```bash
 # Move a publisher from RS256 to ES256, keeping the RSA key good for 120 days
-atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --alg ES256 --grace 120d
+atomic-cli instance keys rotate pub.example.com --alg ES256 --grace 120d --reason "RS256 retirement"
 
-# End the grace period early
-atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --retire
+# Give the publisher its own session secret instead of the built-in default
+atomic-cli instance keys rotate pub.example.com --kind session
 
-# Undo the rotation (the ES256 key stays verifiable for the grace, then --retire it)
-atomic-cli --db_source "..." --db_cache "redis://cache:6379" instance token-rotate pub.example.com --revert --grace 7d
+# Undo the token rotation; the ES256 key stays verifiable for 7 days
+atomic-cli instance keys revert pub.example.com --grace 7d
+
+# End a grace period early
+atomic-cli instance keys retire 7xK...Qm pub.example.com --reason "key exposed"
 ```
 
 Set `ATOMIC_ENGAGEMENT_IP_SALT` on every node before the first rotation,

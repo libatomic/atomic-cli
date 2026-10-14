@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/libatomic/atomic/v2/pkg/atomic"
-	"github.com/libatomic/atomic/v2/pkg/oauth"
 	"github.com/libatomic/atomic/v2/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
@@ -116,45 +115,7 @@ var (
 				Action:    instDelete,
 				ArgsUsage: "delete <instance-id>",
 			},
-			{
-				Name:      "token-rotate",
-				Usage:     "replace the token signing key, keeping the old one for a grace period (direct database access)",
-				ArgsUsage: "token-rotate <instance id or name>",
-				Description: "Generates a new signing key and moves the current one into the previous slot, where it keeps " +
-					"verifying bearers, link tokens and webhook signatures until the grace period ends; everything new is " +
-					"signed with the new key under its own kid. Rotating while a previous key is still in grace needs " +
-					"--force. Needs --db_source and --db_cache so the nodes' cached copies of the instance are flushed.",
-				Action: instTokenRotate,
-				Before: requireDirectDB,
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:  "alg",
-						Usage: "the new token algorithm: ES256 or HS256 (RS256 is slow to verify)",
-						Value: "ES256",
-					},
-					&cli.StringFlag{
-						Name:  "grace",
-						Usage: "how long the previous key keeps verifying, e.g. 90d, 120d or 2160h (1 day to 365 days)",
-						Value: "90d",
-					},
-					&cli.BoolFlag{
-						Name:  "retire",
-						Usage: "drop the previous key now instead of rotating",
-					},
-					&cli.BoolFlag{
-						Name:  "revert",
-						Usage: "undo the last rotation: the previous key signs again and the key it replaces moves to the previous slot with --grace",
-					},
-					&cli.BoolFlag{
-						Name:  "force",
-						Usage: "rotate even if a previous key is still in its grace period (what it signed stops verifying)",
-					},
-					&cli.BoolFlag{
-						Name:  "no-cache-flush",
-						Usage: "allow running without --db_cache; the instance stays cached on the nodes for up to 15 minutes",
-					},
-				},
-			},
+			instKeysCmd,
 			{
 				Name:      "list",
 				Usage:     "list instances",
@@ -346,20 +307,6 @@ func instList(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// requireDirectDB is for commands that write what the API does not expose:
-// they need db_source, and db_cache unless the caller accepts stale nodes.
-func requireDirectDB(ctx context.Context, cmd *cli.Command) (context.Context, error) {
-	if _, ok := backend.(*atomic.Atomic); !ok {
-		return nil, fmt.Errorf("this command needs direct database access: set --db_source (and --db_cache)")
-	}
-
-	if cmd.Root().String("db_cache") == "" && !cmd.Bool("no-cache-flush") {
-		return nil, fmt.Errorf("set --db_cache to the nodes' cache (redis://...) so the change reaches them, or pass --no-cache-flush and wait up to 15 minutes")
-	}
-
-	return ctx, nil
-}
-
 // parseGrace reads a duration that may end in d for days.
 func parseGrace(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
@@ -374,58 +321,6 @@ func parseGrace(s string) (time.Duration, error) {
 	}
 
 	return time.ParseDuration(s)
-}
-
-func instTokenRotate(ctx context.Context, cmd *cli.Command) error {
-	a := backend.(*atomic.Atomic)
-
-	target, err := resolveInstanceArg(ctx, cmd.Args().First())
-	if err != nil {
-		return err
-	}
-
-	in := &atomic.InstanceTokenRotateInput{InstanceID: target.UUID}
-
-	switch {
-	case cmd.Bool("retire"):
-		in.Retire = ptr.True
-	case cmd.Bool("revert"):
-		in.Revert = ptr.True
-
-		grace, err := parseGrace(cmd.String("grace"))
-		if err != nil {
-			return err
-		}
-
-		in.Grace = &grace
-	default:
-		alg := oauth.TokenAlgorithm(strings.ToUpper(strings.TrimSpace(cmd.String("alg"))))
-		in.Algorithm = &alg
-
-		grace, err := parseGrace(cmd.String("grace"))
-		if err != nil {
-			return err
-		}
-
-		in.Grace = &grace
-	}
-
-	if cmd.Bool("force") {
-		in.Force = ptr.True
-	}
-
-	inst, err := a.InstanceTokenRotate(ctx, in)
-	if err != nil {
-		return err
-	}
-
-	PrintResult(cmd, []*atomic.Instance{inst}, WithFields("id", "name", "token_algorithm", "token_kid", "token_algorithm_prev", "token_kid_prev", "token_rotated_at", "token_prev_expires_at"))
-
-	if cmd.Root().String("db_cache") == "" {
-		fmt.Fprintln(os.Stderr, "note: no --db_cache; nodes keep the old key for up to 15 minutes")
-	}
-
-	return nil
 }
 
 // resolveInstanceArg finds an instance by id or by name.

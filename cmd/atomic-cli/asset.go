@@ -28,9 +28,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/apex/log"
 	"github.com/libatomic/atomic/v2/pkg/atomic"
-	"github.com/libatomic/atomic/v2/pkg/helpers"
 	"github.com/libatomic/atomic/v2/pkg/ptr"
 	"github.com/urfave/cli/v3"
 )
@@ -72,12 +70,6 @@ var (
 		Name:    "asset",
 		Aliases: []string{"assets", "a"},
 		Usage:   "manage assets",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:  "asset_volume",
-				Usage: "uri of the asset volume",
-			},
-		},
 		Commands: []*cli.Command{
 			{
 				Name:      "create",
@@ -130,23 +122,6 @@ var (
 				ArgsUsage: "<asset_id>",
 				Action:    assetDelete,
 			},
-		},
-		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
-			if a, ok := backend.(*atomic.Atomic); ok {
-				if !cmd.IsSet("asset_volume") {
-					return nil, fmt.Errorf("asset volume uri is required")
-				}
-
-				vol, err := helpers.VolumeFromURI(cmd.String("asset_volume"))
-				if err != nil {
-					return nil, fmt.Errorf("failed to get asset volume: %w", err)
-				}
-
-				a.SetAssetVolume(vol)
-
-				log.Infof("using asset volume %s", cmd.String("asset_volume"))
-			}
-			return ctx, nil
 		},
 	}
 )

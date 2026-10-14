@@ -114,7 +114,6 @@ var (
 		"PASSPORT_CLIENT_ID",
 		"PASSPORT_CLIENT_SECRET",
 		"PASSPORT_INSTANCE_ID",
-		"PASSPORT_DB_SOURCE",
 		"PASSPORT_OUT_FORMAT",
 		envAgentDefaults,
 		envAgentDefaultsAlt,
@@ -287,11 +286,6 @@ func doctorConnectivityInfo(ctx context.Context, cmd *cli.Command) doctorConnect
 		info.Message = "skipped (--no-network)"
 		return info
 	}
-	if cmd.IsSet("db_source") && cmd.String("db_source") != "" {
-		info.Message = "skipped (direct database access configured via db_source)"
-		return info
-	}
-
 	opts := []client.ApiOption{client.WithHost(cmd.String("host"))}
 	switch {
 	case cmd.IsSet("client_id") && cmd.IsSet("client_secret"):

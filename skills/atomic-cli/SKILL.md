@@ -21,7 +21,7 @@ Load the narrowest companion before composing a command:
 - `../atomic-cli-identity/SKILL.md` for users, bulk user import, sessions, access tokens.
 - `../atomic-cli-billing/SKILL.md` for plans, prices, subscriptions, credits, options and every `stripe` command.
 - `../atomic-cli-content/SKILL.md` for articles, categories, audiences, distributions, templates, assets.
-- `../atomic-cli-platform/SKILL.md` for instances, applications, jobs, db, status, cross-instance `import`.
+- `../atomic-cli-platform/SKILL.md` for instances, applications, jobs, signing keys, status, cross-instance `import`.
 - `../atomic-cli-migrate/SKILL.md` for `migrate substack`, `migrate map`, `migrate validate`.
 
 ## Invocation

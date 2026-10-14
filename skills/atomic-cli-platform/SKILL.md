@@ -3,8 +3,9 @@ name: atomic-cli-platform
 description: >
   Use with root atomic-cli for instances and child instances, OAuth
   applications, background jobs (list, wait, logs, cancel, restart),
-  database migration, node and queue status, cross-instance data import,
-  and CLI diagnostics via doctor.
+  instance signing keys (token and session: list, rotate, revert, retire),
+  node and queue status, cross-instance data import, and CLI diagnostics
+  via doctor.
 ---
 
 # atomic-cli-platform
@@ -25,7 +26,9 @@ Load `../atomic-cli/SKILL.md` first.
 | Cluster health | `status --nodes --queues` (no `--top`; that is a TUI) |
 | Copy categories / plans / audiences between instances | `import --remote-profile <p> --types categories,plans --dry-run` |
 | Is the CLI set up correctly | `doctor --no-network -o json` (add network only when asked) |
-| Change an instance's token signing key (operator only) | `instance token-rotate <instance> --alg ES256 --grace 120d` with `--db_source` and `--db_cache` |
+| See an instance's signing keys | `instance keys list <instance>` |
+| Rotate the token or session key (admin only) | `instance keys rotate <instance> --kind token --alg ES256 --grace 90d --reason "..."` |
+| Undo the last rotation / end a grace period | `instance keys revert <instance> --kind token` / `instance keys retire <key id> <instance>` |
 
 ## Notes
 
@@ -33,11 +36,12 @@ Load `../atomic-cli/SKILL.md` first.
   are instance-wide operations; confirm the instance name and flags.
 - `application create` returns a client secret once; hand it to the user and
   do not persist it.
-- `db migrate` needs `db_source` (direct database access) and is for
-  operators; never run it from an agent session without explicit instruction.
-- `instance token-rotate` is the same kind of operator action: it replaces
-  the instance's signing key (the old one keeps verifying for `--grace`).
-  Never run it unless the user asks for that instance by name.
+- The CLI has no direct database or cache access; everything, including
+  key rotation, goes through the API with the caller's scopes.
+- `instance keys rotate`, `revert` and `retire` change what an instance
+  signs and seals with (the replaced key keeps verifying for `--grace`).
+  Never run them unless the user asks for that instance by name; `list` is
+  safe and never shows key material.
 - `import` pulls from another Passport instance using `--remote-*` flags or a
   second credentials profile via `--remote-profile`. Always dry-run first.
 - `job create <type> --params '<json>'` starts arbitrary server jobs; only

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -346,10 +347,37 @@ func mcpInstallTargets(cmd *cli.Command, targets []mcpTarget) error {
 			return fmt.Errorf("%s: %w", t.Label, err)
 		}
 		fmt.Printf("registered %-16s %s -> %s %s\n", t.Label, name, entry.Command, strings.Join(entry.Args, " "))
+
+		if t.Name == "claude-desktop" && claudeDesktopRunning() {
+			fmt.Fprintln(os.Stderr, "WARNING: Claude Desktop is running. It rewrites its config file from memory when it quits, which will discard this entry.")
+			fmt.Fprintln(os.Stderr, "         Quit Claude Desktop fully, run `atomic-cli mcp install` again, then start it.")
+		}
 	}
 
 	fmt.Println("restart the host application to load the server; run `atomic-cli mcp status` to verify")
 	return nil
+}
+
+// claudeDesktopRunning reports whether the Claude Desktop app is running.
+// Desktop persists its config from memory on quit, so edits made while it
+// runs are lost; callers warn when that is about to happen.
+func claudeDesktopRunning() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	// pgrep does not reliably see the app from a sandboxed shell; ps does.
+	// Match the app binary exactly so Claude Code's lowercase `claude`
+	// helper and other processes are not mistaken for Desktop.
+	out, err := exec.Command("ps", "-axo", "comm").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), "/Claude.app/Contents/MacOS/Claude") {
+			return true
+		}
+	}
+	return false
 }
 
 func mcpUninstall(ctx context.Context, cmd *cli.Command) error {

@@ -92,6 +92,13 @@ var (
 )
 
 func runMCPServer(ctx context.Context, cmd *cli.Command) error {
+	// `mcp` takes no positional arguments. Older builds that lacked the
+	// install/uninstall/status subcommands would silently start the server
+	// on `mcp install`; fail loudly instead so a stale binary is obvious.
+	if cmd.Args().Len() > 0 {
+		return fmt.Errorf("mcp: unknown subcommand %q (want install, uninstall or status, or no argument to run the server)", cmd.Args().First())
+	}
+
 	prefix := cmd.String("tool-prefix")
 	allowWrite := cmd.Bool("allow-write")
 

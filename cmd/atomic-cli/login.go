@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -374,7 +375,10 @@ func readSecret(prompt string) (string, error) {
 		return strings.TrimSpace(string(b)), nil
 	}
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && line == "" {
+	if err != nil && strings.TrimSpace(line) == "" {
+		if errors.Is(err, io.EOF) {
+			return "", errors.New("no token entered (stdin closed); run login interactively or pipe the token on stdin")
+		}
 		return "", err
 	}
 	return strings.TrimSpace(line), nil

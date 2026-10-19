@@ -90,11 +90,10 @@ Steps:
 **Install a specific release (release candidates do not update the Homebrew formula):**
 
 ```bash
-# pick a tag from the releases page, e.g. v2.1.1-rc.4; use Darwin_x86_64 / Linux_arm64 / Linux_x86_64 as needed
-TAG=v2.1.1-rc.4 && gh release download "$TAG" -R libatomic/atomic-cli -p 'atomic-cli_Darwin_arm64.tar.gz' -O - | tar -xzf - -C ~/.local/bin atomic-cli && atomic-cli --version
+TAG=v2.1.1-rc.4; DEST="$(command -v atomic-cli || echo "$HOME/.local/bin/atomic-cli")"; TMP="$(mktemp -d)" && mkdir -p "$(dirname "$DEST")" && gh release download "$TAG" -R libatomic/atomic-cli -p "atomic-cli_$(uname -s)_$(uname -m | sed 's/aarch64/arm64/').tar.gz" -O - | tar -xzf - -C "$TMP" atomic-cli && install -m 0755 "$TMP/atomic-cli" "$DEST" && rm -rf "$TMP" && hash -r && atomic-cli --version
 ```
 
-`gh` handles the private repository's authentication; `~/.local/bin` must be on your `PATH` ahead of `/opt/homebrew/bin` to shadow a Homebrew install.
+Set `TAG` to any tag on the releases page. The command picks the archive for your OS and CPU, needs `gh` signed in to the libatomic organization, and installs over whatever `atomic-cli` currently resolves to on your `PATH` (a Homebrew install included), or into `~/.local/bin` if none is found. `brew upgrade atomic-cli` will later replace a Homebrew-managed binary with the next final release.
 
 ### Building from Source
 

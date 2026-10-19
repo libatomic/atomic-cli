@@ -11,8 +11,6 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Download prebuilt binaries](#download-prebuilt-binaries)
   - [Building from Source](#building-from-source)
 - [Configuration](#configuration)
-  - [Environment Variables](#environment-variables)
-  - [Credentials file (TOML or YAML)](#credentials-file-toml-or-yaml)
   - [Authentication](#authentication)
   - [Agent Setup](#agent-setup)
 - [Global Options](#global-options)
@@ -105,35 +103,7 @@ go build -o atomic-cli cmd/atomic-cli/main.go
 
 ## Configuration
 
-The CLI supports configuration through environment variables or command-line flags:
-
-### Environment Variables
-
-- `PASSPORT_ACCESS_TOKEN` - Your access token for authentication
-- `PASSPORT_CLIENT_ID` / `PASSPORT_CLIENT_SECRET` - **Deprecated.** OAuth2 client credentials; still honoured with a warning, prefer `atomic-cli login` or `PASSPORT_ACCESS_TOKEN`
-- `PASSPORT_API_HOST` - The Passport API host (defaults to the client default)
-- `PASSPORT_DB_SOURCE` - Used for direct connection to the Passport db rather than API
-- `PASSPORT_INSTANCE_ID` - Default target instance (ID or name/domain); same as `-i`
-- `PASSPORT_OUT_FORMAT` - Default output format (`table`, `json`, `json-pretty`, `jsonl`); same as `-o`
-- `PASSPORT_AGENT_DEFAULTS` - Set to `1` when an AI agent or script drives the CLI: JSON output by default and no interactive prompts (see [Agent defaults](#agent-defaults))
-
-### Credentials file (TOML or YAML)
-
-`atomic-cli login <instance>` writes `~/.atomic/credentials` for you (mode 0600). You normally never edit it. The `default` profile holds:
-
-| Field | Written by | Notes |
-|---|---|---|
-| `host` | login | API host / instance domain |
-| `instance_id` | login | The instance name; `-i` overrides per command |
-| `access_token` | login | Your personal token (its ID doubles as the bearer) |
-| `token_id`, `expires_at`, `login`, `user_id` | login | Used by `whoami`, `doctor`, `logout` and the expiry warnings |
-| `out_format` | you | Default output format: `table`, `json`, `json-pretty`, `jsonl` |
-| `stripe_key`, `stripe_livemode` | you | Defaults for `stripe …` and `migrate …` |
-| `db_source`, `db_cache` | you | Direct DB / cache access for operators (hidden flags, 2.1 only) |
-
-Override the path with `--credentials` / `-c`. Precedence per setting: command-line flag > environment variable > credentials file > default.
-
-**Legacy: client credentials and multiple profiles.** Older setups stored an OAuth application's `client_id` / `client_secret` in the file, sometimes in several named profiles selected with `--profile`. That is deprecated: the secrets never expire, carry full admin rights and get copied around. The CLI still reads them for one release and warns on every run; `atomic-cli login` removes them from the `default` profile when it writes the token. `--profile` remains for hand-maintained extra profiles but is hidden from help.
+The only setup is signing in. Everything else (instance, output format, Stripe keys) is a command-line option.
 
 ### Authentication
 
@@ -143,16 +113,16 @@ Sign in once per machine with your own admin account:
 atomic-cli login stratechery.passport.online
 ```
 
-The CLI prints (and tries to open) a link to the instance's admin app. Sign in there if you have no session, review the authorization card (who you are, the instance, administrator access, how long the token lasts, which device asked) and click **Authorize**. The page shows a token once; paste it into the terminal. The CLI verifies it against the instance, checks it was minted for this login attempt, and stores it. Copy-paste works the same over SSH or inside a container, which is why there is no browser-to-terminal handoff.
+The CLI prints (and tries to open) a link to the instance's admin app. Sign in there if you have no session, review the authorization card and click **Authorize**. The page shows a token once; paste it into the terminal. The CLI verifies it against the instance and stores it in `~/.atomic/credentials` (mode 0600). Copy-paste works the same over SSH or inside a container.
 
-Tokens are personal, revocable and time-limited: they last as long as an admin session in the admin app (30 days by default, set by the admin application's refresh token lifetime). The CLI warns three days before expiry and tells you to run `login` again.
+Tokens are personal, revocable and time-limited: they last as long as an admin session in the admin app (30 days by default). The CLI warns three days before expiry and tells you to run `login` again.
 
 ```bash
 atomic-cli whoami     # host, instance, account, expiry
-atomic-cli logout     # revoke the token and forget it (nodes may honour it for up to an hour)
+atomic-cli logout     # revoke the token and forget it
 ```
 
-For scripts and CI, mint a token through the same page and export it as `PASSPORT_ACCESS_TOKEN`, or pipe it: `echo "$TOKEN" | atomic-cli login <instance>`.
+For scripts and CI, create a token through the same page and export it as `PASSPORT_ACCESS_TOKEN`, or pipe it: `echo "$TOKEN" | atomic-cli login <instance>`. When an AI agent drives the CLI, set `PASSPORT_AGENT_DEFAULTS=1` (see [Agent defaults](#agent-defaults)).
 
 `login` needs an instance whose server and admin app include this feature; on older instances it stops with "does not support CLI login yet".
 

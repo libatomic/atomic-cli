@@ -110,6 +110,10 @@ var userImportCmd = &cli.Command{
 			Usage: "plan IDs to subscribe users to (repeatable)",
 		},
 		&cli.StringFlag{
+			Name:  "subscription_interval",
+			Usage: "billing interval for paid --subscribe_plans: month or year. Required when a subscribe plan is paid and has more than one active recurring price",
+		},
+		&cli.StringFlag{
 			Name:  "subscribe_behavior",
 			Usage: "subscribe behavior: all_users, subscribers_only, non_subscribers_only, subscribers_skip_paid, none (default: all_users)",
 		},
@@ -419,5 +423,8 @@ func clearUnsubscribeEnrollDefaults(input *atomic.UserImportInput, isSet func(st
 	}
 	if !isSet("subscribe_plans") {
 		input.SubscribePlans = nil
+	}
+	if !isSet("subscription_interval") {
+		input.SubscriptionInterval = nil
 	}
 }

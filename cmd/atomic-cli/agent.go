@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/apex/log"
 	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 )
@@ -154,4 +156,33 @@ func promptLine(prompt string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(answer), nil
+}
+
+// warnClientCredentials nags once per run when the deprecated client
+// credentials are in use, saying where they came from.
+func warnClientCredentials() {
+	src := "the credentials file"
+	if os.Getenv("PASSPORT_CLIENT_ID") != "" {
+		src = "the environment"
+	}
+	log.Warnf("client_id/client_secret from %s are deprecated and will stop working in a future release; run `atomic-cli login <instance>` instead", src)
+}
+
+// warnTokenExpiry warns when a login token is about to expire or has
+// expired, so the next failure is not a mystery.
+func warnTokenExpiry() {
+	exp, ok := loadCredentials(creds).Lookup(profile, "expires_at")
+	if !ok {
+		return
+	}
+	t, err := time.Parse(time.RFC3339, exp)
+	if err != nil {
+		return
+	}
+	switch d := time.Until(t); {
+	case d <= 0:
+		log.Warnf("the stored token expired on %s; run `atomic-cli login <instance>`", t.Local().Format("2006-01-02"))
+	case d < 3*24*time.Hour:
+		log.Warnf("the stored token expires in %s; run `atomic-cli login <instance>` to renew", humanDuration(d))
+	}
 }

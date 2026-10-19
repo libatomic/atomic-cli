@@ -11,8 +11,9 @@ description: >
 # atomic-cli
 
 Run `atomic-cli` for Passport / Atomic work; do not merely recommend it.
-Anchor every request on a profile (`-p`) and an instance (`-i`) the user
-names. Answer from read-only results first.
+The CLI is signed in to one instance at a time (`atomic-cli whoami` shows
+which); pass `-i <instance>` when the user names a different instance on
+the same host. Answer from read-only results first.
 
 ## Routing
 
@@ -33,7 +34,7 @@ Load the narrowest companion before composing a command:
 - Pass `-o json` on every call (hosts may instead set
   `PASSPORT_AGENT_DEFAULTS=1`, which also disables interactive prompts). Use
   `-o jsonl` for large lists. Use `--fields` only when the user wants a table.
-- Global flags go before the command: `atomic-cli -p prod -i my.site -o json user list`.
+- Global flags go before the command: `atomic-cli -i my.site -o json user list`.
   `-i` accepts an instance ID or its name/domain.
 - Default page size is small; paginate with `--limit` / `--offset` and say
   when results were truncated.
@@ -58,14 +59,19 @@ Load the narrowest companion before composing a command:
 - Never pass `--yes`, `--force`, `--live-mode`, `--admin_delete_override`,
   `--ignore-sandbox-email-warning` or similar overrides unless the user asked.
 - Stop after the first auth, permission, or validation error. Do not retry
-  with different credentials or profiles.
+  with other credentials.
 
 ## Auth and setup guard
 
-Do not run `setup`, `skills install`, `doctor` repairs, or edit
-`~/.atomic/credentials` unless the user explicitly asks for setup, auth, or
-repair. On an auth failure, run `atomic-cli -p <profile> doctor --no-network -o json`,
-report `problems`, and wait for direction. Never print credential values.
+Authentication is a personal token stored by `atomic-cli login <instance>`;
+it expires (30 days by default) and `logout` revokes it. Do not run `login`,
+`logout`, `setup`, `skills install`, or edit `~/.atomic/credentials` unless
+the user explicitly asks for setup, auth, or repair. On an auth failure (401,
+"token expired", "not signed in"), run `atomic-cli whoami -o json` and
+`atomic-cli doctor --no-network -o json`, report `auth` and `problems`, and
+tell the user to run `atomic-cli login <instance>` themselves: it opens a
+browser page and needs a token pasted, which only they can do. Never ask for
+or print client secrets or tokens.
 
 ## Output
 

@@ -203,6 +203,9 @@ func describeFlags(flags []cli.Flag) []flagDesc {
 		if len(names) == 0 || names[0] == "help" || names[0] == "version" {
 			continue
 		}
+		if vf, ok := f.(cli.VisibleFlag); ok && !vf.IsVisible() {
+			continue
+		}
 
 		fd := flagDesc{
 			Name:  names[0],

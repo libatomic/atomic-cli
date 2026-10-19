@@ -299,8 +299,8 @@ github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7 h1:k/1ku0yeh
 github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7/go.mod h1:YR/zYthNdWfO8+0IOyHDcIDBBBS2JMnYUIwSsnwmRqU=
 github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
 github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
-github.com/libatomic/atomic-go/v2 v2.1.0-rc.3 h1:hYaO59MYNLDRGzOZEztYbZCe5VAtq8COPqX2Bt18Qck=
-github.com/libatomic/atomic-go/v2 v2.1.0-rc.3/go.mod h1:C5vfy211GHcfoneIAzhXMQfDqEtg+lHhOP0Dh/hG8fk=
+github.com/libatomic/atomic-go/v2 v2.1.0-rc.4 h1:XIpZg0kBeFxQgtganD/23LvWZJ3iugGyrALPn/C806g=
+github.com/libatomic/atomic-go/v2 v2.1.0-rc.4/go.mod h1:C5vfy211GHcfoneIAzhXMQfDqEtg+lHhOP0Dh/hG8fk=
 github.com/libatomic/atomic/v2 v2.1.0 h1:F4ofs8hyB6oTio+sCH3LfSZANodTQzqO/gJZpQDgL34=
 github.com/libatomic/atomic/v2 v2.1.0/go.mod h1:EPn/CYgoD9B2AoZHpcjcSK00yoxKSLSdTpA8WUyrlfA=
 github.com/libatomic/go-premailer v1.9.2-atomic h1:Li6/Z5LkPwdl6YOzKSLxq1a/757TTT2uPOYImq6aTZE=

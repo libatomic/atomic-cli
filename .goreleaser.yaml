@@ -54,6 +54,10 @@ release:
 
 brews:
   - name: atomic-cli
+    # Only final tags update the Homebrew formula. Release candidates still
+    # publish to GitHub Releases, but two active release lines share this
+    # one formula and the most recent rc tag would otherwise overwrite it.
+    skip_upload: auto
     repository:
       owner: libatomic
       name: homebrew-tap

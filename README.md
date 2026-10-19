@@ -219,7 +219,8 @@ Global options go **before** the command: `atomic-cli -p prod -i my.site -o json
 | `--instance_id` | `-i`, `--instance` | Target instance (base58 ID or name/domain) | |
 | `--out-format` | `-o` | Output format (`table`, `json`, `json-pretty`, `jsonl`) | `table` |
 | `--fields` | `-f` | Fields to display in table output | |
-| `--verbose` | `-v` | Verbose logging | `false` |
+| `--verbose` | `-v` | Debug logging plus a redacted dump of every API request and response on stderr (credentials and tokens are masked) | `false` |
+| `--version` | `-V` | Print the version | |
 
 Every global option can also come from the environment (`PASSPORT_*`) or the selected credentials profile; precedence is flag > environment > credentials file > default.
 
@@ -413,18 +414,18 @@ Note: usernames (logins) must be valid email addresses.
 - `--login` - Set the user login
 - `--password` - Set the user password
 - `--email` - Set the user email
-- `--profile` - Set user profile from JSON file
+- `--profile` - Set user profile: inline JSON (`'{"name":"Ada"}'`), `@path`, or a file path
 - `--roles` - Set user roles (default: ["user"])
-- `--metadata` - Set user metadata from JSON file
+- `--metadata` - Set user metadata: inline JSON, `@path`, or a file path
 - `--stripe_account` - Set the user Stripe account
 - `--suppress_events` - Suppress user events
 - `--subscribe_default_plans` - Subscribe to default plans
-- `--preferences` - Set user preferences from JSON file
+- `--preferences` - Set user preferences: inline JSON, `@path`, or a file path
 - `--create_only` - Create the user only
 - `--suppress_validation` - Suppress user validation
 - `--suppress_parent_triggers` - Suppress parent triggers
 - `--rebuild_audiences` - Rebuild the user audiences
-- `--file` - Read user parameters from JSON file
+- `--file` - Treat the positional argument as a JSON file holding the full input (for `update` it must include `user_id`)
 
 **Example:**
 ```bash
@@ -453,12 +454,21 @@ atomic-cli user update <user-id> [options]
 
 **Options:** Same as create (excluding create-specific flags)
 
-**Example:**
+**Examples:**
 ```bash
-atomic-cli user update user_1234567890abcdef \
-  --email "newemail@example.com" \
-  --roles "user,moderator"
+# change the login and the profile email in one call
+atomic-cli user update CfWBScAgZmUzpjfnFb6t2 \
+  --login "newemail@example.com" \
+  --profile '{"email":"newemail@example.com"}'
+
+# full payload from a file; the JSON must carry user_id
+atomic-cli user update --file update.json
+
+# see exactly what the API rejected
+atomic-cli -v user update CfWBScAgZmUzpjfnFb6t2 --login "bad@@example"
 ```
+
+API rejections include the server's per-field detail, e.g. `request validation error (request_validation): login: must be a valid email address`.
 
 #### List Users
 

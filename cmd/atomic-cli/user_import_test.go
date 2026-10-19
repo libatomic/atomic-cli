@@ -59,6 +59,7 @@ func poisonedEnrollInput(mode atomic.UserImportMode, planID atomic.ID) *atomic.U
 		StripeAccountBehavior: &existing,
 		DiscountBehavior:      &aggregate,
 		RebuildAudiences:      ptr.True,
+		SubscriptionInterval:  ptr.Pointer(atomic.SubscriptionIntervalMonth),
 	}
 }
 
@@ -90,6 +91,9 @@ func TestClearUnsubscribeEnrollDefaults(t *testing.T) {
 		if len(in.SubscribePlans) != 0 {
 			t.Fatalf("subscribe_plans: got %v want nil", in.SubscribePlans)
 		}
+		if in.SubscriptionInterval != nil {
+			t.Fatalf("subscription_interval: got %v want nil", in.SubscriptionInterval)
+		}
 	})
 
 	t.Run("explicit default_plan_behavior is left alone", func(t *testing.T) {
@@ -109,6 +113,7 @@ func TestClearUnsubscribeEnrollDefaults(t *testing.T) {
 		"trial_existing_users",
 		"existing_user_behavior",
 		"subscribe_plans",
+		"subscription_interval",
 	} {
 		t.Run("explicit "+flag+" is left alone", func(t *testing.T) {
 			in := poisonedEnrollInput(atomic.UserImportModeUnsubscribe, planID)
@@ -135,6 +140,10 @@ func TestClearUnsubscribeEnrollDefaults(t *testing.T) {
 				if len(in.SubscribePlans) != 1 || in.SubscribePlans[0] != planID {
 					t.Fatalf("subscribe_plans: got %v want [%s]", in.SubscribePlans, planID)
 				}
+			case "subscription_interval":
+				if in.SubscriptionInterval == nil || *in.SubscriptionInterval != atomic.SubscriptionIntervalMonth {
+					t.Fatalf("subscription_interval: got %v want month", in.SubscriptionInterval)
+				}
 			}
 			if in.DefaultPlanBehavior == nil || *in.DefaultPlanBehavior != nonePlan {
 				t.Fatalf("unset default_plan_behavior should still clear, got %v", in.DefaultPlanBehavior)
@@ -151,6 +160,7 @@ func TestClearUnsubscribeEnrollDefaults(t *testing.T) {
 			"trial_existing_users",
 			"existing_user_behavior",
 			"subscribe_plans",
+			"subscription_interval",
 		))
 		if in.DefaultPlanBehavior == nil || *in.DefaultPlanBehavior != all {
 			t.Fatalf("default_plan_behavior: got %v want all", in.DefaultPlanBehavior)
@@ -169,6 +179,9 @@ func TestClearUnsubscribeEnrollDefaults(t *testing.T) {
 		}
 		if len(in.SubscribePlans) != 1 || in.SubscribePlans[0] != planID {
 			t.Fatalf("subscribe_plans: got %v", in.SubscribePlans)
+		}
+		if in.SubscriptionInterval == nil || *in.SubscriptionInterval != atomic.SubscriptionIntervalMonth {
+			t.Fatalf("subscription_interval: got %v want month", in.SubscriptionInterval)
 		}
 	})
 
@@ -196,6 +209,9 @@ func TestClearUnsubscribeEnrollDefaults(t *testing.T) {
 			}
 			if len(in.SubscribePlans) != 1 {
 				t.Fatalf("subscribe_plans should stay, got %v", in.SubscribePlans)
+			}
+			if in.SubscriptionInterval == nil || *in.SubscriptionInterval != atomic.SubscriptionIntervalMonth {
+				t.Fatalf("subscription_interval should stay, got %v", in.SubscriptionInterval)
 			}
 		})
 	}

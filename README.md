@@ -9,7 +9,6 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Prerequisites](#prerequisites)
   - [Install via Homebrew (macOS/Linux)](#install-via-homebrew-macoslinux)
   - [Download prebuilt binaries](#download-prebuilt-binaries)
-  - [Building from Source](#building-from-source)
 - [Configuration](#configuration)
   - [Authentication](#authentication)
   - [Agent Setup](#agent-setup)
@@ -59,8 +58,8 @@ It is also built to be driven by AI coding agents: every command has JSON output
 
 ### Prerequisites
 
-- Go 1.25 or later
-- Access to an Atomic API endpoint
+- Access to a Passport instance where you are an administrator
+- `gh` (GitHub CLI) signed in to the libatomic organization, for release-candidate installs
 
 ### Install via Homebrew (macOS/Linux)
 
@@ -92,14 +91,6 @@ TAG=v2.1.1-rc.4; DEST="$(command -v atomic-cli || echo "$HOME/.local/bin/atomic-
 ```
 
 Set `TAG` to any tag on the releases page. The command picks the archive for your OS and CPU, needs `gh` signed in to the libatomic organization, and installs over whatever `atomic-cli` currently resolves to on your `PATH` (a Homebrew install included), or into `~/.local/bin` if none is found. `brew upgrade atomic-cli` will later replace a Homebrew-managed binary with the next final release.
-
-### Building from Source
-
-```bash
-git clone https://github.com/libatomic/atomic-cli.git
-cd atomic-cli
-go build -o atomic-cli cmd/atomic-cli/main.go
-```
 
 ## Configuration
 

@@ -35,6 +35,8 @@ A command-line interface for managing Atomic instances, applications, users, and
   - [Session Diagnostics](#session-diagnostics)
   - [Cluster Status](#cluster-status)
   - [MCP Server](#mcp-server)
+    - [Registering the server with `mcp install`](#registering-the-server-with-mcp-install)
+    - [Parity with the skills](#parity-with-the-skills)
   - [AI Agent Integration](#ai-agent-integration)
     - [Skills](#skills)
     - [Doctor](#doctor)
@@ -2661,6 +2663,8 @@ A transient HTTP failure shows as a red banner above the tables; the previous da
 
 `atomic-cli mcp` runs the CLI as a [Model Context Protocol](https://modelcontextprotocol.io/) server, exposing every CLI subcommand as a tool that an MCP-aware host (Claude Desktop, Claude Code, etc.) can call. Each tool dispatch fork-execs a fresh `atomic-cli` subprocess, so no state leaks between calls.
 
+Coding agents that can run shell commands should prefer the [skills](#ai-agent-integration); they drive the binary directly with no long-running process. The MCP server is the route for **chat hosts** such as Claude Desktop that cannot execute local commands. Both paths carry the same guidance: the server ships the skills as its instructions, resources and prompts (see [Parity with the skills](#parity-with-the-skills)).
+
 ```bash
 # Read-only mode (the default), bound to a specific instance
 atomic-cli -p prod -i <instance> mcp
@@ -2689,9 +2693,46 @@ Each leaf command becomes a tool whose name is the underscore-joined command pat
 - **Destructive** (`destructiveHint: true`) — leaf verb matches `delete|cancel|drop|purge|reset|destroy|remove`. Only registered with `--allow-write`.
 - **Other writes** (create / update / import / migrate / restart / …) — registered with `--allow-write`, but not flagged destructive.
 
-Override per command via `cli.Command.Metadata`: `"mcp:readOnly"`, `"mcp:destructive"`, or `"mcp:skip"` (boolean). The `status` TUI and the `mcp` command itself are always skipped.
+Override per command via `cli.Command.Metadata`: `"mcp:readOnly"`, `"mcp:destructive"`, or `"mcp:skip"` (boolean). The `mcp`, `skills`, `setup` and `help` commands are always skipped; `doctor` and `help describe` are exposed as the dedicated read-only tools `doctor` and `help_describe` (see below).
+
+#### Registering the server with `mcp install`
+
+Instead of editing host config files by hand, let the CLI write the entry:
+
+```bash
+atomic-cli -p prod -i <instance> mcp install                      # Claude Desktop (default target)
+atomic-cli -p prod -i <instance> mcp install --target claude      # Claude Code (~/.claude.json)
+atomic-cli -p prod -i <instance> mcp install --all-targets        # Claude Desktop, Claude Code, Cursor, Codex
+atomic-cli mcp install --target claude --target cursor --local    # project scope: ./.mcp.json, ./.cursor/mcp.json
+atomic-cli -p prod -i <instance> mcp install --allow-write        # register with write tools enabled
+atomic-cli mcp status                                             # what is registered where, and whether it points at this binary
+atomic-cli mcp uninstall --all-targets                            # remove the entry everywhere
+```
+
+| `--target` | Config written | Format |
+|---|---|---|
+| `claude-desktop` (default) | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows), `~/.config/Claude/claude_desktop_config.json` (Linux) | JSON `mcpServers` |
+| `claude` | `~/.claude.json`, or `./.mcp.json` with `--local` | JSON `mcpServers` |
+| `cursor` | `~/.cursor/mcp.json`, or `./.cursor/mcp.json` with `--local` | JSON `mcpServers` |
+| `codex` | `~/.codex/config.toml` | TOML `[mcp_servers.<name>]` |
+
+The entry runs the **absolute path of the current binary** with the profile (`-p`), credentials file (`-c`), host and instance (`-i`) you passed to `mcp install`, followed by `mcp` and optionally `--allow-write`. Secrets are never written into host configs; they stay in `~/.atomic/credentials`. Override the registered path with `--binary` and the entry name with `--name` (default `atomic`). JSON files are merged, so other servers and settings are preserved; a config that is not valid JSON is left untouched and reported. The Codex TOML file is patched textually, replacing only the `[mcp_servers.<name>]` table so comments and other tables survive.
+
+`atomic-cli setup --mcp claude-desktop` does the same during setup, and `atomic-cli doctor` shows every host's registration state. Restart the host application after installing.
+
+#### Parity with the skills
+
+The server exposes the same guidance the installed skills give coding agents, so a chat host behaves the same way:
+
+- **Instructions.** The root `atomic-cli` skill (routing, discovery, safety and auth rules) is sent as the server `instructions` on `initialize`, with a short note mapping skill wording onto tools. Hosts that honour instructions (Claude Desktop does) apply it to every conversation.
+- **Resources.** Every skill file is readable at `atomic-cli://skills/<skill>/SKILL.md` as `text/markdown`.
+- **Prompts.** Each skill is also a prompt named after it (`atomic-cli`, `atomic-cli-billing`, …) that injects the skill body into the conversation, for hosts that let users pick prompts.
+- **Tools.** `help_describe` returns the same JSON as `atomic-cli help describe`, so the model can discover exact flags instead of guessing; `doctor` runs the diagnostics with `no_network` optional. Both are read-only and always registered.
+- **Classification.** Tool annotations carry the read-only / destructive flags the skills describe, and write tools exist only when the server was started with `--allow-write`.
 
 #### Wiring `atomic-cli mcp` to Claude Desktop
+
+`mcp install` writes this for you; the manual steps remain for reference.
 
 Claude Desktop reads its MCP server list from a JSON config file:
 
@@ -2811,7 +2852,7 @@ Once wired up, the host can answer questions by composing read-only tool calls. 
 
 ### AI Agent Integration
 
-The preferred way for AI coding agents to use atomic-cli is to run the binary directly, guided by **skills**: short markdown documents that tell the agent when to reach for atomic-cli, how to discover the exact command grammar, and which operations need confirmation. This is lighter than the MCP server above (no long-running process, no instance bound at start) and works in any agent that reads a skills directory.
+The preferred way for AI coding agents to use atomic-cli is to run the binary directly, guided by **skills**: short markdown documents that tell the agent when to reach for atomic-cli, how to discover the exact command grammar, and which operations need confirmation. This is lighter than the MCP server above (no long-running process, no instance bound at start) and works in any agent that reads a skills directory. Chat hosts that cannot run local commands (Claude Desktop) use the [MCP server](#mcp-server) instead, which serves the same skills as instructions, resources and prompts; register it with `atomic-cli mcp install` or `atomic-cli setup --mcp claude-desktop`.
 
 ```bash
 atomic-cli setup            # install skills + check credentials + doctor
@@ -2860,13 +2901,14 @@ The JSON report has these top-level keys:
 | `credentials` | file path, whether it exists and parses, the selected profile, and per-profile field **names** (never values); `envVars` lists which `PASSPORT_*` variables are set |
 | `connectivity` | whether an API call was attempted, succeeded, and which instance resolved. Attempted only when `client_id`/`client_secret` or `access_token` resolve for the profile |
 | `skills` | per agent host: skills directory, installed vs expected count, stale skills, and the repair command |
+| `mcp` | per chat host: config path, whether an `atomic` server entry is registered, the command it points at, and whether that is the running binary. A missing entry is informational; a broken config or missing binary is a problem |
 | `problems` | human-readable remediation strings; empty when everything is fine |
 
 Exit status is always 0; consult `problems`.
 
 #### Setup
 
-`atomic-cli setup` runs `skills install` (same flags), prints a credentials template when `~/.atomic/credentials` does not exist, then runs `doctor`. It is safe to re-run after upgrading the CLI.
+`atomic-cli setup` runs `skills install` (same flags), optionally registers the MCP server for chat hosts (`--mcp claude-desktop`, repeatable, with `--allow-write` if wanted), prints a credentials template when `~/.atomic/credentials` does not exist, then runs `doctor`. It is safe to re-run after upgrading the CLI.
 
 #### Machine-readable help
 

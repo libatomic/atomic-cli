@@ -2725,6 +2725,8 @@ The entry runs the **absolute path of the current binary** with the profile (`-p
 
 `atomic-cli setup --mcp claude-desktop` does the same during setup, and `atomic-cli doctor` shows every host's registration state. Restart the host application after installing.
 
+**Quit Claude Desktop before registering it.** Claude Desktop holds its config in memory and writes the whole file back when it quits, so an entry added while it is running is discarded on the next quit. `mcp install` warns when it detects Desktop running on macOS. The sequence is: quit Claude Desktop, run `atomic-cli -p <profile> -i <instance> mcp install`, then start Claude Desktop.
+
 #### Parity with the skills
 
 The server exposes the same guidance the installed skills give coding agents, so a chat host behaves the same way:

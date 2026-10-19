@@ -68,6 +68,7 @@ type (
 		AgentMode    bool          `json:"agentMode"`
 		Profile      string        `json:"profile"`
 		ProfileFound bool          `json:"profileFound"`
+		Auth         string        `json:"auth"`
 		Profiles     []profileInfo `json:"profiles"`
 	}
 
@@ -75,6 +76,8 @@ type (
 	profileInfo struct {
 		Name           string   `json:"name"`
 		Host           string   `json:"host,omitempty"`
+		Login          string   `json:"login,omitempty"`
+		ExpiresAt      string   `json:"expiresAt,omitempty"`
 		Fields         []string `json:"fields"`
 		HasClientCreds bool     `json:"hasClientCreds"`
 		HasToken       bool     `json:"hasToken"`
@@ -169,8 +172,14 @@ func buildDoctorReport(ctx context.Context, cmd *cli.Command) *doctorReport {
 
 	rep.Install = doctorInstallInfo()
 	rep.Credentials = doctorCredentialsInfo(cmd)
+	auth := currentAuth()
+	rep.Credentials.Auth = auth.Auth
 	if !rep.Credentials.Exists && len(rep.Credentials.EnvVars) == 0 {
-		rep.Problems = append(rep.Problems, fmt.Sprintf("no credentials: create %s with a [%s] profile or export PASSPORT_CLIENT_ID / PASSPORT_CLIENT_SECRET", rep.Credentials.Path, rep.Credentials.Profile))
+		rep.Problems = append(rep.Problems, "not signed in: run `atomic-cli login <instance>`")
+	} else if auth.Deprecated {
+		rep.Problems = append(rep.Problems, "client_id/client_secret are deprecated; run `atomic-cli login <instance>` to replace them with a personal token")
+	} else if auth.ExpiresIn == "expired" {
+		rep.Problems = append(rep.Problems, "the stored token has expired; run `atomic-cli login <instance>`")
 	} else if rep.Credentials.Exists && !rep.Credentials.Valid {
 		rep.Problems = append(rep.Problems, fmt.Sprintf("credentials file %s could not be parsed; expected TOML with one [profile] section per environment", rep.Credentials.Path))
 	} else if rep.Credentials.Exists && !rep.Credentials.ProfileFound && !hasAnyEnv("PASSPORT_CLIENT_ID", "PASSPORT_ACCESS_TOKEN") {
@@ -269,6 +278,8 @@ func doctorCredentialsInfo(cmd *cli.Command) doctorCredentials {
 		sort.Strings(fields)
 
 		host, _ := cf.Lookup(n, "host")
+		login, _ := cf.Lookup(n, "login")
+		exp, _ := cf.Lookup(n, "expires_at")
 		_, hasID := cf.Lookup(n, "client_id")
 		_, hasSecret := cf.Lookup(n, "client_secret")
 		_, hasToken := cf.Lookup(n, "access_token")
@@ -277,6 +288,8 @@ func doctorCredentialsInfo(cmd *cli.Command) doctorCredentials {
 		info.Profiles = append(info.Profiles, profileInfo{
 			Name:           n,
 			Host:           host,
+			Login:          login,
+			ExpiresAt:      exp,
 			Fields:         fields,
 			HasClientCreds: hasID && hasSecret,
 			HasToken:       hasToken,
@@ -431,8 +444,9 @@ func printDoctorReport(rep *doctorReport) {
 
 	c := rep.Credentials
 	fmt.Printf("%s credentials  %s (exists=%v valid=%v profile=%s found=%v)\n", mark(c.Exists && c.Valid && c.ProfileFound || len(c.EnvVars) > 0), c.Path, c.Exists, c.Valid, c.Profile, c.ProfileFound)
+	fmt.Printf("     auth: %s\n", c.Auth)
 	for _, p := range c.Profiles {
-		fmt.Printf("     [%s] host=%s client_creds=%v token=%v instance=%v\n", p.Name, p.Host, p.HasClientCreds, p.HasToken, p.HasInstance)
+		fmt.Printf("     [%s] host=%s login=%s token=%v expires=%s client_creds=%v\n", p.Name, p.Host, p.Login, p.HasToken, firstNonEmpty(p.ExpiresAt, "-"), p.HasClientCreds)
 	}
 	if len(c.EnvVars) > 0 {
 		fmt.Printf("     env: %s\n", strings.Join(c.EnvVars, ", "))

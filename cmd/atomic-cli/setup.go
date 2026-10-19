@@ -74,9 +74,10 @@ func setupAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	if _, err := os.Stat(creds); err != nil {
-		fmt.Fprintf(os.Stderr, "\nno credentials file at %s; create one like:\n\n", creds)
-		fmt.Fprintf(os.Stderr, "  [%s]\n  host = \"api.example.com\"\n  client_id = \"...\"\n  client_secret = \"...\"\n  instance_id = \"...\"\n\n", profile)
+	if a := currentAuth(); a.Auth == "none" {
+		fmt.Fprintf(os.Stderr, "\nnot signed in; run `atomic-cli login <instance>` (for example `atomic-cli login stratechery.passport.online`)\n\n")
+	} else if a.Deprecated {
+		fmt.Fprintf(os.Stderr, "\nthis profile still uses deprecated client credentials; run `atomic-cli login <instance>` to replace them\n\n")
 	}
 
 	fmt.Println()

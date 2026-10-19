@@ -84,6 +84,15 @@ const (
 func main() {
 	applyAgentDefaults()
 
+	// -v is --verbose; keep --version on -V so the two never collide.
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:        "version",
+		Aliases:     []string{"V"},
+		Usage:       "print the version",
+		HideDefault: true,
+		Local:       true,
+	}
+
 	profile = DefaultProfile
 
 	dir, err := os.UserHomeDir()
@@ -218,9 +227,17 @@ func main() {
 			return ctx, nil
 		}
 
+		if cmd.Bool("verbose") {
+			log.SetLevel(log.DebugLevel)
+		}
+
 		opts := []client.ApiOption{}
 
 		opts = append(opts, client.WithHost(cmd.String("host")))
+
+		if cmd.Bool("verbose") {
+			opts = append(opts, client.WithTransport(debugTransport{}))
+		}
 
 		if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
 			opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
@@ -531,8 +548,11 @@ func (k *metadataValue) Set(value string) error {
 	if k.destination == nil {
 		k.destination = make(atomic.Metadata)
 	}
-	parts := strings.SplitN(value, "=", 1)
-	k.destination[parts[0]] = parts[1]
+	key, val, ok := strings.Cut(value, "=")
+	if !ok || key == "" {
+		return fmt.Errorf("metadata %q: expected key=value", value)
+	}
+	k.destination[key] = val
 	return nil
 }
 

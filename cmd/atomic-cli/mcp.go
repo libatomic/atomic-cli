@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ import (
 	"time"
 
 	"github.com/apex/log"
+	"github.com/libatomic/atomic-cli/v2/skills"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/urfave/cli/v3"
 )
@@ -61,6 +63,11 @@ var (
 			},
 		},
 		Action: runMCPServer,
+		Commands: []*cli.Command{
+			mcpInstallCmd,
+			mcpUninstallCmd,
+			mcpStatusCmd,
+		},
 	}
 
 	// forwardedRootArgs is captured at server startup. Each tool dispatch
@@ -101,9 +108,15 @@ func runMCPServer(ctx context.Context, cmd *cli.Command) error {
 		Title:   "Atomic CLI",
 		Version: Version,
 	}
-	srv := mcp.NewServer(impl, nil)
+	// Parity with the installed skills: the root skill becomes the server
+	// instructions every client receives on initialize, and each skill is
+	// also exposed as a resource and a prompt so chat hosts can load the
+	// same routing and safety guidance the coding agents get from disk.
+	opts := &mcp.ServerOptions{Instructions: mcpInstructions()}
+	srv := mcp.NewServer(impl, opts)
 
 	tools := buildTools(mainCmd, prefix, allowWrite)
+	tools = append(tools, builtinTools(prefix)...)
 	if len(tools) == 0 {
 		return fmt.Errorf("no MCP tools to register")
 	}
@@ -112,6 +125,12 @@ func runMCPServer(ctx context.Context, cmd *cli.Command) error {
 		srv.AddTool(t.tool, t.handler)
 	}
 	log.Infof("registered %d MCP tools (allow-write=%v)", len(tools), allowWrite)
+
+	n, err := registerSkills(srv)
+	if err != nil {
+		return fmt.Errorf("register skills: %w", err)
+	}
+	log.Infof("registered %d skills as MCP resources and prompts", n)
 
 	switch cmd.String("transport") {
 	case "stdio", "":
@@ -605,4 +624,238 @@ func errorResult(err error) *mcp.CallToolResult {
 	res := &mcp.CallToolResult{}
 	res.SetError(err)
 	return res
+}
+
+// mcpInstructions returns the root skill body (frontmatter stripped) plus a
+// short note on how the tools map onto CLI commands.
+func mcpInstructions() string {
+	body, err := skillBody(skills.RootSkill)
+	if err != nil {
+		return "atomic-cli MCP server: each tool runs one atomic-cli command. Prefer read-only tools; confirm before mutating or destructive ones."
+	}
+	return body + `
+
+## MCP mapping
+
+- Every tool is one atomic-cli command; the tool name is the command path joined with underscores (` + "`user_list`" + ` is ` + "`atomic-cli user list`" + `).
+- Tool annotations carry the same read-only / destructive classification the skills describe. Write tools only exist when the server was started with --allow-write.
+- Use the ` + "`help_describe`" + ` tool instead of guessing flags; use ` + "`doctor`" + ` to diagnose auth problems.
+- Companion guidance is available as resources (atomic-cli://skills/<name>) and prompts named after each skill.`
+}
+
+// skillBody returns the markdown of a skill's SKILL.md with the YAML
+// frontmatter removed.
+func skillBody(name string) (string, error) {
+	data, err := skills.FS.ReadFile(name + "/SKILL.md")
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	if strings.HasPrefix(text, "---\n") {
+		if end := strings.Index(text[4:], "\n---\n"); end >= 0 {
+			text = text[4+end+5:]
+		}
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// skillDescription extracts the frontmatter description of a skill.
+func skillDescription(name string) string {
+	data, err := skills.FS.ReadFile(name + "/SKILL.md")
+	if err != nil {
+		return ""
+	}
+	text := string(data)
+	i := strings.Index(text, "description:")
+	if i < 0 {
+		return ""
+	}
+	rest := text[i+len("description:"):]
+	if end := strings.Index(rest, "\n---"); end >= 0 {
+		rest = rest[:end]
+	}
+	rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ">"))
+	return strings.Join(strings.Fields(rest), " ")
+}
+
+// registerSkills exposes every embedded skill file as a resource and every
+// skill as a prompt.
+func registerSkills(srv *mcp.Server) (int, error) {
+	names, err := skills.Names()
+	if err != nil {
+		return 0, err
+	}
+
+	for _, name := range names {
+		name := name
+		desc := skillDescription(name)
+
+		err := fs.WalkDir(skills.FS, name, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			uri := "atomic-cli://skills/" + p
+			srv.AddResource(&mcp.Resource{
+				Name:        p,
+				Title:       name,
+				Description: desc,
+				MIMEType:    "text/markdown",
+				URI:         uri,
+			}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+				data, err := skills.FS.ReadFile(p)
+				if err != nil {
+					return nil, mcp.ResourceNotFoundError(req.Params.URI)
+				}
+				return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+					URI:      uri,
+					MIMEType: "text/markdown",
+					Text:     string(data),
+				}}}, nil
+			})
+			return nil
+		})
+		if err != nil {
+			return 0, err
+		}
+
+		srv.AddPrompt(&mcp.Prompt{
+			Name:        name,
+			Title:       name,
+			Description: desc,
+		}, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			body, err := skillBody(name)
+			if err != nil {
+				return nil, err
+			}
+			return &mcp.GetPromptResult{
+				Description: desc,
+				Messages: []*mcp.PromptMessage{{
+					Role:    "user",
+					Content: &mcp.TextContent{Text: "Follow this atomic-cli guidance for the rest of the conversation. Where it says to run `atomic-cli <command>`, call the matching MCP tool instead.\n\n" + body},
+				}},
+			}, nil
+		})
+	}
+
+	return len(names), nil
+}
+
+// builtinTools exposes the agent-facing local commands that the generic
+// walker skips: help describe (grammar discovery) and doctor (diagnostics).
+func builtinTools(prefix string) []toolBinding {
+	describe := &mcp.Tool{
+		Name:        prefix + "help_describe",
+		Description: "Describe atomic-cli commands as JSON: flags, arguments, defaults, and read-only / destructive classification. Call before composing arguments for an unfamiliar tool. Omit `command` for the whole tree.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "command path, e.g. \"user list\" (omit for the whole tree)",
+				},
+				"leaves_only": map[string]any{
+					"type":        "boolean",
+					"description": "flatten to runnable commands",
+				},
+				"depth": map[string]any{
+					"type":        "integer",
+					"description": "levels to include below the selected command (0 = unlimited)",
+				},
+			},
+		},
+		Annotations: &mcp.ToolAnnotations{Title: "help describe", ReadOnlyHint: true},
+	}
+
+	describeHandler := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var in struct {
+			Command    string `json:"command"`
+			LeavesOnly bool   `json:"leaves_only"`
+			Depth      int    `json:"depth"`
+		}
+		if len(req.Params.Arguments) > 0 {
+			if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
+				return errorResult(fmt.Errorf("decode arguments: %w", err)), nil
+			}
+		}
+		argv := []string{"--out-format=json", "help", "describe"}
+		if in.LeavesOnly {
+			argv = append(argv, "--leaves-only")
+		}
+		if in.Depth > 0 {
+			argv = append(argv, fmt.Sprintf("--depth=%d", in.Depth))
+		}
+		if in.Command != "" {
+			argv = append(argv, strings.Fields(in.Command)...)
+		}
+		return runSubprocessTool(ctx, argv)
+	}
+
+	doctor := &mcp.Tool{
+		Name:        prefix + "doctor",
+		Description: "Diagnose the atomic-cli install: build, credentials profile (field names only), API connectivity and agent skill status. Use when a tool fails with an auth or connection error.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"no_network": map[string]any{
+					"type":        "boolean",
+					"description": "skip the API connectivity check",
+				},
+			},
+		},
+		Annotations: &mcp.ToolAnnotations{Title: "doctor", ReadOnlyHint: true},
+	}
+
+	doctorHandler := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var in struct {
+			NoNetwork bool `json:"no_network"`
+		}
+		if len(req.Params.Arguments) > 0 {
+			if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
+				return errorResult(fmt.Errorf("decode arguments: %w", err)), nil
+			}
+		}
+		argv := append([]string{}, forwardedRootArgs...)
+		argv = append(argv, "--out-format=json", "doctor")
+		if in.NoNetwork {
+			argv = append(argv, "--no-network")
+		}
+		return runSubprocessTool(ctx, argv)
+	}
+
+	return []toolBinding{
+		{tool: describe, handler: describeHandler},
+		{tool: doctor, handler: doctorHandler},
+	}
+}
+
+// runSubprocessTool runs argv in a child atomic-cli and wraps the output the
+// same way generated tool dispatchers do.
+func runSubprocessTool(ctx context.Context, argv []string) (*mcp.CallToolResult, error) {
+	stdout, stderr, runErr := runSubprocess(ctx, argv)
+	if runErr != nil {
+		detail := strings.TrimSpace(string(stderr))
+		if detail == "" {
+			detail = runErr.Error()
+		} else {
+			detail = runErr.Error() + "\n" + detail
+		}
+		return errorResult(fmt.Errorf("%s", detail)), nil
+	}
+
+	res := &mcp.CallToolResult{}
+	trimmed := strings.TrimSpace(string(stdout))
+	if trimmed == "" {
+		res.Content = []mcp.Content{&mcp.TextContent{Text: "(no output)"}}
+		return res, nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+		if obj, ok := parsed.(map[string]any); ok {
+			res.StructuredContent = obj
+		} else {
+			res.StructuredContent = map[string]any{"result": parsed}
+		}
+	}
+	res.Content = []mcp.Content{&mcp.TextContent{Text: trimmed}}
+	return res, nil
 }

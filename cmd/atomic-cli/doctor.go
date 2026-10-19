@@ -42,6 +42,7 @@ type (
 		Credentials  doctorCredentials  `json:"credentials"`
 		Connectivity doctorConnectivity `json:"connectivity"`
 		Skills       doctorSkills       `json:"skills"`
+		MCP          []mcpRegistration  `json:"mcp"`
 		Problems     []string           `json:"problems"`
 	}
 
@@ -185,6 +186,17 @@ func buildDoctorReport(ctx context.Context, cmd *cli.Command) *doctorReport {
 	for _, a := range rep.Skills.Agents {
 		if a.RepairCommand != "" {
 			rep.Problems = append(rep.Problems, fmt.Sprintf("%s skills: %d/%d installed, %d stale; run `%s`", a.Label, a.Installed, a.Expected, len(a.Stale), a.RepairCommand))
+		}
+	}
+
+	// MCP registration is optional (chat hosts only), so a missing entry is
+	// informational; a broken one is a problem.
+	rep.MCP = mcpRegistrations(defaultMCPServerName, cmd.Bool("local"))
+	for _, r := range rep.MCP {
+		if r.Registered && r.Error != "" {
+			rep.Problems = append(rep.Problems, fmt.Sprintf("%s MCP entry %q: %s; run `%s`", r.Label, r.Name, r.Error, r.RepairCommand))
+		} else if r.Error != "" {
+			rep.Problems = append(rep.Problems, fmt.Sprintf("%s config: %s", r.Label, r.Error))
 		}
 	}
 
@@ -442,6 +454,19 @@ func printDoctorReport(rep *doctorReport) {
 			fmt.Printf(", stale: %s", strings.Join(a.Stale, ", "))
 		}
 		fmt.Printf("  %s\n", a.SkillsDir)
+	}
+
+	for _, r := range rep.MCP {
+		state := "not registered"
+		switch {
+		case r.Error != "":
+			state = r.Error
+		case r.Registered && r.BinaryCurrent:
+			state = "registered (this binary)"
+		case r.Registered:
+			state = "registered (" + r.Command + ")"
+		}
+		fmt.Printf("%s mcp          %-26s %s\n", mark(r.Error == ""), r.Label, state)
 	}
 
 	if len(rep.Problems) == 0 {

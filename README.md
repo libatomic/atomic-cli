@@ -87,6 +87,15 @@ Steps:
 - Extract and move the `atomic-cli` binary into a directory on your `PATH` (for example `/usr/local/bin`)
 - Make it executable if needed: `chmod +x /usr/local/bin/atomic-cli`
 
+**Install a specific release (release candidates do not update the Homebrew formula):**
+
+```bash
+# pick a tag from the releases page, e.g. v2.1.1-rc.4; use Darwin_x86_64 / Linux_arm64 / Linux_x86_64 as needed
+TAG=v2.1.1-rc.4 && gh release download "$TAG" -R libatomic/atomic-cli -p 'atomic-cli_Darwin_arm64.tar.gz' -O - | tar -xzf - -C ~/.local/bin atomic-cli && atomic-cli --version
+```
+
+`gh` handles the private repository's authentication; `~/.local/bin` must be on your `PATH` ahead of `/opt/homebrew/bin` to shadow a Homebrew install.
+
 ### Building from Source
 
 ```bash

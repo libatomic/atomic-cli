@@ -18,8 +18,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -98,11 +101,7 @@ func loadCredentials(path string) *credentialsFile {
 	for _, e := range cf.parseErrors {
 		log.Warnf("credentials: %s", e)
 	}
-	log.Warnf("credentials: expected TOML format, e.g.")
-	log.Warnf(`credentials:   [default]`)
-	log.Warnf(`credentials:   host = "api.example.com"`)
-	log.Warnf(`credentials:   client_id = "..."`)
-	log.Warnf(`credentials:   client_secret = "..."`)
+	log.Warnf("credentials: run `atomic-cli login <instance>` to recreate it")
 
 	return cf
 }
@@ -210,5 +209,69 @@ func (c *credentialsFile) Profiles() []string {
 	for k := range c.profiles {
 		names = append(names, k)
 	}
+	sort.Strings(names)
 	return names
+}
+
+// saveCredentials updates one profile in the credentials file: fields in
+// set are written, fields in unset are removed, everything else (other
+// fields, other profiles) is preserved. The file is written as TOML with
+// mode 0600 via a temp file and rename, and the in-memory cache for the
+// path is dropped. It returns the names of unset fields that were present.
+func saveCredentials(path, prof string, set map[string]string, unset []string) ([]string, error) {
+	profiles := map[string]map[string]string{}
+	if existing := loadCredentials(path); existing != nil {
+		for name, fields := range existing.profiles {
+			cp := make(map[string]string, len(fields))
+			for k, v := range fields {
+				cp[k] = v
+			}
+			profiles[name] = cp
+		}
+	}
+
+	fields := profiles[prof]
+	if fields == nil {
+		fields = map[string]string{}
+		profiles[prof] = fields
+	}
+
+	var removed []string
+	for _, k := range unset {
+		if _, ok := fields[k]; ok {
+			removed = append(removed, k)
+			delete(fields, k)
+		}
+	}
+	for k, v := range set {
+		fields[k] = v
+	}
+	if len(fields) == 0 {
+		delete(profiles, prof)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("# Managed by atomic-cli. Run `atomic-cli login <instance>` to sign in.\n\n")
+	if err := toml.NewEncoder(&buf).Encode(profiles); err != nil {
+		return nil, fmt.Errorf("encode credentials: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+		return nil, fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, fmt.Errorf("replace %s: %w", path, err)
+	}
+	_ = os.Chmod(path, 0o600)
+
+	credsCacheM.Lock()
+	delete(credsCache, path)
+	credsCacheM.Unlock()
+
+	sort.Strings(removed)
+	return removed, nil
 }

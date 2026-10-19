@@ -24,8 +24,8 @@ Load `../atomic-cli/SKILL.md` first.
 | Export job logs | `job get <job_id> --logs --export <dir>` |
 | Stop or retry | `job cancel <job_id>` / `job restart <job_id>` |
 | Cluster health | `status --nodes --queues` (no `--top`; that is a TUI) |
-| Copy categories / plans / audiences between instances | `import --remote-profile <p> --types categories,plans --dry-run` |
-| Is the CLI set up correctly | `doctor --no-network -o json` (add network only when asked) |
+| Copy categories / plans / audiences between instances | `import --remote-host <h> --remote-token <t> --types categories,plans --dry-run` |
+| Who am I signed in as / is the CLI set up | `whoami -o json`, `doctor --no-network -o json` (add network only when asked) |
 | See an instance's signing keys | `instance keys list <instance>` |
 | Rotate the token or session key (admin only) | `instance keys rotate <instance> --kind token --alg ES256 --grace 90d --reason "..."` |
 | Undo the last rotation / end a grace period | `instance keys revert <instance> --kind token` / `instance keys retire <key id> <instance>` |
@@ -42,8 +42,9 @@ Load `../atomic-cli/SKILL.md` first.
   signs and seals with (the replaced key keeps verifying for `--grace`).
   Never run them unless the user asks for that instance by name; `list` is
   safe and never shows key material.
-- `import` pulls from another Passport instance using `--remote-*` flags or a
-  second credentials profile via `--remote-profile`. Always dry-run first.
+- `import` pulls from another Passport instance using `--remote-host` and
+  `--remote-token` (a token from that instance's authorization page). Always
+  dry-run first.
 - `job create <type> --params '<json>'` starts arbitrary server jobs; only
   use types the user names.
 - `status --top` and `stripe webhook` are interactive TUIs and refuse to run

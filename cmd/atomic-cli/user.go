@@ -19,9 +19,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/libatomic/atomic/v2/pkg/atomic"
@@ -41,7 +39,7 @@ var (
 	userUpdateFlags = []cli.Flag{
 		&cli.BoolFlag{
 			Name:  "file",
-			Usage: "set the user input from a JSON file",
+			Usage: "treat the positional argument as a JSON file holding the full input (for update it must include user_id)",
 		},
 		&cli.StringFlag{
 			Name:    "login",
@@ -54,15 +52,15 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  "profile",
-			Usage: "set the user profile from a JSON file",
+			Usage: "set the user profile" + jsonInputUsage + `, e.g. '{"name":"Ada","email":"ada@example.com"}'`,
 		},
 		&cli.StringSliceFlag{
 			Name:  "roles",
-			Usage: "set the user roles from a JSON file",
+			Usage: "set the user roles (repeatable, e.g. --roles member --roles admin)",
 		},
 		&cli.StringFlag{
 			Name:  "metadata",
-			Usage: "set the user metadata from a JSON file",
+			Usage: "set the user metadata" + jsonInputUsage,
 		},
 		&cli.StringFlag{
 			Name:  "stripe_account",
@@ -78,7 +76,7 @@ var (
 		},
 		&cli.StringFlag{
 			Name:  "preferences",
-			Usage: "set the user preferences from a JSON file",
+			Usage: "set the user preferences" + jsonInputUsage,
 		},
 	}
 
@@ -215,13 +213,12 @@ func userCreate(ctx context.Context, cmd *cli.Command) error {
 	var input atomic.UserCreateInput
 
 	if cmd.IsSet("file") && cmd.Bool("file") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
+		path := cmd.Args().First()
+		if path == "" {
+			return fmt.Errorf("--file: pass the JSON file path as the positional argument")
 		}
-
-		if err := json.Unmarshal(content, &input); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
+		if err := readJSONInput("file", path, &input); err != nil {
+			return err
 		}
 	} else if cmd.Args().First() != "" {
 		input.Login = cmd.Args().First()
@@ -231,37 +228,14 @@ func userCreate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if cmd.IsSet("profile") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.Profile); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
-		}
+	if err := readJSONFlag(cmd, "profile", &input.Profile); err != nil {
+		return err
 	}
-
-	if cmd.IsSet("metadata") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.Metadata); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
-		}
+	if err := readJSONFlag(cmd, "metadata", &input.Metadata); err != nil {
+		return err
 	}
-
-	if cmd.IsSet("preferences") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.Preferences); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
-		}
+	if err := readJSONFlag(cmd, "preferences", &input.Preferences); err != nil {
+		return err
 	}
 
 	user, err := backend.UserCreate(ctx, &input)
@@ -278,18 +252,23 @@ func userUpdate(ctx context.Context, cmd *cli.Command) error {
 	var input atomic.UserUpdateInput
 
 	if cmd.IsSet("file") && cmd.Bool("file") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user update input file: %w", err)
+		path := cmd.Args().First()
+		if path == "" {
+			return fmt.Errorf("--file: pass the JSON file path as the positional argument")
 		}
-
-		if err := json.Unmarshal(content, &input); err != nil {
-			return fmt.Errorf("failed to unmarshal user update input: %w", err)
+		if err := readJSONInput("file", path, &input); err != nil {
+			return err
+		}
+		if input.UserID == nil && input.Subject == nil {
+			return fmt.Errorf("--file: the JSON must include user_id (or subject)")
 		}
 	} else {
+		if cmd.Args().First() == "" {
+			return fmt.Errorf("user id is required (or pass --file with a JSON file path)")
+		}
 		id, err := atomic.ParseID(cmd.Args().First())
 		if err != nil {
-			return fmt.Errorf("failed to parse user id: %w", err)
+			return fmt.Errorf("failed to parse user id %q: %w", cmd.Args().First(), err)
 		}
 
 		input.UserID = &id
@@ -299,37 +278,14 @@ func userUpdate(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if cmd.IsSet("profile") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.Profile); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
-		}
+	if err := readJSONFlag(cmd, "profile", &input.Profile); err != nil {
+		return err
 	}
-
-	if cmd.IsSet("metadata") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.Metadata); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
-		}
+	if err := readJSONFlag(cmd, "metadata", &input.Metadata); err != nil {
+		return err
 	}
-
-	if cmd.IsSet("preferences") {
-		content, err := os.ReadFile(cmd.Args().First())
-		if err != nil {
-			return fmt.Errorf("failed to read user create input file: %w", err)
-		}
-
-		if err := json.Unmarshal(content, &input.Preferences); err != nil {
-			return fmt.Errorf("failed to unmarshal user create input: %w", err)
-		}
+	if err := readJSONFlag(cmd, "preferences", &input.Preferences); err != nil {
+		return err
 	}
 
 	user, err := backend.UserUpdate(ctx, &input)

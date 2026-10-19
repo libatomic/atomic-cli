@@ -1,6 +1,6 @@
 module github.com/libatomic/atomic-cli/v2
 
-go 1.26
+go 1.26.0
 
 require (
 	ariga.io/atlas-go-sdk v0.7.2
@@ -15,7 +15,7 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocarina/gocsv v0.0.0-20240520201108-78e41c74b4b1
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
-	github.com/libatomic/atomic-go/v2 v2.1.0-rc.4
+	github.com/libatomic/atomic-go/v2 v2.1.0-rc.5
 	github.com/libatomic/atomic/v2 v2.1.0
 	github.com/mattn/go-isatty v0.0.21
 	github.com/modelcontextprotocol/go-sdk v1.6.0
@@ -27,6 +27,7 @@ require (
 	go.etcd.io/bbolt v1.3.11
 	golang.ngrok.com/ngrok/v2 v2.1.2
 	golang.org/x/sync v0.20.0
+	golang.org/x/term v0.47.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -215,8 +216,7 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/term v0.42.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

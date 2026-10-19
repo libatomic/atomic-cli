@@ -112,6 +112,7 @@ func main() {
 	mainCmd.Flags = []cli.Flag{
 		&cli.StringFlag{
 			Name:        "profile",
+			Hidden:      true,
 			Aliases:     []string{"p"},
 			Usage:       "specify the profile",
 			Value:       DefaultProfile,
@@ -153,16 +154,18 @@ func main() {
 			),
 		},
 		&cli.StringFlag{
-			Name:  "client_id",
-			Usage: "specify the client id",
+			Name:   "client_id",
+			Hidden: true,
+			Usage:  "specify the client id",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("PASSPORT_CLIENT_ID"),
 				NewCredentialsSource("client_id", func() string { return creds }, func() string { return profile }),
 			),
 		},
 		&cli.StringFlag{
-			Name:  "client_secret",
-			Usage: "specify the client secret",
+			Name:   "client_secret",
+			Hidden: true,
+			Usage:  "specify the client secret",
 			Sources: cli.NewValueSourceChain(
 				cli.EnvVar("PASSPORT_CLIENT_SECRET"),
 				NewCredentialsSource("client_secret", func() string { return creds }, func() string { return profile }),
@@ -234,6 +237,9 @@ func main() {
 		sessionCmd,
 		statusCmd,
 		mcpCmd,
+		loginCmd,
+		logoutCmd,
+		whoamiCmd,
 		skillsCmd,
 		doctorCmd,
 		setupCmd,
@@ -291,10 +297,14 @@ func main() {
 				opts = append(opts, client.WithTransport(debugTransport{}))
 			}
 
-			if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
-				opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
-			} else if cmd.IsSet("access_token") {
+			// A personal token (atomic-cli login, PASSPORT_ACCESS_TOKEN) wins over
+			// client credentials, which are deprecated.
+			if cmd.IsSet("access_token") && cmd.String("access_token") != "" {
 				opts = append(opts, client.WithToken(cmd.String("access_token")))
+				warnTokenExpiry()
+			} else if cmd.IsSet("client_id") && cmd.IsSet("client_secret") {
+				opts = append(opts, client.WithClientCredentials(cmd.String("client_id"), cmd.String("client_secret")))
+				warnClientCredentials()
 			}
 
 			backend = client.New(opts...)

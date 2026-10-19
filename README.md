@@ -87,6 +87,15 @@ Steps:
 - Extract and move the `atomic-cli` binary into a directory on your `PATH` (for example `/usr/local/bin`)
 - Make it executable if needed: `chmod +x /usr/local/bin/atomic-cli`
 
+**Install a specific release (release candidates do not update the Homebrew formula):**
+
+```bash
+# pick a tag from the releases page, e.g. v2.1.1-rc.4; use Darwin_x86_64 / Linux_arm64 / Linux_x86_64 as needed
+TAG=v2.1.1-rc.4 && gh release download "$TAG" -R libatomic/atomic-cli -p 'atomic-cli_Darwin_arm64.tar.gz' -O - | tar -xzf - -C ~/.local/bin atomic-cli && atomic-cli --version
+```
+
+`gh` handles the private repository's authentication; `~/.local/bin` must be on your `PATH` ahead of `/opt/homebrew/bin` to shadow a Homebrew install.
+
 ### Building from Source
 
 ```bash
@@ -102,8 +111,7 @@ The CLI supports configuration through environment variables or command-line fla
 ### Environment Variables
 
 - `PASSPORT_ACCESS_TOKEN` - Your access token for authentication
-- `PASSPORT_CLIENT_ID` - Your client ID for OAuth2 client credentials flow
-- `PASSPORT_CLIENT_SECRET` - Your client secret for OAuth2 client credentials flow
+- `PASSPORT_CLIENT_ID` / `PASSPORT_CLIENT_SECRET` - **Deprecated.** OAuth2 client credentials; still honoured with a warning, prefer `atomic-cli login` or `PASSPORT_ACCESS_TOKEN`
 - `PASSPORT_API_HOST` - The Passport API host (defaults to the client default)
 - `PASSPORT_DB_SOURCE` - Used for direct connection to the Passport db rather than API
 - `PASSPORT_INSTANCE_ID` - Default target instance (ID or name/domain); same as `-i`
@@ -112,90 +120,42 @@ The CLI supports configuration through environment variables or command-line fla
 
 ### Credentials file (TOML or YAML)
 
-You can store one or more named profiles in a credentials file and switch between them with `--profile`. By default the CLI looks for `~/.atomic/credentials` and accepts either TOML or YAML (TOML is tried first; YAML is the fallback).
+`atomic-cli login <instance>` writes `~/.atomic/credentials` for you (mode 0600). You normally never edit it. The `default` profile holds:
 
-- Default path: `~/.atomic/credentials`
-- Override path: `--credentials` / `-c`
-- Select a profile: `--profile` / `-p` (default: `default`)
-- Precedence per flag: command-line flag > environment variable > credentials file > compiled default
-
-**Supported fields** under each profile section:
-
-| Field | Flag equivalent | Notes |
+| Field | Written by | Notes |
 |---|---|---|
-| `host` | `--host` / `-h` | API host (e.g. `api.example.com` or `https://api.example.com`) |
-| `access_token` | `--access_token` | Bearer token for access-token auth |
-| `client_id` | `--client_id` | OAuth2 client ID for client-credentials auth |
-| `client_secret` | `--client_secret` | OAuth2 client secret |
-| `instance_id` | `-i` / `--instance_id` | Default target instance — accepts a base58 ID **or** an instance name/domain |
-| `out_format` | `--out-format` / `-o` | Default output format for every command. Valid values: `table` (default), `json`, `json-pretty`, `jsonl` (alias `ndjson`). Override per-command with `-o ...`. |
-| `stripe_key` | `--stripe-key` / `-k` (under `stripe` and `migrate`) | Default Stripe API key, used by `stripe ...` and `migrate substack` / `migrate map` |
-| `stripe_livemode` | `--live-mode` (under `stripe`) | Allow live Stripe keys for the profile (boolean) |
-| `db_source` | `--db_source` | Direct DB connection string (hidden flag; for internal use) |
-| `db_cache` | `--db_cache` | The nodes' cache URI (`redis://...`) that goes with `db_source`, so direct changes flush what they have cached (hidden flag) |
+| `host` | login | API host / instance domain |
+| `instance_id` | login | The instance name; `-i` overrides per command |
+| `access_token` | login | Your personal token (its ID doubles as the bearer) |
+| `token_id`, `expires_at`, `login`, `user_id` | login | Used by `whoami`, `doctor`, `logout` and the expiry warnings |
+| `out_format` | you | Default output format: `table`, `json`, `json-pretty`, `jsonl` |
+| `stripe_key`, `stripe_livemode` | you | Defaults for `stripe …` and `migrate …` |
+| `db_source`, `db_cache` | you | Direct DB / cache access for operators (hidden flags, 2.1 only) |
 
-**TOML example** (`~/.atomic/credentials`):
+Override the path with `--credentials` / `-c`. Precedence per setting: command-line flag > environment variable > credentials file > default.
 
-```toml
-[default]
-host = "api.atomic.example.com"
-client_id = "your-client-id"
-client_secret = "your-client-secret"
-instance_id = "my.instance.example.com"
-out_format = "json-pretty"
-
-[staging]
-host = "api.staging.atomic.example.com"
-access_token = "at_XXXXXXXXXXXXXXXX"
-instance_id = "CZ6psMmMo4BBCGyE2NyR2"
-out_format = "table"
-stripe_key = "sk_test_XXXXXXXXXXXXXXXX"
-```
-
-> **TOML strings must be quoted.** `host = foo.example.com` is a syntax error; use `host = "foo.example.com"`. If the file can't be parsed, the CLI prints a warning with the exact parser error and the line number so you can fix it.
-
-**YAML example** (`~/.atomic/credentials`):
-
-```yaml
-default:
-  host: api.atomic.example.com
-  client_id: your-client-id
-  client_secret: your-client-secret
-  instance_id: my.instance.example.com
-  out_format: json-pretty
-
-staging:
-  host: api.staging.atomic.example.com
-  access_token: "at_XXXXXXXXXXXXXXXX"
-  instance_id: CZ6psMmMo4BBCGyE2NyR2
-  out_format: table
-  stripe_key: "sk_test_XXXXXXXXXXXXXXXX"
-```
-
-**Usage:**
-
-```bash
-# Use the default profile
-atomic-cli instance list
-
-# Use a named profile
-atomic-cli --profile staging instance list
-atomic-cli -p staging instance list
-
-# Specify a custom credentials file
-atomic-cli --credentials /path/to/credentials instance list
-```
-
-**Instance lookup by name or domain:** the `instance_id` flag (and the `instance_id` field in a profile) accepts either a base58 ID like `CZ6psMmMo4BBCGyE2NyR2` or a name/domain like `my.instance.example.com`. When a non-ID value is supplied the CLI resolves it via `InstanceList` before running the command, so you can reference instances by their human-readable names in your profiles.
-
-**Multi-profile troubleshooting:** if you add a profile and the CLI suddenly falls back to defaults, a parse error probably broke the whole file. Run with any command (e.g. `atomic-cli instance list`) — the CLI will print a `credentials:` warning pointing at the offending line.
+**Legacy: client credentials and multiple profiles.** Older setups stored an OAuth application's `client_id` / `client_secret` in the file, sometimes in several named profiles selected with `--profile`. That is deprecated: the secrets never expire, carry full admin rights and get copied around. The CLI still reads them for one release and warns on every run; `atomic-cli login` removes them from the `default` profile when it writes the token. `--profile` remains for hand-maintained extra profiles but is hidden from help.
 
 ### Authentication
 
-The CLI supports two authentication methods:
+Sign in once per machine with your own admin account:
 
-1. **Access Token**: Use the `--access_token` flag or `PASSPORT_ACCESS_TOKEN` environment variable
-2. **Client Credentials**: Use the `--client_id` and `--client_secret` flags or environment variables
+```bash
+atomic-cli login stratechery.passport.online
+```
+
+The CLI prints (and tries to open) a link to the instance's admin app. Sign in there if you have no session, review the authorization card (who you are, the instance, administrator access, how long the token lasts, which device asked) and click **Authorize**. The page shows a token once; paste it into the terminal. The CLI verifies it against the instance, checks it was minted for this login attempt, and stores it. Copy-paste works the same over SSH or inside a container, which is why there is no browser-to-terminal handoff.
+
+Tokens are personal, revocable and time-limited: they last as long as an admin session in the admin app (30 days by default, set by the admin application's refresh token lifetime). The CLI warns three days before expiry and tells you to run `login` again.
+
+```bash
+atomic-cli whoami     # host, instance, account, expiry
+atomic-cli logout     # revoke the token and forget it (nodes may honour it for up to an hour)
+```
+
+For scripts and CI, mint a token through the same page and export it as `PASSPORT_ACCESS_TOKEN`, or pipe it: `echo "$TOKEN" | atomic-cli login <instance>`.
+
+`login` needs an instance whose server and admin app include this feature; on older instances it stops with "does not support CLI login yet".
 
 ### Agent Setup
 
@@ -205,27 +165,24 @@ If you use an AI coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot),
 atomic-cli setup
 ```
 
-This installs the atomic-cli skills into the agent skills directories, prints a credentials template if `~/.atomic/credentials` is missing, and runs `atomic-cli doctor`. Details are in [AI Agent Integration](#ai-agent-integration).
+This installs the atomic-cli skills into the agent skills directories, tells you to run `atomic-cli login <instance>` if you are not signed in, and runs `atomic-cli doctor`. Details are in [AI Agent Integration](#ai-agent-integration).
 
 ## Global Options
 
-Global options go **before** the command: `atomic-cli -p prod -i my.site -o json user list`.
+Global options go **before** the command: `atomic-cli -i my.site -o json user list`.
 
 | Option | Alias | Description | Default |
 |------------------------|-------|----------------------------------------------|---------|
-| `--profile` | `-p` | Credentials profile to use | `default` |
 | `--credentials` | `-c` | Path to the credentials file | `~/.atomic/credentials` |
 | `--host` | `-h` | API host | Client default |
-| `--access_token` | | Bearer access token | |
-| `--client_id` | | OAuth2 client ID | |
-| `--client_secret` | | OAuth2 client secret | |
+| `--access_token` | | Bearer token (normally stored by `atomic-cli login`) | |
 | `--instance_id` | `-i`, `--instance` | Target instance (base58 ID or name/domain) | |
 | `--out-format` | `-o` | Output format (`table`, `json`, `json-pretty`, `jsonl`) | `table` |
 | `--fields` | `-f` | Fields to display in table output | |
 | `--verbose` | `-v` | Debug logging plus a redacted dump of every API request and response on stderr (credentials and tokens are masked) | `false` |
 | `--version` | `-V` | Print the version | |
 
-Every global option can also come from the environment (`PASSPORT_*`) or the selected credentials profile; precedence is flag > environment > credentials file > default.
+Every global option can also come from the environment (`PASSPORT_*`) or the credentials file written by `atomic-cli login`; precedence is flag > environment > credentials file > default. `--profile`, `--client_id` and `--client_secret` still work but are deprecated and hidden.
 
 ## Commands
 
@@ -1332,7 +1289,7 @@ atomic-cli -v -i target_inst import \
   --remote-client-id xxx --remote-client-secret yyy \
   --types categories,plans,audiences,templates,assets,articles
 
-# Use a credentials profile for the source — host/token/client_id/client_secret
+# Legacy: use a hand-maintained credentials profile for the source (host + access_token)
 # are all read from ~/.atomic/credentials under the named profile
 atomic-cli -i target_inst import \
   --remote-profile staging \
@@ -2639,9 +2596,9 @@ When the MAC doesn't verify, the gob decode is skipped (wrong key → garbage by
 A live, top-style view of an atomic cluster. Polls the server's `/.well-known/ping?status=true` endpoint and renders a continuously-updating screen with one row per node and (optionally) one row per queue. Refreshes every 60 seconds by default — the same cadence as the server's heartbeat. Press **q** or **ctrl+c** to exit.
 
 ```bash
-atomic-cli -p prod status
-atomic-cli -p prod status --nodes api,scheduler
-atomic-cli -p prod status --queues=false
+atomic-cli status
+atomic-cli status --nodes api,scheduler
+atomic-cli status --queues=false
 ```
 
 | Flag | Description | Default |
@@ -2672,13 +2629,13 @@ Coding agents that can run shell commands should prefer the [skills](#ai-agent-i
 
 ```bash
 # Read-only mode (the default), bound to a specific instance
-atomic-cli -p prod -i <instance> mcp
+atomic-cli -i <instance> mcp
 
 # Allow write/destructive tools too — the host should still confirm each call
-atomic-cli -p prod -i <instance> mcp --allow-write
+atomic-cli -i <instance> mcp --allow-write
 
 # HTTP transport (for remote clients or sharing across processes)
-atomic-cli -p prod -i <instance> mcp --transport http --listen 127.0.0.1:8765
+atomic-cli -i <instance> mcp --transport http --listen 127.0.0.1:8765
 ```
 
 | Flag | Description | Default |
@@ -2688,7 +2645,7 @@ atomic-cli -p prod -i <instance> mcp --transport http --listen 127.0.0.1:8765
 | `--allow-write` | Register mutating tools (create / update / delete / cancel / import / migrate / …). Off by default. | `false` |
 | `--tool-prefix <s>` | Prefix added to every tool name (useful when you wire multiple instances into the same host). | (empty) |
 
-Auth and the bound instance come from the global flags / credentials profile / env vars used to launch `atomic-cli mcp`. They're captured at server startup and forwarded to every spawned subprocess. **Use `--client_id` / `--client_secret`** for long-lived sessions: `WithClientCredentials` auto-refreshes tokens, while a static `--access_token` will eventually expire.
+Auth and the bound instance come from the credentials written by `atomic-cli login` (or the global flags / env vars used to launch `atomic-cli mcp`). They're captured at server startup and forwarded to every spawned subprocess. When the login token expires, `doctor` and the next tool call say so; run `atomic-cli login <instance>` and restart the host.
 
 #### Tool naming and read-only classification
 
@@ -2705,11 +2662,11 @@ Override per command via `cli.Command.Metadata`: `"mcp:readOnly"`, `"mcp:destruc
 Instead of editing host config files by hand, let the CLI write the entry:
 
 ```bash
-atomic-cli -p prod -i <instance> mcp install                      # Claude Desktop (default target)
-atomic-cli -p prod -i <instance> mcp install --target claude      # Claude Code (~/.claude.json)
-atomic-cli -p prod -i <instance> mcp install --all-targets        # Claude Desktop, Claude Code, Cursor, Codex
+atomic-cli -i <instance> mcp install                      # Claude Desktop (default target)
+atomic-cli -i <instance> mcp install --target claude      # Claude Code (~/.claude.json)
+atomic-cli -i <instance> mcp install --all-targets        # Claude Desktop, Claude Code, Cursor, Codex
 atomic-cli mcp install --target claude --target cursor --local    # project scope: ./.mcp.json, ./.cursor/mcp.json
-atomic-cli -p prod -i <instance> mcp install --allow-write        # register with write tools enabled
+atomic-cli -i <instance> mcp install --allow-write        # register with write tools enabled
 atomic-cli mcp status                                             # what is registered where, and whether it points at this binary
 atomic-cli mcp uninstall --all-targets                            # remove the entry everywhere
 ```
@@ -2721,7 +2678,7 @@ atomic-cli mcp uninstall --all-targets                            # remove the e
 | `cursor` | `~/.cursor/mcp.json`, or `./.cursor/mcp.json` with `--local` | JSON `mcpServers` |
 | `codex` | `~/.codex/config.toml` | TOML `[mcp_servers.<name>]` |
 
-The entry runs the **absolute path of the current binary** with the profile (`-p`), credentials file (`-c`), host and instance (`-i`) you passed to `mcp install`, followed by `mcp` and optionally `--allow-write`. Secrets are never written into host configs; they stay in `~/.atomic/credentials`. Override the registered path with `--binary` and the entry name with `--name` (default `atomic`). JSON files are merged, so other servers and settings are preserved; a config that is not valid JSON is left untouched and reported. The Codex TOML file is patched textually, replacing only the `[mcp_servers.<name>]` table so comments and other tables survive.
+The entry runs the **absolute path of the current binary** with the credentials file (`-c`), host and instance (`-i`) you passed to `mcp install`, followed by `mcp` and optionally `--allow-write`. Secrets are never written into host configs; the token from `atomic-cli login` stays in `~/.atomic/credentials`. Override the registered path with `--binary` and the entry name with `--name` (default `atomic`). JSON files are merged, so other servers and settings are preserved; a config that is not valid JSON is left untouched and reported. The Codex TOML file is patched textually, replacing only the `[mcp_servers.<name>]` table so comments and other tables survive.
 
 `atomic-cli setup --mcp claude-desktop` does the same during setup, and `atomic-cli doctor` shows every host's registration state. Restart the host application after installing.
 
@@ -2763,51 +2720,20 @@ Use the absolute path to the binary — Claude Desktop doesn't inherit your shel
 
 To pass auth explicitly instead of relying on a credentials profile:
 
-```json
-{
-  "mcpServers": {
-    "atomic": {
-      "command": "/usr/local/bin/atomic-cli",
-      "args": [
-        "-i", "<your-instance>",
-        "--client_id", "...",
-        "--client_secret", "...",
-        "--host", "api.example.com",
-        "mcp"
-      ]
-    }
-  }
-}
-```
 
 You can also lift secrets out of `args` into an `env` block and reference them with the `PASSPORT_*` env vars the CLI already honors:
 
-```json
-{
-  "mcpServers": {
-    "atomic": {
-      "command": "/usr/local/bin/atomic-cli",
-      "args": ["-i", "<your-instance>", "mcp"],
-      "env": {
-        "PASSPORT_CLIENT_ID": "...",
-        "PASSPORT_CLIENT_SECRET": "...",
-        "PASSPORT_API_HOST": "api.example.com"
-      }
-    }
-  }
-}
-```
 
 #### Wiring to Claude Code
 
 ```bash
-claude mcp add atomic -- /usr/local/bin/atomic-cli -p prod -i <instance> mcp
+claude mcp add atomic -- /usr/local/bin/atomic-cli -i <instance> mcp
 ```
 
 For HTTP transport (e.g. shared across multiple Claude Code sessions):
 
 ```bash
-atomic-cli -p prod -i <instance> mcp --transport http --listen 127.0.0.1:8765 &
+atomic-cli -i <instance> mcp --transport http --listen 127.0.0.1:8765 &
 claude mcp add --transport http atomic http://127.0.0.1:8765
 ```
 
@@ -2818,7 +2744,7 @@ Each `claude mcp add <name>` call registers a separate server, so you can stack 
 ```bash
 claude mcp add atomic-ankler-dev  -- /usr/local/bin/atomic-cli -p ankler_dev  -i <instance> mcp
 claude mcp add atomic-ankler-prod -- /usr/local/bin/atomic-cli -p ankler_prod -i <instance> mcp
-claude mcp add atomic-stratechery -- /usr/local/bin/atomic-cli -p prod -i stratechery mcp
+claude mcp add atomic-stratechery -- /usr/local/bin/atomic-cli -i stratechery mcp
 ```
 
 The same pattern applies in Claude Desktop — add multiple keys under `mcpServers`:
@@ -2894,7 +2820,7 @@ Restart the agent session after installing. In Claude Code the root skill then a
 
 ```bash
 atomic-cli doctor                      # human checklist
-atomic-cli -p prod doctor -o json      # machine-readable, for agents
+atomic-cli doctor -o json      # machine-readable, for agents
 atomic-cli doctor --no-network         # skip the API round trip
 atomic-cli doctor --local              # also report ./.agents/skills and ./.claude/skills
 ```

@@ -45,6 +45,14 @@ var (
 				Usage: "connectivity check timeout",
 				Value: 10 * time.Second,
 			},
+			&cli.StringSliceFlag{
+				Name:  "mcp",
+				Usage: "also register the MCP server for these chat hosts (claude-desktop|claude|cursor|codex). Repeatable",
+			},
+			&cli.BoolFlag{
+				Name:  "allow-write",
+				Usage: "register the MCP server with --allow-write (only with --mcp)",
+			},
 		),
 		Action: setupAction,
 	}
@@ -57,6 +65,13 @@ func setupAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	if err := printSkillsInstall(cmd, res); err != nil {
 		return err
+	}
+
+	if hosts := cmd.StringSlice("mcp"); len(hosts) > 0 {
+		fmt.Println()
+		if err := mcpInstallFor(cmd, hosts); err != nil {
+			return fmt.Errorf("register mcp: %w", err)
+		}
 	}
 
 	if _, err := os.Stat(creds); err != nil {

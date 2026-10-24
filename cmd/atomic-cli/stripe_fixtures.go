@@ -75,8 +75,18 @@ type (
 		Created int64  `json:"created"`
 	}
 
+	// fixtureExpect is the expect.json skeleton the atomic replay harness
+	// reads: the Passport seed before the first event ("none",
+	// "plan_subscribe" or a Passport status), one step per event, and the
+	// replay modes ("duplicate", "shuffle") the scenario must survive.
 	fixtureExpect struct {
-		Steps map[string]fixtureStep `json:"steps"`
+		Seed   fixtureExpectSeed      `json:"seed"`
+		Steps  map[string]fixtureStep `json:"steps"`
+		Replay []string               `json:"replay"`
+	}
+
+	fixtureExpectSeed struct {
+		Subscription string `json:"subscription"`
 	}
 
 	fixtureStep struct {
@@ -223,7 +233,8 @@ func stripeFixturesPull(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("failed to create %s: %w", dir, err)
 	}
 
-	expect := fixtureExpect{Steps: map[string]fixtureStep{}}
+	expect := fixtureExpect{Steps: map[string]fixtureStep{}, Replay: []string{}}
+	expect.Seed.Subscription = "plan_subscribe"
 	prices := map[string]struct{}{}
 
 	for i, ev := range events {

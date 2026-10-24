@@ -2271,8 +2271,55 @@ atomic-cli stripe webhook -k sk_test_xxx --ngrok -e customer.subscription.create
 # Show more events in the table
 atomic-cli stripe webhook -k sk_test_xxx --ngrok --display-events 50
 
-# Without ngrok (manual proxy setup)
+# Without ngrok: forward events with the Stripe CLI (the command prints the exact line)
 atomic-cli stripe webhook -k sk_test_xxx
+stripe listen --forward-to http://127.0.0.1:<port>/webhook
+```
+
+#### Fixtures
+
+Pull a Stripe scenario into a replayable test fixture for the atomic state-machine tests. No listener, tunnel or dashboard endpoint is needed: Stripe's events API keeps 30 days of history with the same payloads webhooks deliver (`data.previous_attributes` included). Run the scenario in a sandbox any way you like, then pull it by subscription or customer.
+
+```bash
+atomic-cli stripe fixtures pull --name <scenario> [options]
+```
+
+**Options:**
+
+| Option | Alias | Description | Default |
+|------------------|-------|------------------------------------------------------------------------------------------|---------------------|
+| `--name` | `-n` | Scenario name, used as the directory name (required) | |
+| `--output` | `-o` | Directory the scenario directory is created under | `./stripe-fixtures` |
+| `--subscription` | `-s` | Subscription id; implies the customer and keeps only this subscription's billing chain | |
+| `--customer` | `-c` | Customer id; keeps every event about this customer | |
+| `--since` | | Window start: RFC3339 or a duration back from now (`2h`) | 5 min before the object was created |
+| `--until` | | Window end: RFC3339 or a duration back from now | now |
+| `--types` | | Only these event types (repeatable) | every type |
+| `--from-jsonl` | | Convert a `stripe webhook --log-only` JSONL file instead of querying the events API | |
+| `--no-scrub` | | Keep emails, names, addresses, secrets and hosted URLs as recorded | `false` |
+| `--force` | | Overwrite an existing scenario directory | `false` |
+
+**Output** (`<output>/<name>/`):
+
+| File | Contents |
+|-------------------|-------------------------------------------------------------------------------------------------|
+| `scenario.json` | Account, API version, filter and window, the subscription's prices as seed, and the event index |
+| `NNN_<type>.json` | One complete Stripe Event per file, in created order |
+| `expect.json` | Per-step skeleton (`status`, `stripe_status`, `entitled`, `payment_pending`) to fill in by hand |
+
+Scrubbing maps emails to `member<n>@example.test` consistently within a scenario, blanks names, phones and addresses, and empties `client_secret` and hosted URLs. With `--subscription` the pull keeps the subscription, its invoices, their payment intents and charges, and the customer-level objects every scenario shares (customer, payment methods, setup intents).
+
+**Examples:**
+
+```bash
+# Pull a subscription's whole history (first purchase, renewals, cancellation)
+atomic-cli stripe fixtures pull -k sk_test_xxx --name card_first_purchase --subscription sub_xxx -o ./fixtures
+
+# Everything about one customer in the last two hours
+atomic-cli stripe fixtures pull -k sk_test_xxx --name portal_card_change --customer cus_xxx --since 2h
+
+# Convert a file captured earlier with `stripe webhook --log-only`
+atomic-cli stripe fixtures pull -k sk_test_xxx --name ach_failure --from-jsonl ./events-xxx.jsonl --customer cus_xxx
 ```
 
 #### Repair

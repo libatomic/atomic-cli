@@ -41,6 +41,10 @@ entitlements; describe before running and confirm every write.
   `--ignore-sandbox-email-warning` unprompted.
 - `stripe webhook` and `stripe connect` open tunnels and TUIs; they are for a
   human at a terminal, use `--log-only` when scripting.
+- `stripe fixtures pull --name <scenario> --subscription sub_...` pulls a
+  scenario's events from the Stripe events API (30-day history) into a
+  fixture directory for the atomic replay tests; read-only against Stripe,
+  writes only under `--output`.
 - `stripe customer cleanup` deletes Stripe customers from a CSV. Dry-run,
   show the count, confirm.
 

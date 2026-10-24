@@ -86,6 +86,7 @@ var (
 			stripeImportCmd,
 			stripeConnectCmd,
 			stripeWebhookCmd,
+			stripeFixturesCmd,
 			stripeRepairCmd,
 			stripeCustomerCmd,
 			stripeInvoiceCmd,

@@ -674,6 +674,9 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 	viewOnly := cmd.Bool("view-only")
 
 	// open event log
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
 	eventsPath := filepath.Join(outputDir, fmt.Sprintf("events-%s.jsonl", accountID))
 	evtLog, err := openEventLog(eventsPath, maxDisplay)
 	if err != nil {
@@ -745,10 +748,11 @@ func stripeWebhook(ctx context.Context, cmd *cli.Command) error {
 		publicURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
 		fmt.Fprintf(os.Stderr, "listening locally on %s\n", publicURL)
-		fmt.Fprintf(os.Stderr, "note: you must proxy this address to a public URL, then add that URL as a webhook endpoint in Stripe Dashboard:\n")
-		fmt.Fprintf(os.Stderr, "  Dashboard > Developers > Webhooks > Add endpoint\n")
-		fmt.Fprintf(os.Stderr, "  URL: <your-public-url>/webhook\n")
-		fmt.Fprintf(os.Stderr, "  Events: %s\n\n", strings.Join(events, ", "))
+		fmt.Fprintf(os.Stderr, "forward events here with the Stripe CLI (no dashboard endpoint needed):\n")
+		fmt.Fprintf(os.Stderr, "  stripe listen --forward-to %s/webhook --events %s\n", publicURL, strings.Join(events, ","))
+		fmt.Fprintf(os.Stderr, "or pass --ngrok to open a tunnel and register the endpoint automatically.\n")
+		fmt.Fprintf(os.Stderr, "to build test fixtures you need no listener at all: run the scenario, then\n")
+		fmt.Fprintf(os.Stderr, "  atomic-cli stripe fixtures pull --name <scenario> --subscription sub_... -o <dir>\n\n")
 	}
 
 	webhookURL := publicURL + "/webhook"
